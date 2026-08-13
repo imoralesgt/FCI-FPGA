@@ -29,8 +29,7 @@ xsim_work/
 *.wdb
 *.pb
 xsim.dir/
-xelab.log
-xsim.log
+*.log
 xvhdl.log
 xvhdl.pb
 webtalk*.tcl
