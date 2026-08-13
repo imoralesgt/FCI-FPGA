@@ -34,11 +34,26 @@ SAMPLE_LOOP:
 
 static void fft_to_psa(hls::stream<fft_cplx_t> &xk_s,
                         hls::stream<hls::ip_fft::status_t<fci_fft_config> > &status_s,
-                        ap_uint<BIN_INDEX_WIDTH> psa_l_lo, ap_uint<BIN_INDEX_WIDTH> psa_l_hi,
-                        ap_uint<BIN_INDEX_WIDTH> psa_w_lo, ap_uint<BIN_INDEX_WIDTH> psa_w_hi,
+                        hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_lo_s,
+                        hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_hi_s,
+                        hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_lo_s,
+                        hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_hi_s,
                         hls::stream<axis_out_t> &m_axis_result) {
   psa_t psa_l = 0;
   psa_t psa_w = 0;
+
+  // Window bounds read once per frame from plain hls::stream ports (not scalar ap_none/s_axilite
+  // ports): cosim_design refuses ap_ctrl_none dataflow designs that have ANY scalar port at all
+  // (COSIM 212-345 -- confirmed empirically, its restriction turned out to apply to ap_none
+  // scalars just as much as s_axilite ones, not just s_axilite as originally assumed), but
+  // explicitly allows hls_stream/AXI4-stream ports. An external always-ready producer (e.g. the
+  // AXI4-Lite register block) just needs to keep offering the current register value on these
+  // streams; reading the same value repeatedly is harmless since it changes only when
+  // reconfigured.
+  ap_uint<BIN_INDEX_WIDTH> psa_l_lo = psa_l_lo_s.read();
+  ap_uint<BIN_INDEX_WIDTH> psa_l_hi = psa_l_hi_s.read();
+  ap_uint<BIN_INDEX_WIDTH> psa_w_lo = psa_w_lo_s.read();
+  ap_uint<BIN_INDEX_WIDTH> psa_w_hi = psa_w_hi_s.read();
 
 BIN_LOOP:
   for (unsigned k = 0; k < N_SAMPLES; k++) {
@@ -72,15 +87,29 @@ BIN_LOOP:
 }
 
 void fci_core(hls::stream<axis_in_t> &s_axis_data, hls::stream<axis_out_t> &m_axis_result,
-              ap_uint<BIN_INDEX_WIDTH> psa_l_lo, ap_uint<BIN_INDEX_WIDTH> psa_l_hi,
-              ap_uint<BIN_INDEX_WIDTH> psa_w_lo, ap_uint<BIN_INDEX_WIDTH> psa_w_hi) {
+              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_lo_s,
+              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_hi_s,
+              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_lo_s,
+              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_hi_s) {
 #pragma HLS interface axis port = s_axis_data
 #pragma HLS interface axis port = m_axis_result
-#pragma HLS interface s_axilite port = psa_l_lo bundle = control
-#pragma HLS interface s_axilite port = psa_l_hi bundle = control
-#pragma HLS interface s_axilite port = psa_w_lo bundle = control
-#pragma HLS interface s_axilite port = psa_w_hi bundle = control
-#pragma HLS interface s_axilite port = return bundle = control
+// Window bounds arrive as plain hls::stream (ap_fifo) ports, not scalar ap_none/s_axilite ports:
+// keeps every port on this ap_ctrl_none/free-running top function a streaming port, which
+// cosim_design requires (COSIM 212-345 -- confirmed empirically that it rejects ANY scalar port,
+// ap_none included, on an ap_ctrl_none dataflow design; see fft_to_psa for detail). This keeps
+// the top-level control protocol free-running so frame N+1 can start streaming into axis_to_fft
+// while frame N is still draining through the FFT/fft_to_psa stages (ap_ctrl_hs's start/done
+// handshake was measured via cosim to force Interval == Latency; pure ap_ctrl_none measured
+// Interval down to 1024 cycles, the streaming floor). Runtime configurability of the window
+// bounds is retained via a separate hand-written AXI4-Lite register block
+// (fpga/rtl/trigger_core/src/axi4lite_regs.vhd is the reference pattern), whose 4 output
+// registers continuously drive these 4 streams (always-valid producer; the same register value
+// is read again every frame until reconfigured).
+#pragma HLS interface ap_fifo port = psa_l_lo_s
+#pragma HLS interface ap_fifo port = psa_l_hi_s
+#pragma HLS interface ap_fifo port = psa_w_lo_s
+#pragma HLS interface ap_fifo port = psa_w_hi_s
+#pragma HLS interface ap_ctrl_none port = return
 
 #pragma HLS dataflow
 
@@ -95,5 +124,5 @@ void fci_core(hls::stream<axis_in_t> &s_axis_data, hls::stream<axis_out_t> &m_ax
 
   axis_to_fft(s_axis_data, xn_s, config_s);
   hls::fft<fci_fft_config>(xn_s, xk_s, status_s, config_s);
-  fft_to_psa(xk_s, status_s, psa_l_lo, psa_l_hi, psa_w_lo, psa_w_hi, m_axis_result);
+  fft_to_psa(xk_s, status_s, psa_l_lo_s, psa_l_hi_s, psa_w_lo_s, psa_w_hi_s, m_axis_result);
 }

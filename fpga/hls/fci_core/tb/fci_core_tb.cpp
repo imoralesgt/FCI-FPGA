@@ -165,7 +165,12 @@ int main() {
       s_axis_data.write(beat);
     }
 
-    fci_core(s_axis_data, m_axis_result, PSA_L_LO, PSA_L_HI, PSA_W_LO, PSA_W_HI);
+    hls::stream<ap_uint<BIN_INDEX_WIDTH> > psa_l_lo_s, psa_l_hi_s, psa_w_lo_s, psa_w_hi_s;
+    psa_l_lo_s.write(PSA_L_LO);
+    psa_l_hi_s.write(PSA_L_HI);
+    psa_w_lo_s.write(PSA_W_LO);
+    psa_w_hi_s.write(PSA_W_HI);
+    fci_core(s_axis_data, m_axis_result, psa_l_lo_s, psa_l_hi_s, psa_w_lo_s, psa_w_hi_s);
 
     axis_out_t beat_l = m_axis_result.read();
     axis_out_t beat_w = m_axis_result.read();
