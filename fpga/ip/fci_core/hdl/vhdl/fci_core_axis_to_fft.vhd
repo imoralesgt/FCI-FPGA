@@ -35,11 +35,11 @@ port (
     xn_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
     xn_s_full_n : IN STD_LOGIC;
     xn_s_write : OUT STD_LOGIC;
-    config_s5_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-    config_s5_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s5_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s5_full_n : IN STD_LOGIC;
-    config_s5_write : OUT STD_LOGIC );
+    config_s17_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+    config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s17_full_n : IN STD_LOGIC;
+    config_s17_write : OUT STD_LOGIC );
 end;
 
 
@@ -66,7 +66,7 @@ attribute shreg_extract : string;
     signal ap_CS_fsm_state1 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state1 : signal is "none";
     signal internal_ap_ready : STD_LOGIC;
-    signal config_s5_blk_n : STD_LOGIC;
+    signal config_s17_blk_n : STD_LOGIC;
     signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start : STD_LOGIC;
     signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done : STD_LOGIC;
     signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle : STD_LOGIC;
@@ -343,11 +343,11 @@ begin
     end process;
 
 
-    ap_NS_fsm_assign_proc : process (real_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, config_s5_full_n, grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done, ap_CS_fsm_state3)
+    ap_NS_fsm_assign_proc : process (real_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, config_s17_full_n, grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done, ap_CS_fsm_state3)
     begin
         case ap_CS_fsm is
             when ap_ST_fsm_state1 => 
-                if ((not(((real_start = ap_const_logic_0) or (config_s5_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
+                if ((not(((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
                     ap_NS_fsm <= ap_ST_fsm_state2;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state1;
@@ -368,9 +368,9 @@ begin
     ap_CS_fsm_state2 <= ap_CS_fsm(1);
     ap_CS_fsm_state3 <= ap_CS_fsm(2);
 
-    ap_ST_fsm_state1_blk_assign_proc : process(real_start, ap_done_reg, config_s5_full_n)
+    ap_ST_fsm_state1_blk_assign_proc : process(real_start, ap_done_reg, config_s17_full_n)
     begin
-        if (((real_start = ap_const_logic_0) or (config_s5_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) then 
+        if (((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) then 
             ap_ST_fsm_state1_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state1_blk <= ap_const_logic_0;
@@ -389,9 +389,9 @@ begin
     end process;
 
 
-    ap_block_state1_assign_proc : process(real_start, ap_done_reg, config_s5_full_n)
+    ap_block_state1_assign_proc : process(real_start, ap_done_reg, config_s17_full_n)
     begin
-                ap_block_state1 <= ((real_start = ap_const_logic_0) or (config_s5_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
+                ap_block_state1 <= ((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
     end process;
 
 
@@ -416,23 +416,23 @@ begin
 
     ap_ready <= internal_ap_ready;
 
-    config_s5_blk_n_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s5_full_n)
+    config_s17_blk_n_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s17_full_n)
     begin
         if ((not(((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s5_blk_n <= config_s5_full_n;
+            config_s17_blk_n <= config_s17_full_n;
         else 
-            config_s5_blk_n <= ap_const_logic_1;
+            config_s17_blk_n <= ap_const_logic_1;
         end if; 
     end process;
 
-    config_s5_din <= ap_const_lv8_1;
+    config_s17_din <= ap_const_lv8_1;
 
-    config_s5_write_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s5_full_n)
+    config_s17_write_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s17_full_n)
     begin
-        if ((not(((real_start = ap_const_logic_0) or (config_s5_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s5_write <= ap_const_logic_1;
+        if ((not(((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+            config_s17_write <= ap_const_logic_1;
         else 
-            config_s5_write <= ap_const_logic_0;
+            config_s17_write <= ap_const_logic_0;
         end if; 
     end process;
 

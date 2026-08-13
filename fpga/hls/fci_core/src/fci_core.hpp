@@ -61,9 +61,7 @@ typedef ap_axiu<16, 1, 1, 1> axis_in_t;  // one ADC sample per beat (14 valid bi
 typedef ap_axiu<32, 1, 1, 1> axis_out_t; // PSA_l then PSA_w per event, Q12.16 zero-extended to 32 bits
 
 void fci_core(hls::stream<axis_in_t> &s_axis_data, hls::stream<axis_out_t> &m_axis_result,
-              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_lo_s,
-              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_l_hi_s,
-              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_lo_s,
-              hls::stream<ap_uint<BIN_INDEX_WIDTH> > &psa_w_hi_s);
+              ap_uint<BIN_INDEX_WIDTH> psa_l_lo, ap_uint<BIN_INDEX_WIDTH> psa_l_hi,
+              ap_uint<BIN_INDEX_WIDTH> psa_w_lo, ap_uint<BIN_INDEX_WIDTH> psa_w_hi);
 
 #endif // FCI_CORE_HPP

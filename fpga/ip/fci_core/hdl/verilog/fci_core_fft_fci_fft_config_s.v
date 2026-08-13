@@ -11,13 +11,10 @@ module fci_core_fft_fci_fft_config_s (
         ap_clk,
         ap_rst,
         ap_start,
-        start_full_n,
         ap_done,
         ap_continue,
         ap_idle,
         ap_ready,
-        start_out,
-        start_write,
         xn_s_dout,
         xn_s_num_data_valid,
         xn_s_fifo_cap,
@@ -28,16 +25,16 @@ module fci_core_fft_fci_fft_config_s (
         xk_s_fifo_cap,
         xk_s_full_n,
         xk_s_write,
-        status_s4_din,
-        status_s4_num_data_valid,
-        status_s4_fifo_cap,
-        status_s4_full_n,
-        status_s4_write,
-        config_s5_dout,
-        config_s5_num_data_valid,
-        config_s5_fifo_cap,
-        config_s5_empty_n,
-        config_s5_read
+        status_s16_din,
+        status_s16_num_data_valid,
+        status_s16_fifo_cap,
+        status_s16_full_n,
+        status_s16_write,
+        config_s17_dout,
+        config_s17_num_data_valid,
+        config_s17_fifo_cap,
+        config_s17_empty_n,
+        config_s17_read
 );
 
 parameter    ap_ST_fsm_state1 = 2'd1;
@@ -46,13 +43,10 @@ parameter    ap_ST_fsm_state2 = 2'd2;
 input   ap_clk;
 input   ap_rst;
 input   ap_start;
-input   start_full_n;
 output   ap_done;
 input   ap_continue;
 output   ap_idle;
 output   ap_ready;
-output   start_out;
-output   start_write;
 input  [31:0] xn_s_dout;
 input  [1:0] xn_s_num_data_valid;
 input  [1:0] xn_s_fifo_cap;
@@ -63,31 +57,28 @@ input  [1:0] xk_s_num_data_valid;
 input  [1:0] xk_s_fifo_cap;
 input   xk_s_full_n;
 output   xk_s_write;
-output  [7:0] status_s4_din;
-input  [1:0] status_s4_num_data_valid;
-input  [1:0] status_s4_fifo_cap;
-input   status_s4_full_n;
-output   status_s4_write;
-input  [7:0] config_s5_dout;
-input  [1:0] config_s5_num_data_valid;
-input  [1:0] config_s5_fifo_cap;
-input   config_s5_empty_n;
-output   config_s5_read;
+output  [7:0] status_s16_din;
+input  [1:0] status_s16_num_data_valid;
+input  [1:0] status_s16_fifo_cap;
+input   status_s16_full_n;
+output   status_s16_write;
+input  [7:0] config_s17_dout;
+input  [1:0] config_s17_num_data_valid;
+input  [1:0] config_s17_fifo_cap;
+input   config_s17_empty_n;
+output   config_s17_read;
 
 reg ap_done;
 reg ap_idle;
-reg start_write;
+reg ap_ready;
 reg xn_s_read;
 reg xk_s_write;
-reg status_s4_write;
-reg config_s5_read;
+reg status_s16_write;
+reg config_s17_read;
 
-reg    real_start;
-reg    start_once_reg;
 reg    ap_done_reg;
 (* fsm_encoding = "none" *) reg   [1:0] ap_CS_fsm;
 wire    ap_CS_fsm_state1;
-reg    internal_ap_ready;
 reg    grp_fft_syn_fci_fft_config_s_fu_20_ap_ce;
 wire    grp_fft_syn_fci_fft_config_s_fu_20_ap_start;
 wire    grp_fft_syn_fci_fft_config_s_fu_20_ap_done;
@@ -110,7 +101,6 @@ wire    ap_ce_reg;
 
 // power-on initialization
 initial begin
-#0 start_once_reg = 1'b0;
 #0 ap_done_reg = 1'b0;
 #0 ap_CS_fsm = 2'd1;
 #0 grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg = 1'b0;
@@ -131,10 +121,10 @@ fci_core_fft_syn_fci_fft_config_s grp_fft_syn_fci_fft_config_s_fu_20(
     .xk_full_n(xk_s_full_n),
     .xk_write(grp_fft_syn_fci_fft_config_s_fu_20_xk_write),
     .status_data_V_din(grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din),
-    .status_data_V_full_n(status_s4_full_n),
+    .status_data_V_full_n(status_s16_full_n),
     .status_data_V_write(grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write),
-    .config_ch_data_V_dout(config_s5_dout),
-    .config_ch_data_V_empty_n(config_s5_empty_n),
+    .config_ch_data_V_dout(config_s17_dout),
+    .config_ch_data_V_empty_n(config_s17_empty_n),
     .config_ch_data_V_read(grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read)
 );
 
@@ -162,7 +152,7 @@ always @ (posedge ap_clk) begin
     if (ap_rst == 1'b1) begin
         grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= 1'b0;
     end else begin
-        if ((~((real_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
+        if ((~((ap_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
             grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= 1'b1;
         end else if ((grp_fft_syn_fci_fft_config_s_fu_20_ap_ready == 1'b1)) begin
             grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= 1'b0;
@@ -170,20 +160,8 @@ always @ (posedge ap_clk) begin
     end
 end
 
-always @ (posedge ap_clk) begin
-    if (ap_rst == 1'b1) begin
-        start_once_reg <= 1'b0;
-    end else begin
-        if (((real_start == 1'b1) & (internal_ap_ready == 1'b0))) begin
-            start_once_reg <= 1'b1;
-        end else if ((internal_ap_ready == 1'b1)) begin
-            start_once_reg <= 1'b0;
-        end
-    end
-end
-
 always @ (*) begin
-    if (((real_start == 1'b0) | (ap_done_reg == 1'b1))) begin
+    if (((ap_start == 1'b0) | (ap_done_reg == 1'b1))) begin
         ap_ST_fsm_state1_blk = 1'b1;
     end else begin
         ap_ST_fsm_state1_blk = 1'b0;
@@ -207,7 +185,7 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((real_start == 1'b0) & (1'b1 == ap_CS_fsm_state1))) begin
+    if (((ap_start == 1'b0) & (1'b1 == ap_CS_fsm_state1))) begin
         ap_idle = 1'b1;
     end else begin
         ap_idle = 1'b0;
@@ -215,15 +193,23 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((1'b1 == ap_CS_fsm_state2) | (1'b1 == ap_CS_fsm_state1))) begin
-        config_s5_read = grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+    if (((grp_fft_syn_fci_fft_config_s_fu_20_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state2))) begin
+        ap_ready = 1'b1;
     end else begin
-        config_s5_read = 1'b0;
+        ap_ready = 1'b0;
     end
 end
 
 always @ (*) begin
-    if (((1'b1 == ap_CS_fsm_state2) | (~((real_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1)))) begin
+    if (((1'b1 == ap_CS_fsm_state2) | (1'b1 == ap_CS_fsm_state1))) begin
+        config_s17_read = grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+    end else begin
+        config_s17_read = 1'b0;
+    end
+end
+
+always @ (*) begin
+    if (((1'b1 == ap_CS_fsm_state2) | (~((ap_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1)))) begin
         grp_fft_syn_fci_fft_config_s_fu_20_ap_ce = 1'b1;
     end else begin
         grp_fft_syn_fci_fft_config_s_fu_20_ap_ce = 1'b0;
@@ -231,34 +217,10 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((grp_fft_syn_fci_fft_config_s_fu_20_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state2))) begin
-        internal_ap_ready = 1'b1;
-    end else begin
-        internal_ap_ready = 1'b0;
-    end
-end
-
-always @ (*) begin
-    if (((start_full_n == 1'b0) & (start_once_reg == 1'b0))) begin
-        real_start = 1'b0;
-    end else begin
-        real_start = ap_start;
-    end
-end
-
-always @ (*) begin
-    if (((real_start == 1'b1) & (start_once_reg == 1'b0))) begin
-        start_write = 1'b1;
-    end else begin
-        start_write = 1'b0;
-    end
-end
-
-always @ (*) begin
     if (((1'b1 == ap_CS_fsm_state2) | (1'b1 == ap_CS_fsm_state1))) begin
-        status_s4_write = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
+        status_s16_write = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
     end else begin
-        status_s4_write = 1'b0;
+        status_s16_write = 1'b0;
     end
 end
 
@@ -281,7 +243,7 @@ end
 always @ (*) begin
     case (ap_CS_fsm)
         ap_ST_fsm_state1 : begin
-            if ((~((real_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
+            if ((~((ap_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
                 ap_NS_fsm = ap_ST_fsm_state2;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state1;
@@ -305,20 +267,16 @@ assign ap_CS_fsm_state1 = ap_CS_fsm[32'd0];
 assign ap_CS_fsm_state2 = ap_CS_fsm[32'd1];
 
 always @ (*) begin
-    ap_block_state1 = ((real_start == 1'b0) | (ap_done_reg == 1'b1));
+    ap_block_state1 = ((ap_start == 1'b0) | (ap_done_reg == 1'b1));
 end
 
 always @ (*) begin
-    ap_block_state1_ignore_call4 = ((real_start == 1'b0) | (ap_done_reg == 1'b1));
+    ap_block_state1_ignore_call4 = ((ap_start == 1'b0) | (ap_done_reg == 1'b1));
 end
-
-assign ap_ready = internal_ap_ready;
 
 assign grp_fft_syn_fci_fft_config_s_fu_20_ap_start = grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg;
 
-assign start_out = real_start;
-
-assign status_s4_din = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
+assign status_s16_din = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
 
 assign xk_s_din = grp_fft_syn_fci_fft_config_s_fu_20_xk_din;
 

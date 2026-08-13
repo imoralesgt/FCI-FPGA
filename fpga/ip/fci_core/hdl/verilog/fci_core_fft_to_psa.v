@@ -20,23 +20,31 @@ module fci_core_fft_to_psa (
         xk_s_fifo_cap,
         xk_s_empty_n,
         xk_s_read,
-        status_s4_dout,
-        status_s4_num_data_valid,
-        status_s4_fifo_cap,
-        status_s4_empty_n,
-        status_s4_read,
-        psa_l_lo_s_dout,
-        psa_l_lo_s_empty_n,
-        psa_l_lo_s_read,
-        psa_l_hi_s_dout,
-        psa_l_hi_s_empty_n,
-        psa_l_hi_s_read,
-        psa_w_lo_s_dout,
-        psa_w_lo_s_empty_n,
-        psa_w_lo_s_read,
-        psa_w_hi_s_dout,
-        psa_w_hi_s_empty_n,
-        psa_w_hi_s_read,
+        status_s16_dout,
+        status_s16_num_data_valid,
+        status_s16_fifo_cap,
+        status_s16_empty_n,
+        status_s16_read,
+        psa_l_lo_dout,
+        psa_l_lo_num_data_valid,
+        psa_l_lo_fifo_cap,
+        psa_l_lo_empty_n,
+        psa_l_lo_read,
+        psa_l_hi_dout,
+        psa_l_hi_num_data_valid,
+        psa_l_hi_fifo_cap,
+        psa_l_hi_empty_n,
+        psa_l_hi_read,
+        psa_w_lo_dout,
+        psa_w_lo_num_data_valid,
+        psa_w_lo_fifo_cap,
+        psa_w_lo_empty_n,
+        psa_w_lo_read,
+        psa_w_hi_dout,
+        psa_w_hi_num_data_valid,
+        psa_w_hi_fifo_cap,
+        psa_w_hi_empty_n,
+        psa_w_hi_read,
         m_axis_result_TDATA,
         m_axis_result_TVALID,
         m_axis_result_TREADY,
@@ -67,23 +75,31 @@ input  [1:0] xk_s_num_data_valid;
 input  [1:0] xk_s_fifo_cap;
 input   xk_s_empty_n;
 output   xk_s_read;
-input  [7:0] status_s4_dout;
-input  [1:0] status_s4_num_data_valid;
-input  [1:0] status_s4_fifo_cap;
-input   status_s4_empty_n;
-output   status_s4_read;
-input  [9:0] psa_l_lo_s_dout;
-input   psa_l_lo_s_empty_n;
-output   psa_l_lo_s_read;
-input  [9:0] psa_l_hi_s_dout;
-input   psa_l_hi_s_empty_n;
-output   psa_l_hi_s_read;
-input  [9:0] psa_w_lo_s_dout;
-input   psa_w_lo_s_empty_n;
-output   psa_w_lo_s_read;
-input  [9:0] psa_w_hi_s_dout;
-input   psa_w_hi_s_empty_n;
-output   psa_w_hi_s_read;
+input  [7:0] status_s16_dout;
+input  [1:0] status_s16_num_data_valid;
+input  [1:0] status_s16_fifo_cap;
+input   status_s16_empty_n;
+output   status_s16_read;
+input  [9:0] psa_l_lo_dout;
+input  [2:0] psa_l_lo_num_data_valid;
+input  [2:0] psa_l_lo_fifo_cap;
+input   psa_l_lo_empty_n;
+output   psa_l_lo_read;
+input  [9:0] psa_l_hi_dout;
+input  [2:0] psa_l_hi_num_data_valid;
+input  [2:0] psa_l_hi_fifo_cap;
+input   psa_l_hi_empty_n;
+output   psa_l_hi_read;
+input  [9:0] psa_w_lo_dout;
+input  [2:0] psa_w_lo_num_data_valid;
+input  [2:0] psa_w_lo_fifo_cap;
+input   psa_w_lo_empty_n;
+output   psa_w_lo_read;
+input  [9:0] psa_w_hi_dout;
+input  [2:0] psa_w_hi_num_data_valid;
+input  [2:0] psa_w_hi_fifo_cap;
+input   psa_w_hi_empty_n;
+output   psa_w_hi_read;
 output  [31:0] m_axis_result_TDATA;
 output   m_axis_result_TVALID;
 input   m_axis_result_TREADY;
@@ -98,40 +114,40 @@ reg ap_done;
 reg ap_idle;
 reg ap_ready;
 reg xk_s_read;
-reg status_s4_read;
-reg psa_l_lo_s_read;
-reg psa_l_hi_s_read;
-reg psa_w_lo_s_read;
-reg psa_w_hi_s_read;
+reg status_s16_read;
+reg psa_l_lo_read;
+reg psa_l_hi_read;
+reg psa_w_lo_read;
+reg psa_w_hi_read;
 
 reg    ap_done_reg;
 (* fsm_encoding = "none" *) reg   [5:0] ap_CS_fsm;
 wire    ap_CS_fsm_state1;
-reg    status_s4_blk_n;
+reg    status_s16_blk_n;
 wire    ap_CS_fsm_state6;
-reg    psa_l_lo_s_blk_n;
-reg    psa_l_hi_s_blk_n;
-reg    psa_w_lo_s_blk_n;
-reg    psa_w_hi_s_blk_n;
+reg    psa_l_lo_blk_n;
+reg    psa_l_hi_blk_n;
+reg    psa_w_lo_blk_n;
+reg    psa_w_hi_blk_n;
 reg    m_axis_result_TDATA_blk_n;
 wire    ap_CS_fsm_state4;
 wire    ap_CS_fsm_state5;
-reg   [9:0] psa_l_lo_V_reg_176;
-reg   [9:0] psa_l_hi_V_reg_181;
-reg   [9:0] psa_w_lo_V_reg_186;
-reg   [9:0] psa_w_hi_V_reg_191;
-wire   [31:0] zext_ln368_fu_151_p1;
-wire   [31:0] zext_ln368_1_fu_159_p1;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_done;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_idle;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_ready;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_xk_s_read;
-wire   [27:0] grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_w_V_out;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_w_V_out_ap_vld;
-wire   [27:0] grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_l_V_out;
-wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_l_V_out_ap_vld;
-reg    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg;
+reg   [9:0] psa_w_hi_read_reg_224;
+reg   [9:0] psa_w_lo_read_reg_229;
+reg   [9:0] psa_l_hi_read_reg_234;
+reg   [9:0] psa_l_lo_read_reg_239;
+wire   [31:0] zext_ln368_fu_199_p1;
+wire   [31:0] zext_ln368_1_fu_207_p1;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_idle;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read;
+wire   [27:0] grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out_ap_vld;
+wire   [27:0] grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out;
+wire    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out_ap_vld;
+reg    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg;
 wire    ap_CS_fsm_state2;
 wire    ap_CS_fsm_state3;
 reg    ap_block_state1;
@@ -173,29 +189,29 @@ wire    ap_ce_reg;
 initial begin
 #0 ap_done_reg = 1'b0;
 #0 ap_CS_fsm = 6'd1;
-#0 grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg = 1'b0;
+#0 grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg = 1'b0;
 end
 
-fci_core_fft_to_psa_Pipeline_BIN_LOOP grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136(
+fci_core_fft_to_psa_Pipeline_BIN_LOOP grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184(
     .ap_clk(ap_clk),
     .ap_rst(ap_rst),
-    .ap_start(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start),
-    .ap_done(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_done),
-    .ap_idle(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_idle),
-    .ap_ready(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_ready),
+    .ap_start(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start),
+    .ap_done(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done),
+    .ap_idle(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_idle),
+    .ap_ready(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready),
     .xk_s_dout(xk_s_dout),
     .xk_s_num_data_valid(2'd0),
     .xk_s_fifo_cap(2'd0),
     .xk_s_empty_n(xk_s_empty_n),
-    .xk_s_read(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_xk_s_read),
-    .psa_l_lo_V_cast(psa_l_lo_V_reg_176),
-    .psa_l_hi_V_cast(psa_l_hi_V_reg_181),
-    .psa_w_lo_V_cast(psa_w_lo_V_reg_186),
-    .zext_ln59(psa_w_hi_V_reg_191),
-    .psa_w_V_out(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_w_V_out),
-    .psa_w_V_out_ap_vld(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_w_V_out_ap_vld),
-    .psa_l_V_out(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_l_V_out),
-    .psa_l_V_out_ap_vld(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_l_V_out_ap_vld)
+    .xk_s_read(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read),
+    .psa_l_lo_cast(psa_l_lo_read_reg_239),
+    .psa_l_hi_cast(psa_l_hi_read_reg_234),
+    .psa_w_lo_cast(psa_w_lo_read_reg_229),
+    .zext_ln44(psa_w_hi_read_reg_224),
+    .psa_w_V_out(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out),
+    .psa_w_V_out_ap_vld(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out_ap_vld),
+    .psa_l_V_out(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out),
+    .psa_l_V_out_ap_vld(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out_ap_vld)
 );
 
 fci_core_regslice_both #(
@@ -310,7 +326,7 @@ always @ (posedge ap_clk) begin
     end else begin
         if ((ap_continue == 1'b1)) begin
             ap_done_reg <= 1'b0;
-        end else if ((~((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
+        end else if ((~((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
             ap_done_reg <= 1'b1;
         end
     end
@@ -318,27 +334,27 @@ end
 
 always @ (posedge ap_clk) begin
     if (ap_rst == 1'b1) begin
-        grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg <= 1'b0;
+        grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= 1'b0;
     end else begin
         if ((1'b1 == ap_CS_fsm_state2)) begin
-            grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg <= 1'b1;
-        end else if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_ready == 1'b1)) begin
-            grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg <= 1'b0;
+            grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= 1'b1;
+        end else if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready == 1'b1)) begin
+            grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= 1'b0;
         end
     end
 end
 
 always @ (posedge ap_clk) begin
     if ((1'b1 == ap_CS_fsm_state1)) begin
-        psa_l_hi_V_reg_181 <= psa_l_hi_s_dout;
-        psa_l_lo_V_reg_176 <= psa_l_lo_s_dout;
-        psa_w_hi_V_reg_191 <= psa_w_hi_s_dout;
-        psa_w_lo_V_reg_186 <= psa_w_lo_s_dout;
+        psa_l_hi_read_reg_234 <= psa_l_hi_dout;
+        psa_l_lo_read_reg_239 <= psa_l_lo_dout;
+        psa_w_hi_read_reg_224 <= psa_w_hi_dout;
+        psa_w_lo_read_reg_229 <= psa_w_lo_dout;
     end
 end
 
 always @ (*) begin
-    if (((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0))) begin
+    if (((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0))) begin
         ap_ST_fsm_state1_blk = 1'b1;
     end else begin
         ap_ST_fsm_state1_blk = 1'b0;
@@ -348,7 +364,7 @@ end
 assign ap_ST_fsm_state2_blk = 1'b0;
 
 always @ (*) begin
-    if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_done == 1'b0)) begin
+    if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done == 1'b0)) begin
         ap_ST_fsm_state3_blk = 1'b1;
     end else begin
         ap_ST_fsm_state3_blk = 1'b0;
@@ -372,7 +388,7 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1))) begin
+    if (((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1))) begin
         ap_ST_fsm_state6_blk = 1'b1;
     end else begin
         ap_ST_fsm_state6_blk = 1'b0;
@@ -380,7 +396,7 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if ((~((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
+    if ((~((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
         ap_done = 1'b1;
     end else begin
         ap_done = ap_done_reg;
@@ -396,7 +412,7 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if ((~((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
+    if ((~((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
         ap_ready = 1'b1;
     end else begin
         ap_ready = 1'b0;
@@ -414,9 +430,9 @@ end
 always @ (*) begin
     if ((m_axis_result_TREADY_int_regslice == 1'b1)) begin
         if ((1'b1 == ap_CS_fsm_state5)) begin
-            m_axis_result_TDATA_int_regslice = zext_ln368_1_fu_159_p1;
+            m_axis_result_TDATA_int_regslice = zext_ln368_1_fu_207_p1;
         end else if ((1'b1 == ap_CS_fsm_state4)) begin
-            m_axis_result_TDATA_int_regslice = zext_ln368_fu_151_p1;
+            m_axis_result_TDATA_int_regslice = zext_ln368_fu_199_p1;
         end else begin
             m_axis_result_TDATA_int_regslice = 'bx;
         end
@@ -449,87 +465,87 @@ end
 
 always @ (*) begin
     if ((~((ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_l_hi_s_blk_n = psa_l_hi_s_empty_n;
+        psa_l_hi_blk_n = psa_l_hi_empty_n;
     end else begin
-        psa_l_hi_s_blk_n = 1'b1;
+        psa_l_hi_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_l_hi_s_read = 1'b1;
+    if ((~((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        psa_l_hi_read = 1'b1;
     end else begin
-        psa_l_hi_s_read = 1'b0;
-    end
-end
-
-always @ (*) begin
-    if ((~((ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_l_lo_s_blk_n = psa_l_lo_s_empty_n;
-    end else begin
-        psa_l_lo_s_blk_n = 1'b1;
-    end
-end
-
-always @ (*) begin
-    if ((~((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_l_lo_s_read = 1'b1;
-    end else begin
-        psa_l_lo_s_read = 1'b0;
+        psa_l_hi_read = 1'b0;
     end
 end
 
 always @ (*) begin
     if ((~((ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_w_hi_s_blk_n = psa_w_hi_s_empty_n;
+        psa_l_lo_blk_n = psa_l_lo_empty_n;
     end else begin
-        psa_w_hi_s_blk_n = 1'b1;
+        psa_l_lo_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_w_hi_s_read = 1'b1;
+    if ((~((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        psa_l_lo_read = 1'b1;
     end else begin
-        psa_w_hi_s_read = 1'b0;
+        psa_l_lo_read = 1'b0;
     end
 end
 
 always @ (*) begin
     if ((~((ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_w_lo_s_blk_n = psa_w_lo_s_empty_n;
+        psa_w_hi_blk_n = psa_w_hi_empty_n;
     end else begin
-        psa_w_lo_s_blk_n = 1'b1;
+        psa_w_hi_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
-        psa_w_lo_s_read = 1'b1;
+    if ((~((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        psa_w_hi_read = 1'b1;
     end else begin
-        psa_w_lo_s_read = 1'b0;
+        psa_w_hi_read = 1'b0;
+    end
+end
+
+always @ (*) begin
+    if ((~((ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        psa_w_lo_blk_n = psa_w_lo_empty_n;
+    end else begin
+        psa_w_lo_blk_n = 1'b1;
+    end
+end
+
+always @ (*) begin
+    if ((~((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        psa_w_lo_read = 1'b1;
+    end else begin
+        psa_w_lo_read = 1'b0;
     end
 end
 
 always @ (*) begin
     if ((1'b1 == ap_CS_fsm_state6)) begin
-        status_s4_blk_n = status_s4_empty_n;
+        status_s16_blk_n = status_s16_empty_n;
     end else begin
-        status_s4_blk_n = 1'b1;
+        status_s16_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
-        status_s4_read = 1'b1;
+    if ((~((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
+        status_s16_read = 1'b1;
     end else begin
-        status_s4_read = 1'b0;
+        status_s16_read = 1'b0;
     end
 end
 
 always @ (*) begin
     if ((1'b1 == ap_CS_fsm_state3)) begin
-        xk_s_read = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_xk_s_read;
+        xk_s_read = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read;
     end else begin
         xk_s_read = 1'b0;
     end
@@ -538,7 +554,7 @@ end
 always @ (*) begin
     case (ap_CS_fsm)
         ap_ST_fsm_state1 : begin
-            if ((~((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+            if ((~((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
                 ap_NS_fsm = ap_ST_fsm_state2;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state1;
@@ -548,7 +564,7 @@ always @ (*) begin
             ap_NS_fsm = ap_ST_fsm_state3;
         end
         ap_ST_fsm_state3 : begin
-            if (((1'b1 == ap_CS_fsm_state3) & (grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_done == 1'b1))) begin
+            if (((1'b1 == ap_CS_fsm_state3) & (grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done == 1'b1))) begin
                 ap_NS_fsm = ap_ST_fsm_state4;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state3;
@@ -569,7 +585,7 @@ always @ (*) begin
             end
         end
         ap_ST_fsm_state6 : begin
-            if ((~((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
+            if ((~((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1)) & (1'b1 == ap_CS_fsm_state6))) begin
                 ap_NS_fsm = ap_ST_fsm_state1;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state6;
@@ -594,19 +610,19 @@ assign ap_CS_fsm_state5 = ap_CS_fsm[32'd4];
 assign ap_CS_fsm_state6 = ap_CS_fsm[32'd5];
 
 always @ (*) begin
-    ap_block_state1 = ((psa_w_hi_s_empty_n == 1'b0) | (psa_w_lo_s_empty_n == 1'b0) | (psa_l_hi_s_empty_n == 1'b0) | (psa_l_lo_s_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0));
+    ap_block_state1 = ((psa_w_hi_empty_n == 1'b0) | (psa_w_lo_empty_n == 1'b0) | (psa_l_hi_empty_n == 1'b0) | (psa_l_lo_empty_n == 1'b0) | (ap_done_reg == 1'b1) | (ap_start == 1'b0));
 end
 
 always @ (*) begin
-    ap_block_state6 = ((status_s4_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1));
+    ap_block_state6 = ((status_s16_empty_n == 1'b0) | (m_axis_result_TREADY_int_regslice == 1'b0) | (regslice_both_m_axis_result_V_data_V_U_apdone_blk == 1'b1));
 end
 
-assign grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_ap_start_reg;
+assign grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg;
 
 assign m_axis_result_TVALID = regslice_both_m_axis_result_V_data_V_U_vld_out;
 
-assign zext_ln368_1_fu_159_p1 = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_w_V_out;
+assign zext_ln368_1_fu_207_p1 = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out;
 
-assign zext_ln368_fu_151_p1 = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_136_psa_l_V_out;
+assign zext_ln368_fu_199_p1 = grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out;
 
 endmodule //fci_core_fft_to_psa

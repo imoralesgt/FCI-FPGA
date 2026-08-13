@@ -14,13 +14,10 @@ port (
     ap_clk : IN STD_LOGIC;
     ap_rst : IN STD_LOGIC;
     ap_start : IN STD_LOGIC;
-    start_full_n : IN STD_LOGIC;
     ap_done : OUT STD_LOGIC;
     ap_continue : IN STD_LOGIC;
     ap_idle : OUT STD_LOGIC;
     ap_ready : OUT STD_LOGIC;
-    start_out : OUT STD_LOGIC;
-    start_write : OUT STD_LOGIC;
     xn_s_dout : IN STD_LOGIC_VECTOR (31 downto 0);
     xn_s_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
     xn_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
@@ -31,16 +28,16 @@ port (
     xk_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
     xk_s_full_n : IN STD_LOGIC;
     xk_s_write : OUT STD_LOGIC;
-    status_s4_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-    status_s4_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s4_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s4_full_n : IN STD_LOGIC;
-    status_s4_write : OUT STD_LOGIC;
-    config_s5_dout : IN STD_LOGIC_VECTOR (7 downto 0);
-    config_s5_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s5_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s5_empty_n : IN STD_LOGIC;
-    config_s5_read : OUT STD_LOGIC );
+    status_s16_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+    status_s16_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s16_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s16_full_n : IN STD_LOGIC;
+    status_s16_write : OUT STD_LOGIC;
+    config_s17_dout : IN STD_LOGIC_VECTOR (7 downto 0);
+    config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s17_empty_n : IN STD_LOGIC;
+    config_s17_read : OUT STD_LOGIC );
 end;
 
 
@@ -54,15 +51,12 @@ architecture behav of fci_core_fft_fci_fft_config_s is
     constant ap_const_boolean_1 : BOOLEAN := true;
 
 attribute shreg_extract : string;
-    signal real_start : STD_LOGIC;
-    signal start_once_reg : STD_LOGIC := '0';
     signal ap_done_reg : STD_LOGIC := '0';
     signal ap_CS_fsm : STD_LOGIC_VECTOR (1 downto 0) := "01";
     attribute fsm_encoding : string;
     attribute fsm_encoding of ap_CS_fsm : signal is "none";
     signal ap_CS_fsm_state1 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state1 : signal is "none";
-    signal internal_ap_ready : STD_LOGIC;
     signal grp_fft_syn_fci_fft_config_s_fu_20_ap_ce : STD_LOGIC;
     signal grp_fft_syn_fci_fft_config_s_fu_20_ap_start : STD_LOGIC;
     signal grp_fft_syn_fci_fft_config_s_fu_20_ap_done : STD_LOGIC;
@@ -126,10 +120,10 @@ begin
         xk_full_n => xk_s_full_n,
         xk_write => grp_fft_syn_fci_fft_config_s_fu_20_xk_write,
         status_data_V_din => grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din,
-        status_data_V_full_n => status_s4_full_n,
+        status_data_V_full_n => status_s16_full_n,
         status_data_V_write => grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write,
-        config_ch_data_V_dout => config_s5_dout,
-        config_ch_data_V_empty_n => config_s5_empty_n,
+        config_ch_data_V_dout => config_s17_dout,
+        config_ch_data_V_empty_n => config_s17_empty_n,
         config_ch_data_V_read => grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read);
 
 
@@ -170,7 +164,7 @@ begin
             if (ap_rst = '1') then
                 grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= ap_const_logic_0;
             else
-                if ((not(((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+                if ((not(((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
                     grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= ap_const_logic_1;
                 elsif ((grp_fft_syn_fci_fft_config_s_fu_20_ap_ready = ap_const_logic_1)) then 
                     grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg <= ap_const_logic_0;
@@ -180,27 +174,11 @@ begin
     end process;
 
 
-    start_once_reg_assign_proc : process(ap_clk)
-    begin
-        if (ap_clk'event and ap_clk =  '1') then
-            if (ap_rst = '1') then
-                start_once_reg <= ap_const_logic_0;
-            else
-                if (((real_start = ap_const_logic_1) and (internal_ap_ready = ap_const_logic_0))) then 
-                    start_once_reg <= ap_const_logic_1;
-                elsif ((internal_ap_ready = ap_const_logic_1)) then 
-                    start_once_reg <= ap_const_logic_0;
-                end if; 
-            end if;
-        end if;
-    end process;
-
-
-    ap_NS_fsm_assign_proc : process (real_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_ap_done, ap_CS_fsm_state2)
+    ap_NS_fsm_assign_proc : process (ap_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_ap_done, ap_CS_fsm_state2)
     begin
         case ap_CS_fsm is
             when ap_ST_fsm_state1 => 
-                if ((not(((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
+                if ((not(((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
                     ap_NS_fsm <= ap_ST_fsm_state2;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state1;
@@ -218,9 +196,9 @@ begin
     ap_CS_fsm_state1 <= ap_CS_fsm(0);
     ap_CS_fsm_state2 <= ap_CS_fsm(1);
 
-    ap_ST_fsm_state1_blk_assign_proc : process(real_start, ap_done_reg)
+    ap_ST_fsm_state1_blk_assign_proc : process(ap_start, ap_done_reg)
     begin
-        if (((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) then 
+        if (((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) then 
             ap_ST_fsm_state1_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state1_blk <= ap_const_logic_0;
@@ -238,15 +216,15 @@ begin
     end process;
 
 
-    ap_block_state1_assign_proc : process(real_start, ap_done_reg)
+    ap_block_state1_assign_proc : process(ap_start, ap_done_reg)
     begin
-                ap_block_state1 <= ((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
+                ap_block_state1 <= ((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
     end process;
 
 
-    ap_block_state1_ignore_call4_assign_proc : process(real_start, ap_done_reg)
+    ap_block_state1_ignore_call4_assign_proc : process(ap_start, ap_done_reg)
     begin
-                ap_block_state1_ignore_call4 <= ((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
+                ap_block_state1_ignore_call4 <= ((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
     end process;
 
 
@@ -260,30 +238,39 @@ begin
     end process;
 
 
-    ap_idle_assign_proc : process(real_start, ap_CS_fsm_state1)
+    ap_idle_assign_proc : process(ap_start, ap_CS_fsm_state1)
     begin
-        if (((real_start = ap_const_logic_0) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+        if (((ap_start = ap_const_logic_0) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
             ap_idle <= ap_const_logic_1;
         else 
             ap_idle <= ap_const_logic_0;
         end if; 
     end process;
 
-    ap_ready <= internal_ap_ready;
 
-    config_s5_read_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read, ap_CS_fsm_state2)
+    ap_ready_assign_proc : process(grp_fft_syn_fci_fft_config_s_fu_20_ap_done, ap_CS_fsm_state2)
     begin
-        if (((ap_const_logic_1 = ap_CS_fsm_state2) or (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s5_read <= grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+        if (((grp_fft_syn_fci_fft_config_s_fu_20_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state2))) then 
+            ap_ready <= ap_const_logic_1;
         else 
-            config_s5_read <= ap_const_logic_0;
+            ap_ready <= ap_const_logic_0;
         end if; 
     end process;
 
 
-    grp_fft_syn_fci_fft_config_s_fu_20_ap_ce_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, ap_CS_fsm_state2)
+    config_s17_read_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read, ap_CS_fsm_state2)
     begin
-        if (((ap_const_logic_1 = ap_CS_fsm_state2) or (not(((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1)))) then 
+        if (((ap_const_logic_1 = ap_CS_fsm_state2) or (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+            config_s17_read <= grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+        else 
+            config_s17_read <= ap_const_logic_0;
+        end if; 
+    end process;
+
+
+    grp_fft_syn_fci_fft_config_s_fu_20_ap_ce_assign_proc : process(ap_start, ap_done_reg, ap_CS_fsm_state1, ap_CS_fsm_state2)
+    begin
+        if (((ap_const_logic_1 = ap_CS_fsm_state2) or (not(((ap_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1)))) then 
             grp_fft_syn_fci_fft_config_s_fu_20_ap_ce <= ap_const_logic_1;
         else 
             grp_fft_syn_fci_fft_config_s_fu_20_ap_ce <= ap_const_logic_0;
@@ -291,45 +278,14 @@ begin
     end process;
 
     grp_fft_syn_fci_fft_config_s_fu_20_ap_start <= grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg;
+    status_s16_din <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
 
-    internal_ap_ready_assign_proc : process(grp_fft_syn_fci_fft_config_s_fu_20_ap_done, ap_CS_fsm_state2)
-    begin
-        if (((grp_fft_syn_fci_fft_config_s_fu_20_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state2))) then 
-            internal_ap_ready <= ap_const_logic_1;
-        else 
-            internal_ap_ready <= ap_const_logic_0;
-        end if; 
-    end process;
-
-
-    real_start_assign_proc : process(ap_start, start_full_n, start_once_reg)
-    begin
-        if (((start_full_n = ap_const_logic_0) and (start_once_reg = ap_const_logic_0))) then 
-            real_start <= ap_const_logic_0;
-        else 
-            real_start <= ap_start;
-        end if; 
-    end process;
-
-    start_out <= real_start;
-
-    start_write_assign_proc : process(real_start, start_once_reg)
-    begin
-        if (((real_start = ap_const_logic_1) and (start_once_reg = ap_const_logic_0))) then 
-            start_write <= ap_const_logic_1;
-        else 
-            start_write <= ap_const_logic_0;
-        end if; 
-    end process;
-
-    status_s4_din <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
-
-    status_s4_write_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write, ap_CS_fsm_state2)
+    status_s16_write_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write, ap_CS_fsm_state2)
     begin
         if (((ap_const_logic_1 = ap_CS_fsm_state2) or (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            status_s4_write <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
+            status_s16_write <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
         else 
-            status_s4_write <= ap_const_logic_0;
+            status_s16_write <= ap_const_logic_0;
         end if; 
     end process;
 

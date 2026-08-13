@@ -10,7 +10,30 @@ use IEEE.std_logic_1164.all;
 use IEEE.numeric_std.all;
 
 entity fci_core is
+generic (
+    C_S_AXI_CONTROL_ADDR_WIDTH : INTEGER := 6;
+    C_S_AXI_CONTROL_DATA_WIDTH : INTEGER := 32 );
 port (
+    s_axi_control_AWVALID : IN STD_LOGIC;
+    s_axi_control_AWREADY : OUT STD_LOGIC;
+    s_axi_control_AWADDR : IN STD_LOGIC_VECTOR (C_S_AXI_CONTROL_ADDR_WIDTH-1 downto 0);
+    s_axi_control_WVALID : IN STD_LOGIC;
+    s_axi_control_WREADY : OUT STD_LOGIC;
+    s_axi_control_WDATA : IN STD_LOGIC_VECTOR (C_S_AXI_CONTROL_DATA_WIDTH-1 downto 0);
+    s_axi_control_WSTRB : IN STD_LOGIC_VECTOR (C_S_AXI_CONTROL_DATA_WIDTH/8-1 downto 0);
+    s_axi_control_ARVALID : IN STD_LOGIC;
+    s_axi_control_ARREADY : OUT STD_LOGIC;
+    s_axi_control_ARADDR : IN STD_LOGIC_VECTOR (C_S_AXI_CONTROL_ADDR_WIDTH-1 downto 0);
+    s_axi_control_RVALID : OUT STD_LOGIC;
+    s_axi_control_RREADY : IN STD_LOGIC;
+    s_axi_control_RDATA : OUT STD_LOGIC_VECTOR (C_S_AXI_CONTROL_DATA_WIDTH-1 downto 0);
+    s_axi_control_RRESP : OUT STD_LOGIC_VECTOR (1 downto 0);
+    s_axi_control_BVALID : OUT STD_LOGIC;
+    s_axi_control_BREADY : IN STD_LOGIC;
+    s_axi_control_BRESP : OUT STD_LOGIC_VECTOR (1 downto 0);
+    ap_clk : IN STD_LOGIC;
+    ap_rst_n : IN STD_LOGIC;
+    interrupt : OUT STD_LOGIC;
     s_axis_data_TDATA : IN STD_LOGIC_VECTOR (15 downto 0);
     s_axis_data_TKEEP : IN STD_LOGIC_VECTOR (1 downto 0);
     s_axis_data_TSTRB : IN STD_LOGIC_VECTOR (1 downto 0);
@@ -25,20 +48,6 @@ port (
     m_axis_result_TLAST : OUT STD_LOGIC_VECTOR (0 downto 0);
     m_axis_result_TID : OUT STD_LOGIC_VECTOR (0 downto 0);
     m_axis_result_TDEST : OUT STD_LOGIC_VECTOR (0 downto 0);
-    psa_l_lo_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-    psa_l_lo_s_empty_n : IN STD_LOGIC;
-    psa_l_lo_s_read : OUT STD_LOGIC;
-    psa_l_hi_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-    psa_l_hi_s_empty_n : IN STD_LOGIC;
-    psa_l_hi_s_read : OUT STD_LOGIC;
-    psa_w_lo_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-    psa_w_lo_s_empty_n : IN STD_LOGIC;
-    psa_w_lo_s_read : OUT STD_LOGIC;
-    psa_w_hi_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-    psa_w_hi_s_empty_n : IN STD_LOGIC;
-    psa_w_hi_s_read : OUT STD_LOGIC;
-    ap_clk : IN STD_LOGIC;
-    ap_rst_n : IN STD_LOGIC;
     s_axis_data_TVALID : IN STD_LOGIC;
     s_axis_data_TREADY : OUT STD_LOGIC;
     m_axis_result_TVALID : OUT STD_LOGIC;
@@ -49,11 +58,36 @@ end;
 architecture behav of fci_core is 
     attribute CORE_GENERATION_INFO : STRING;
     attribute CORE_GENERATION_INFO of behav : architecture is
-    "fci_core_fci_core,hls_ip_2022_2,{HLS_INPUT_TYPE=cxx,HLS_INPUT_FLOAT=0,HLS_INPUT_FIXED=0,HLS_INPUT_PART=xc7a35t-cpg236-1,HLS_INPUT_CLOCK=20.000000,HLS_INPUT_ARCH=dataflow,HLS_SYN_CLOCK=14.600000,HLS_SYN_LAT=3200,HLS_SYN_TPT=3197,HLS_SYN_MEM=4,HLS_SYN_DSP=0,HLS_SYN_FF=10440,HLS_SYN_LUT=8862,HLS_VERSION=2022_2}";
+    "fci_core_fci_core,hls_ip_2022_2,{HLS_INPUT_TYPE=cxx,HLS_INPUT_FLOAT=0,HLS_INPUT_FIXED=0,HLS_INPUT_PART=xc7a35t-cpg236-1,HLS_INPUT_CLOCK=20.000000,HLS_INPUT_ARCH=dataflow,HLS_SYN_CLOCK=14.600000,HLS_SYN_LAT=3200,HLS_SYN_TPT=3197,HLS_SYN_MEM=4,HLS_SYN_DSP=0,HLS_SYN_FF=10940,HLS_SYN_LUT=9331,HLS_VERSION=2022_2}";
+    constant C_S_AXI_DATA_WIDTH : INTEGER range 63 downto 0 := 20;
     constant ap_const_logic_1 : STD_LOGIC := '1';
     constant ap_const_logic_0 : STD_LOGIC := '0';
+    constant ap_const_boolean_1 : BOOLEAN := true;
 
     signal ap_rst_n_inv : STD_LOGIC;
+    signal psa_l_lo : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_l_hi : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_w_lo : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_w_hi : STD_LOGIC_VECTOR (9 downto 0);
+    signal ap_start : STD_LOGIC;
+    signal ap_ready : STD_LOGIC;
+    signal ap_done : STD_LOGIC;
+    signal ap_idle : STD_LOGIC;
+    signal entry_proc_U0_ap_start : STD_LOGIC;
+    signal entry_proc_U0_ap_done : STD_LOGIC;
+    signal entry_proc_U0_ap_continue : STD_LOGIC;
+    signal entry_proc_U0_ap_idle : STD_LOGIC;
+    signal entry_proc_U0_ap_ready : STD_LOGIC;
+    signal entry_proc_U0_start_out : STD_LOGIC;
+    signal entry_proc_U0_start_write : STD_LOGIC;
+    signal entry_proc_U0_psa_l_lo_c_din : STD_LOGIC_VECTOR (9 downto 0);
+    signal entry_proc_U0_psa_l_lo_c_write : STD_LOGIC;
+    signal entry_proc_U0_psa_l_hi_c_din : STD_LOGIC_VECTOR (9 downto 0);
+    signal entry_proc_U0_psa_l_hi_c_write : STD_LOGIC;
+    signal entry_proc_U0_psa_w_lo_c_din : STD_LOGIC_VECTOR (9 downto 0);
+    signal entry_proc_U0_psa_w_lo_c_write : STD_LOGIC;
+    signal entry_proc_U0_psa_w_hi_c_din : STD_LOGIC_VECTOR (9 downto 0);
+    signal entry_proc_U0_psa_w_hi_c_write : STD_LOGIC;
     signal axis_to_fft_U0_ap_start : STD_LOGIC;
     signal axis_to_fft_U0_ap_done : STD_LOGIC;
     signal axis_to_fft_U0_ap_continue : STD_LOGIC;
@@ -64,32 +98,30 @@ architecture behav of fci_core is
     signal axis_to_fft_U0_s_axis_data_TREADY : STD_LOGIC;
     signal axis_to_fft_U0_xn_s_din : STD_LOGIC_VECTOR (31 downto 0);
     signal axis_to_fft_U0_xn_s_write : STD_LOGIC;
-    signal axis_to_fft_U0_config_s5_din : STD_LOGIC_VECTOR (7 downto 0);
-    signal axis_to_fft_U0_config_s5_write : STD_LOGIC;
+    signal axis_to_fft_U0_config_s17_din : STD_LOGIC_VECTOR (7 downto 0);
+    signal axis_to_fft_U0_config_s17_write : STD_LOGIC;
     signal fft_fci_fft_config_U0_ap_start : STD_LOGIC;
     signal fft_fci_fft_config_U0_ap_done : STD_LOGIC;
     signal fft_fci_fft_config_U0_ap_continue : STD_LOGIC;
     signal fft_fci_fft_config_U0_ap_idle : STD_LOGIC;
     signal fft_fci_fft_config_U0_ap_ready : STD_LOGIC;
-    signal fft_fci_fft_config_U0_start_out : STD_LOGIC;
-    signal fft_fci_fft_config_U0_start_write : STD_LOGIC;
     signal fft_fci_fft_config_U0_xn_s_read : STD_LOGIC;
     signal fft_fci_fft_config_U0_xk_s_din : STD_LOGIC_VECTOR (31 downto 0);
     signal fft_fci_fft_config_U0_xk_s_write : STD_LOGIC;
-    signal fft_fci_fft_config_U0_status_s4_din : STD_LOGIC_VECTOR (7 downto 0);
-    signal fft_fci_fft_config_U0_status_s4_write : STD_LOGIC;
-    signal fft_fci_fft_config_U0_config_s5_read : STD_LOGIC;
+    signal fft_fci_fft_config_U0_status_s16_din : STD_LOGIC_VECTOR (7 downto 0);
+    signal fft_fci_fft_config_U0_status_s16_write : STD_LOGIC;
+    signal fft_fci_fft_config_U0_config_s17_read : STD_LOGIC;
     signal fft_to_psa_U0_ap_start : STD_LOGIC;
     signal fft_to_psa_U0_ap_done : STD_LOGIC;
     signal fft_to_psa_U0_ap_continue : STD_LOGIC;
     signal fft_to_psa_U0_ap_idle : STD_LOGIC;
     signal fft_to_psa_U0_ap_ready : STD_LOGIC;
     signal fft_to_psa_U0_xk_s_read : STD_LOGIC;
-    signal fft_to_psa_U0_status_s4_read : STD_LOGIC;
-    signal fft_to_psa_U0_psa_l_lo_s_read : STD_LOGIC;
-    signal fft_to_psa_U0_psa_l_hi_s_read : STD_LOGIC;
-    signal fft_to_psa_U0_psa_w_lo_s_read : STD_LOGIC;
-    signal fft_to_psa_U0_psa_w_hi_s_read : STD_LOGIC;
+    signal fft_to_psa_U0_status_s16_read : STD_LOGIC;
+    signal fft_to_psa_U0_psa_l_lo_read : STD_LOGIC;
+    signal fft_to_psa_U0_psa_l_hi_read : STD_LOGIC;
+    signal fft_to_psa_U0_psa_w_lo_read : STD_LOGIC;
+    signal fft_to_psa_U0_psa_w_hi_read : STD_LOGIC;
     signal fft_to_psa_U0_m_axis_result_TDATA : STD_LOGIC_VECTOR (31 downto 0);
     signal fft_to_psa_U0_m_axis_result_TVALID : STD_LOGIC;
     signal fft_to_psa_U0_m_axis_result_TKEEP : STD_LOGIC_VECTOR (3 downto 0);
@@ -98,6 +130,26 @@ architecture behav of fci_core is
     signal fft_to_psa_U0_m_axis_result_TLAST : STD_LOGIC_VECTOR (0 downto 0);
     signal fft_to_psa_U0_m_axis_result_TID : STD_LOGIC_VECTOR (0 downto 0);
     signal fft_to_psa_U0_m_axis_result_TDEST : STD_LOGIC_VECTOR (0 downto 0);
+    signal psa_l_lo_c_full_n : STD_LOGIC;
+    signal psa_l_lo_c_dout : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_l_lo_c_num_data_valid : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_l_lo_c_fifo_cap : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_l_lo_c_empty_n : STD_LOGIC;
+    signal psa_l_hi_c_full_n : STD_LOGIC;
+    signal psa_l_hi_c_dout : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_l_hi_c_num_data_valid : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_l_hi_c_fifo_cap : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_l_hi_c_empty_n : STD_LOGIC;
+    signal psa_w_lo_c_full_n : STD_LOGIC;
+    signal psa_w_lo_c_dout : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_w_lo_c_num_data_valid : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_w_lo_c_fifo_cap : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_w_lo_c_empty_n : STD_LOGIC;
+    signal psa_w_hi_c_full_n : STD_LOGIC;
+    signal psa_w_hi_c_dout : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_w_hi_c_num_data_valid : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_w_hi_c_fifo_cap : STD_LOGIC_VECTOR (2 downto 0);
+    signal psa_w_hi_c_empty_n : STD_LOGIC;
     signal xn_s_full_n : STD_LOGIC;
     signal xn_s_dout : STD_LOGIC_VECTOR (31 downto 0);
     signal xn_s_num_data_valid : STD_LOGIC_VECTOR (1 downto 0);
@@ -118,14 +170,59 @@ architecture behav of fci_core is
     signal status_s_num_data_valid : STD_LOGIC_VECTOR (1 downto 0);
     signal status_s_fifo_cap : STD_LOGIC_VECTOR (1 downto 0);
     signal status_s_empty_n : STD_LOGIC;
-    signal start_for_fft_fci_fft_config_U0_din : STD_LOGIC_VECTOR (0 downto 0);
-    signal start_for_fft_fci_fft_config_U0_full_n : STD_LOGIC;
-    signal start_for_fft_fci_fft_config_U0_dout : STD_LOGIC_VECTOR (0 downto 0);
-    signal start_for_fft_fci_fft_config_U0_empty_n : STD_LOGIC;
+    signal ap_sync_ready : STD_LOGIC;
+    signal ap_sync_reg_entry_proc_U0_ap_ready : STD_LOGIC := '0';
+    signal ap_sync_entry_proc_U0_ap_ready : STD_LOGIC;
+    signal ap_sync_reg_axis_to_fft_U0_ap_ready : STD_LOGIC := '0';
+    signal ap_sync_axis_to_fft_U0_ap_ready : STD_LOGIC;
     signal start_for_fft_to_psa_U0_din : STD_LOGIC_VECTOR (0 downto 0);
     signal start_for_fft_to_psa_U0_full_n : STD_LOGIC;
     signal start_for_fft_to_psa_U0_dout : STD_LOGIC_VECTOR (0 downto 0);
     signal start_for_fft_to_psa_U0_empty_n : STD_LOGIC;
+    signal start_for_fft_fci_fft_config_U0_din : STD_LOGIC_VECTOR (0 downto 0);
+    signal start_for_fft_fci_fft_config_U0_full_n : STD_LOGIC;
+    signal start_for_fft_fci_fft_config_U0_dout : STD_LOGIC_VECTOR (0 downto 0);
+    signal start_for_fft_fci_fft_config_U0_empty_n : STD_LOGIC;
+    signal ap_ce_reg : STD_LOGIC;
+
+    component fci_core_entry_proc IS
+    port (
+        ap_clk : IN STD_LOGIC;
+        ap_rst : IN STD_LOGIC;
+        ap_start : IN STD_LOGIC;
+        start_full_n : IN STD_LOGIC;
+        ap_done : OUT STD_LOGIC;
+        ap_continue : IN STD_LOGIC;
+        ap_idle : OUT STD_LOGIC;
+        ap_ready : OUT STD_LOGIC;
+        start_out : OUT STD_LOGIC;
+        start_write : OUT STD_LOGIC;
+        psa_l_lo : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_lo_c_din : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_lo_c_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_lo_c_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_lo_c_full_n : IN STD_LOGIC;
+        psa_l_lo_c_write : OUT STD_LOGIC;
+        psa_l_hi : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_hi_c_din : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_hi_c_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_hi_c_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_hi_c_full_n : IN STD_LOGIC;
+        psa_l_hi_c_write : OUT STD_LOGIC;
+        psa_w_lo : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_lo_c_din : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_lo_c_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_lo_c_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_lo_c_full_n : IN STD_LOGIC;
+        psa_w_lo_c_write : OUT STD_LOGIC;
+        psa_w_hi : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_hi_c_din : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_hi_c_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_hi_c_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_hi_c_full_n : IN STD_LOGIC;
+        psa_w_hi_c_write : OUT STD_LOGIC );
+    end component;
+
 
     component fci_core_axis_to_fft IS
     port (
@@ -153,11 +250,11 @@ architecture behav of fci_core is
         xn_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
         xn_s_full_n : IN STD_LOGIC;
         xn_s_write : OUT STD_LOGIC;
-        config_s5_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-        config_s5_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-        config_s5_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-        config_s5_full_n : IN STD_LOGIC;
-        config_s5_write : OUT STD_LOGIC );
+        config_s17_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+        config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+        config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+        config_s17_full_n : IN STD_LOGIC;
+        config_s17_write : OUT STD_LOGIC );
     end component;
 
 
@@ -166,13 +263,10 @@ architecture behav of fci_core is
         ap_clk : IN STD_LOGIC;
         ap_rst : IN STD_LOGIC;
         ap_start : IN STD_LOGIC;
-        start_full_n : IN STD_LOGIC;
         ap_done : OUT STD_LOGIC;
         ap_continue : IN STD_LOGIC;
         ap_idle : OUT STD_LOGIC;
         ap_ready : OUT STD_LOGIC;
-        start_out : OUT STD_LOGIC;
-        start_write : OUT STD_LOGIC;
         xn_s_dout : IN STD_LOGIC_VECTOR (31 downto 0);
         xn_s_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
         xn_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
@@ -183,16 +277,16 @@ architecture behav of fci_core is
         xk_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
         xk_s_full_n : IN STD_LOGIC;
         xk_s_write : OUT STD_LOGIC;
-        status_s4_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-        status_s4_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-        status_s4_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-        status_s4_full_n : IN STD_LOGIC;
-        status_s4_write : OUT STD_LOGIC;
-        config_s5_dout : IN STD_LOGIC_VECTOR (7 downto 0);
-        config_s5_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-        config_s5_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-        config_s5_empty_n : IN STD_LOGIC;
-        config_s5_read : OUT STD_LOGIC );
+        status_s16_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+        status_s16_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+        status_s16_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+        status_s16_full_n : IN STD_LOGIC;
+        status_s16_write : OUT STD_LOGIC;
+        config_s17_dout : IN STD_LOGIC_VECTOR (7 downto 0);
+        config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+        config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+        config_s17_empty_n : IN STD_LOGIC;
+        config_s17_read : OUT STD_LOGIC );
     end component;
 
 
@@ -210,23 +304,31 @@ architecture behav of fci_core is
         xk_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
         xk_s_empty_n : IN STD_LOGIC;
         xk_s_read : OUT STD_LOGIC;
-        status_s4_dout : IN STD_LOGIC_VECTOR (7 downto 0);
-        status_s4_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-        status_s4_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-        status_s4_empty_n : IN STD_LOGIC;
-        status_s4_read : OUT STD_LOGIC;
-        psa_l_lo_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-        psa_l_lo_s_empty_n : IN STD_LOGIC;
-        psa_l_lo_s_read : OUT STD_LOGIC;
-        psa_l_hi_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-        psa_l_hi_s_empty_n : IN STD_LOGIC;
-        psa_l_hi_s_read : OUT STD_LOGIC;
-        psa_w_lo_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-        psa_w_lo_s_empty_n : IN STD_LOGIC;
-        psa_w_lo_s_read : OUT STD_LOGIC;
-        psa_w_hi_s_dout : IN STD_LOGIC_VECTOR (9 downto 0);
-        psa_w_hi_s_empty_n : IN STD_LOGIC;
-        psa_w_hi_s_read : OUT STD_LOGIC;
+        status_s16_dout : IN STD_LOGIC_VECTOR (7 downto 0);
+        status_s16_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+        status_s16_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+        status_s16_empty_n : IN STD_LOGIC;
+        status_s16_read : OUT STD_LOGIC;
+        psa_l_lo_dout : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_lo_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_lo_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_lo_empty_n : IN STD_LOGIC;
+        psa_l_lo_read : OUT STD_LOGIC;
+        psa_l_hi_dout : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_hi_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_hi_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_l_hi_empty_n : IN STD_LOGIC;
+        psa_l_hi_read : OUT STD_LOGIC;
+        psa_w_lo_dout : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_lo_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_lo_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_lo_empty_n : IN STD_LOGIC;
+        psa_w_lo_read : OUT STD_LOGIC;
+        psa_w_hi_dout : IN STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_hi_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_hi_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
+        psa_w_hi_empty_n : IN STD_LOGIC;
+        psa_w_hi_read : OUT STD_LOGIC;
         m_axis_result_TDATA : OUT STD_LOGIC_VECTOR (31 downto 0);
         m_axis_result_TVALID : OUT STD_LOGIC;
         m_axis_result_TREADY : IN STD_LOGIC;
@@ -236,6 +338,23 @@ architecture behav of fci_core is
         m_axis_result_TLAST : OUT STD_LOGIC_VECTOR (0 downto 0);
         m_axis_result_TID : OUT STD_LOGIC_VECTOR (0 downto 0);
         m_axis_result_TDEST : OUT STD_LOGIC_VECTOR (0 downto 0) );
+    end component;
+
+
+    component fci_core_fifo_w10_d4_S IS
+    port (
+        clk : IN STD_LOGIC;
+        reset : IN STD_LOGIC;
+        if_read_ce : IN STD_LOGIC;
+        if_write_ce : IN STD_LOGIC;
+        if_din : IN STD_LOGIC_VECTOR (9 downto 0);
+        if_full_n : OUT STD_LOGIC;
+        if_write : IN STD_LOGIC;
+        if_dout : OUT STD_LOGIC_VECTOR (9 downto 0);
+        if_num_data_valid : OUT STD_LOGIC_VECTOR (2 downto 0);
+        if_fifo_cap : OUT STD_LOGIC_VECTOR (2 downto 0);
+        if_empty_n : OUT STD_LOGIC;
+        if_read : IN STD_LOGIC );
     end component;
 
 
@@ -273,21 +392,6 @@ architecture behav of fci_core is
     end component;
 
 
-    component fci_core_start_for_fft_fci_fft_config_U0 IS
-    port (
-        clk : IN STD_LOGIC;
-        reset : IN STD_LOGIC;
-        if_read_ce : IN STD_LOGIC;
-        if_write_ce : IN STD_LOGIC;
-        if_din : IN STD_LOGIC_VECTOR (0 downto 0);
-        if_full_n : OUT STD_LOGIC;
-        if_write : IN STD_LOGIC;
-        if_dout : OUT STD_LOGIC_VECTOR (0 downto 0);
-        if_empty_n : OUT STD_LOGIC;
-        if_read : IN STD_LOGIC );
-    end component;
-
-
     component fci_core_start_for_fft_to_psa_U0 IS
     port (
         clk : IN STD_LOGIC;
@@ -303,8 +407,132 @@ architecture behav of fci_core is
     end component;
 
 
+    component fci_core_start_for_fft_fci_fft_config_U0 IS
+    port (
+        clk : IN STD_LOGIC;
+        reset : IN STD_LOGIC;
+        if_read_ce : IN STD_LOGIC;
+        if_write_ce : IN STD_LOGIC;
+        if_din : IN STD_LOGIC_VECTOR (0 downto 0);
+        if_full_n : OUT STD_LOGIC;
+        if_write : IN STD_LOGIC;
+        if_dout : OUT STD_LOGIC_VECTOR (0 downto 0);
+        if_empty_n : OUT STD_LOGIC;
+        if_read : IN STD_LOGIC );
+    end component;
+
+
+    component fci_core_control_s_axi IS
+    generic (
+        C_S_AXI_ADDR_WIDTH : INTEGER;
+        C_S_AXI_DATA_WIDTH : INTEGER );
+    port (
+        AWVALID : IN STD_LOGIC;
+        AWREADY : OUT STD_LOGIC;
+        AWADDR : IN STD_LOGIC_VECTOR (C_S_AXI_ADDR_WIDTH-1 downto 0);
+        WVALID : IN STD_LOGIC;
+        WREADY : OUT STD_LOGIC;
+        WDATA : IN STD_LOGIC_VECTOR (C_S_AXI_DATA_WIDTH-1 downto 0);
+        WSTRB : IN STD_LOGIC_VECTOR (C_S_AXI_DATA_WIDTH/8-1 downto 0);
+        ARVALID : IN STD_LOGIC;
+        ARREADY : OUT STD_LOGIC;
+        ARADDR : IN STD_LOGIC_VECTOR (C_S_AXI_ADDR_WIDTH-1 downto 0);
+        RVALID : OUT STD_LOGIC;
+        RREADY : IN STD_LOGIC;
+        RDATA : OUT STD_LOGIC_VECTOR (C_S_AXI_DATA_WIDTH-1 downto 0);
+        RRESP : OUT STD_LOGIC_VECTOR (1 downto 0);
+        BVALID : OUT STD_LOGIC;
+        BREADY : IN STD_LOGIC;
+        BRESP : OUT STD_LOGIC_VECTOR (1 downto 0);
+        ACLK : IN STD_LOGIC;
+        ARESET : IN STD_LOGIC;
+        ACLK_EN : IN STD_LOGIC;
+        psa_l_lo : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_l_hi : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_lo : OUT STD_LOGIC_VECTOR (9 downto 0);
+        psa_w_hi : OUT STD_LOGIC_VECTOR (9 downto 0);
+        ap_start : OUT STD_LOGIC;
+        interrupt : OUT STD_LOGIC;
+        ap_ready : IN STD_LOGIC;
+        ap_done : IN STD_LOGIC;
+        ap_idle : IN STD_LOGIC );
+    end component;
+
+
 
 begin
+    control_s_axi_U : component fci_core_control_s_axi
+    generic map (
+        C_S_AXI_ADDR_WIDTH => C_S_AXI_CONTROL_ADDR_WIDTH,
+        C_S_AXI_DATA_WIDTH => C_S_AXI_CONTROL_DATA_WIDTH)
+    port map (
+        AWVALID => s_axi_control_AWVALID,
+        AWREADY => s_axi_control_AWREADY,
+        AWADDR => s_axi_control_AWADDR,
+        WVALID => s_axi_control_WVALID,
+        WREADY => s_axi_control_WREADY,
+        WDATA => s_axi_control_WDATA,
+        WSTRB => s_axi_control_WSTRB,
+        ARVALID => s_axi_control_ARVALID,
+        ARREADY => s_axi_control_ARREADY,
+        ARADDR => s_axi_control_ARADDR,
+        RVALID => s_axi_control_RVALID,
+        RREADY => s_axi_control_RREADY,
+        RDATA => s_axi_control_RDATA,
+        RRESP => s_axi_control_RRESP,
+        BVALID => s_axi_control_BVALID,
+        BREADY => s_axi_control_BREADY,
+        BRESP => s_axi_control_BRESP,
+        ACLK => ap_clk,
+        ARESET => ap_rst_n_inv,
+        ACLK_EN => ap_const_logic_1,
+        psa_l_lo => psa_l_lo,
+        psa_l_hi => psa_l_hi,
+        psa_w_lo => psa_w_lo,
+        psa_w_hi => psa_w_hi,
+        ap_start => ap_start,
+        interrupt => interrupt,
+        ap_ready => ap_ready,
+        ap_done => ap_done,
+        ap_idle => ap_idle);
+
+    entry_proc_U0 : component fci_core_entry_proc
+    port map (
+        ap_clk => ap_clk,
+        ap_rst => ap_rst_n_inv,
+        ap_start => entry_proc_U0_ap_start,
+        start_full_n => start_for_fft_to_psa_U0_full_n,
+        ap_done => entry_proc_U0_ap_done,
+        ap_continue => entry_proc_U0_ap_continue,
+        ap_idle => entry_proc_U0_ap_idle,
+        ap_ready => entry_proc_U0_ap_ready,
+        start_out => entry_proc_U0_start_out,
+        start_write => entry_proc_U0_start_write,
+        psa_l_lo => psa_l_lo,
+        psa_l_lo_c_din => entry_proc_U0_psa_l_lo_c_din,
+        psa_l_lo_c_num_data_valid => psa_l_lo_c_num_data_valid,
+        psa_l_lo_c_fifo_cap => psa_l_lo_c_fifo_cap,
+        psa_l_lo_c_full_n => psa_l_lo_c_full_n,
+        psa_l_lo_c_write => entry_proc_U0_psa_l_lo_c_write,
+        psa_l_hi => psa_l_hi,
+        psa_l_hi_c_din => entry_proc_U0_psa_l_hi_c_din,
+        psa_l_hi_c_num_data_valid => psa_l_hi_c_num_data_valid,
+        psa_l_hi_c_fifo_cap => psa_l_hi_c_fifo_cap,
+        psa_l_hi_c_full_n => psa_l_hi_c_full_n,
+        psa_l_hi_c_write => entry_proc_U0_psa_l_hi_c_write,
+        psa_w_lo => psa_w_lo,
+        psa_w_lo_c_din => entry_proc_U0_psa_w_lo_c_din,
+        psa_w_lo_c_num_data_valid => psa_w_lo_c_num_data_valid,
+        psa_w_lo_c_fifo_cap => psa_w_lo_c_fifo_cap,
+        psa_w_lo_c_full_n => psa_w_lo_c_full_n,
+        psa_w_lo_c_write => entry_proc_U0_psa_w_lo_c_write,
+        psa_w_hi => psa_w_hi,
+        psa_w_hi_c_din => entry_proc_U0_psa_w_hi_c_din,
+        psa_w_hi_c_num_data_valid => psa_w_hi_c_num_data_valid,
+        psa_w_hi_c_fifo_cap => psa_w_hi_c_fifo_cap,
+        psa_w_hi_c_full_n => psa_w_hi_c_full_n,
+        psa_w_hi_c_write => entry_proc_U0_psa_w_hi_c_write);
+
     axis_to_fft_U0 : component fci_core_axis_to_fft
     port map (
         ap_clk => ap_clk,
@@ -331,24 +559,21 @@ begin
         xn_s_fifo_cap => xn_s_fifo_cap,
         xn_s_full_n => xn_s_full_n,
         xn_s_write => axis_to_fft_U0_xn_s_write,
-        config_s5_din => axis_to_fft_U0_config_s5_din,
-        config_s5_num_data_valid => config_s_num_data_valid,
-        config_s5_fifo_cap => config_s_fifo_cap,
-        config_s5_full_n => config_s_full_n,
-        config_s5_write => axis_to_fft_U0_config_s5_write);
+        config_s17_din => axis_to_fft_U0_config_s17_din,
+        config_s17_num_data_valid => config_s_num_data_valid,
+        config_s17_fifo_cap => config_s_fifo_cap,
+        config_s17_full_n => config_s_full_n,
+        config_s17_write => axis_to_fft_U0_config_s17_write);
 
     fft_fci_fft_config_U0 : component fci_core_fft_fci_fft_config_s
     port map (
         ap_clk => ap_clk,
         ap_rst => ap_rst_n_inv,
         ap_start => fft_fci_fft_config_U0_ap_start,
-        start_full_n => start_for_fft_to_psa_U0_full_n,
         ap_done => fft_fci_fft_config_U0_ap_done,
         ap_continue => fft_fci_fft_config_U0_ap_continue,
         ap_idle => fft_fci_fft_config_U0_ap_idle,
         ap_ready => fft_fci_fft_config_U0_ap_ready,
-        start_out => fft_fci_fft_config_U0_start_out,
-        start_write => fft_fci_fft_config_U0_start_write,
         xn_s_dout => xn_s_dout,
         xn_s_num_data_valid => xn_s_num_data_valid,
         xn_s_fifo_cap => xn_s_fifo_cap,
@@ -359,16 +584,16 @@ begin
         xk_s_fifo_cap => xk_s_fifo_cap,
         xk_s_full_n => xk_s_full_n,
         xk_s_write => fft_fci_fft_config_U0_xk_s_write,
-        status_s4_din => fft_fci_fft_config_U0_status_s4_din,
-        status_s4_num_data_valid => status_s_num_data_valid,
-        status_s4_fifo_cap => status_s_fifo_cap,
-        status_s4_full_n => status_s_full_n,
-        status_s4_write => fft_fci_fft_config_U0_status_s4_write,
-        config_s5_dout => config_s_dout,
-        config_s5_num_data_valid => config_s_num_data_valid,
-        config_s5_fifo_cap => config_s_fifo_cap,
-        config_s5_empty_n => config_s_empty_n,
-        config_s5_read => fft_fci_fft_config_U0_config_s5_read);
+        status_s16_din => fft_fci_fft_config_U0_status_s16_din,
+        status_s16_num_data_valid => status_s_num_data_valid,
+        status_s16_fifo_cap => status_s_fifo_cap,
+        status_s16_full_n => status_s_full_n,
+        status_s16_write => fft_fci_fft_config_U0_status_s16_write,
+        config_s17_dout => config_s_dout,
+        config_s17_num_data_valid => config_s_num_data_valid,
+        config_s17_fifo_cap => config_s_fifo_cap,
+        config_s17_empty_n => config_s_empty_n,
+        config_s17_read => fft_fci_fft_config_U0_config_s17_read);
 
     fft_to_psa_U0 : component fci_core_fft_to_psa
     port map (
@@ -384,23 +609,31 @@ begin
         xk_s_fifo_cap => xk_s_fifo_cap,
         xk_s_empty_n => xk_s_empty_n,
         xk_s_read => fft_to_psa_U0_xk_s_read,
-        status_s4_dout => status_s_dout,
-        status_s4_num_data_valid => status_s_num_data_valid,
-        status_s4_fifo_cap => status_s_fifo_cap,
-        status_s4_empty_n => status_s_empty_n,
-        status_s4_read => fft_to_psa_U0_status_s4_read,
-        psa_l_lo_s_dout => psa_l_lo_s_dout,
-        psa_l_lo_s_empty_n => psa_l_lo_s_empty_n,
-        psa_l_lo_s_read => fft_to_psa_U0_psa_l_lo_s_read,
-        psa_l_hi_s_dout => psa_l_hi_s_dout,
-        psa_l_hi_s_empty_n => psa_l_hi_s_empty_n,
-        psa_l_hi_s_read => fft_to_psa_U0_psa_l_hi_s_read,
-        psa_w_lo_s_dout => psa_w_lo_s_dout,
-        psa_w_lo_s_empty_n => psa_w_lo_s_empty_n,
-        psa_w_lo_s_read => fft_to_psa_U0_psa_w_lo_s_read,
-        psa_w_hi_s_dout => psa_w_hi_s_dout,
-        psa_w_hi_s_empty_n => psa_w_hi_s_empty_n,
-        psa_w_hi_s_read => fft_to_psa_U0_psa_w_hi_s_read,
+        status_s16_dout => status_s_dout,
+        status_s16_num_data_valid => status_s_num_data_valid,
+        status_s16_fifo_cap => status_s_fifo_cap,
+        status_s16_empty_n => status_s_empty_n,
+        status_s16_read => fft_to_psa_U0_status_s16_read,
+        psa_l_lo_dout => psa_l_lo_c_dout,
+        psa_l_lo_num_data_valid => psa_l_lo_c_num_data_valid,
+        psa_l_lo_fifo_cap => psa_l_lo_c_fifo_cap,
+        psa_l_lo_empty_n => psa_l_lo_c_empty_n,
+        psa_l_lo_read => fft_to_psa_U0_psa_l_lo_read,
+        psa_l_hi_dout => psa_l_hi_c_dout,
+        psa_l_hi_num_data_valid => psa_l_hi_c_num_data_valid,
+        psa_l_hi_fifo_cap => psa_l_hi_c_fifo_cap,
+        psa_l_hi_empty_n => psa_l_hi_c_empty_n,
+        psa_l_hi_read => fft_to_psa_U0_psa_l_hi_read,
+        psa_w_lo_dout => psa_w_lo_c_dout,
+        psa_w_lo_num_data_valid => psa_w_lo_c_num_data_valid,
+        psa_w_lo_fifo_cap => psa_w_lo_c_fifo_cap,
+        psa_w_lo_empty_n => psa_w_lo_c_empty_n,
+        psa_w_lo_read => fft_to_psa_U0_psa_w_lo_read,
+        psa_w_hi_dout => psa_w_hi_c_dout,
+        psa_w_hi_num_data_valid => psa_w_hi_c_num_data_valid,
+        psa_w_hi_fifo_cap => psa_w_hi_c_fifo_cap,
+        psa_w_hi_empty_n => psa_w_hi_c_empty_n,
+        psa_w_hi_read => fft_to_psa_U0_psa_w_hi_read,
         m_axis_result_TDATA => fft_to_psa_U0_m_axis_result_TDATA,
         m_axis_result_TVALID => fft_to_psa_U0_m_axis_result_TVALID,
         m_axis_result_TREADY => m_axis_result_TREADY,
@@ -410,6 +643,66 @@ begin
         m_axis_result_TLAST => fft_to_psa_U0_m_axis_result_TLAST,
         m_axis_result_TID => fft_to_psa_U0_m_axis_result_TID,
         m_axis_result_TDEST => fft_to_psa_U0_m_axis_result_TDEST);
+
+    psa_l_lo_c_U : component fci_core_fifo_w10_d4_S
+    port map (
+        clk => ap_clk,
+        reset => ap_rst_n_inv,
+        if_read_ce => ap_const_logic_1,
+        if_write_ce => ap_const_logic_1,
+        if_din => entry_proc_U0_psa_l_lo_c_din,
+        if_full_n => psa_l_lo_c_full_n,
+        if_write => entry_proc_U0_psa_l_lo_c_write,
+        if_dout => psa_l_lo_c_dout,
+        if_num_data_valid => psa_l_lo_c_num_data_valid,
+        if_fifo_cap => psa_l_lo_c_fifo_cap,
+        if_empty_n => psa_l_lo_c_empty_n,
+        if_read => fft_to_psa_U0_psa_l_lo_read);
+
+    psa_l_hi_c_U : component fci_core_fifo_w10_d4_S
+    port map (
+        clk => ap_clk,
+        reset => ap_rst_n_inv,
+        if_read_ce => ap_const_logic_1,
+        if_write_ce => ap_const_logic_1,
+        if_din => entry_proc_U0_psa_l_hi_c_din,
+        if_full_n => psa_l_hi_c_full_n,
+        if_write => entry_proc_U0_psa_l_hi_c_write,
+        if_dout => psa_l_hi_c_dout,
+        if_num_data_valid => psa_l_hi_c_num_data_valid,
+        if_fifo_cap => psa_l_hi_c_fifo_cap,
+        if_empty_n => psa_l_hi_c_empty_n,
+        if_read => fft_to_psa_U0_psa_l_hi_read);
+
+    psa_w_lo_c_U : component fci_core_fifo_w10_d4_S
+    port map (
+        clk => ap_clk,
+        reset => ap_rst_n_inv,
+        if_read_ce => ap_const_logic_1,
+        if_write_ce => ap_const_logic_1,
+        if_din => entry_proc_U0_psa_w_lo_c_din,
+        if_full_n => psa_w_lo_c_full_n,
+        if_write => entry_proc_U0_psa_w_lo_c_write,
+        if_dout => psa_w_lo_c_dout,
+        if_num_data_valid => psa_w_lo_c_num_data_valid,
+        if_fifo_cap => psa_w_lo_c_fifo_cap,
+        if_empty_n => psa_w_lo_c_empty_n,
+        if_read => fft_to_psa_U0_psa_w_lo_read);
+
+    psa_w_hi_c_U : component fci_core_fifo_w10_d4_S
+    port map (
+        clk => ap_clk,
+        reset => ap_rst_n_inv,
+        if_read_ce => ap_const_logic_1,
+        if_write_ce => ap_const_logic_1,
+        if_din => entry_proc_U0_psa_w_hi_c_din,
+        if_full_n => psa_w_hi_c_full_n,
+        if_write => entry_proc_U0_psa_w_hi_c_write,
+        if_dout => psa_w_hi_c_dout,
+        if_num_data_valid => psa_w_hi_c_num_data_valid,
+        if_fifo_cap => psa_w_hi_c_fifo_cap,
+        if_empty_n => psa_w_hi_c_empty_n,
+        if_read => fft_to_psa_U0_psa_w_hi_read);
 
     xn_s_U : component fci_core_fifo_w32_d2_S
     port map (
@@ -432,14 +725,14 @@ begin
         reset => ap_rst_n_inv,
         if_read_ce => ap_const_logic_1,
         if_write_ce => ap_const_logic_1,
-        if_din => axis_to_fft_U0_config_s5_din,
+        if_din => axis_to_fft_U0_config_s17_din,
         if_full_n => config_s_full_n,
-        if_write => axis_to_fft_U0_config_s5_write,
+        if_write => axis_to_fft_U0_config_s17_write,
         if_dout => config_s_dout,
         if_num_data_valid => config_s_num_data_valid,
         if_fifo_cap => config_s_fifo_cap,
         if_empty_n => config_s_empty_n,
-        if_read => fft_fci_fft_config_U0_config_s5_read);
+        if_read => fft_fci_fft_config_U0_config_s17_read);
 
     xk_s_U : component fci_core_fifo_w32_d2_S
     port map (
@@ -462,14 +755,27 @@ begin
         reset => ap_rst_n_inv,
         if_read_ce => ap_const_logic_1,
         if_write_ce => ap_const_logic_1,
-        if_din => fft_fci_fft_config_U0_status_s4_din,
+        if_din => fft_fci_fft_config_U0_status_s16_din,
         if_full_n => status_s_full_n,
-        if_write => fft_fci_fft_config_U0_status_s4_write,
+        if_write => fft_fci_fft_config_U0_status_s16_write,
         if_dout => status_s_dout,
         if_num_data_valid => status_s_num_data_valid,
         if_fifo_cap => status_s_fifo_cap,
         if_empty_n => status_s_empty_n,
-        if_read => fft_to_psa_U0_status_s4_read);
+        if_read => fft_to_psa_U0_status_s16_read);
+
+    start_for_fft_to_psa_U0_U : component fci_core_start_for_fft_to_psa_U0
+    port map (
+        clk => ap_clk,
+        reset => ap_rst_n_inv,
+        if_read_ce => ap_const_logic_1,
+        if_write_ce => ap_const_logic_1,
+        if_din => start_for_fft_to_psa_U0_din,
+        if_full_n => start_for_fft_to_psa_U0_full_n,
+        if_write => entry_proc_U0_start_write,
+        if_dout => start_for_fft_to_psa_U0_dout,
+        if_empty_n => start_for_fft_to_psa_U0_empty_n,
+        if_read => fft_to_psa_U0_ap_ready);
 
     start_for_fft_fci_fft_config_U0_U : component fci_core_start_for_fft_fci_fft_config_U0
     port map (
@@ -484,30 +790,57 @@ begin
         if_empty_n => start_for_fft_fci_fft_config_U0_empty_n,
         if_read => fft_fci_fft_config_U0_ap_ready);
 
-    start_for_fft_to_psa_U0_U : component fci_core_start_for_fft_to_psa_U0
-    port map (
-        clk => ap_clk,
-        reset => ap_rst_n_inv,
-        if_read_ce => ap_const_logic_1,
-        if_write_ce => ap_const_logic_1,
-        if_din => start_for_fft_to_psa_U0_din,
-        if_full_n => start_for_fft_to_psa_U0_full_n,
-        if_write => fft_fci_fft_config_U0_start_write,
-        if_dout => start_for_fft_to_psa_U0_dout,
-        if_empty_n => start_for_fft_to_psa_U0_empty_n,
-        if_read => fft_to_psa_U0_ap_ready);
 
 
 
 
+    ap_sync_reg_axis_to_fft_U0_ap_ready_assign_proc : process(ap_clk)
+    begin
+        if (ap_clk'event and ap_clk =  '1') then
+            if (ap_rst_n_inv = '1') then
+                ap_sync_reg_axis_to_fft_U0_ap_ready <= ap_const_logic_0;
+            else
+                if (((ap_sync_ready and ap_start) = ap_const_logic_1)) then 
+                    ap_sync_reg_axis_to_fft_U0_ap_ready <= ap_const_logic_0;
+                else 
+                    ap_sync_reg_axis_to_fft_U0_ap_ready <= ap_sync_axis_to_fft_U0_ap_ready;
+                end if; 
+            end if;
+        end if;
+    end process;
+
+
+    ap_sync_reg_entry_proc_U0_ap_ready_assign_proc : process(ap_clk)
+    begin
+        if (ap_clk'event and ap_clk =  '1') then
+            if (ap_rst_n_inv = '1') then
+                ap_sync_reg_entry_proc_U0_ap_ready <= ap_const_logic_0;
+            else
+                if (((ap_sync_ready and ap_start) = ap_const_logic_1)) then 
+                    ap_sync_reg_entry_proc_U0_ap_ready <= ap_const_logic_0;
+                else 
+                    ap_sync_reg_entry_proc_U0_ap_ready <= ap_sync_entry_proc_U0_ap_ready;
+                end if; 
+            end if;
+        end if;
+    end process;
+
+    ap_done <= fft_to_psa_U0_ap_done;
+    ap_idle <= (fft_to_psa_U0_ap_idle and fft_fci_fft_config_U0_ap_idle and entry_proc_U0_ap_idle and axis_to_fft_U0_ap_idle);
+    ap_ready <= ap_sync_ready;
 
     ap_rst_n_inv_assign_proc : process(ap_rst_n)
     begin
                 ap_rst_n_inv <= not(ap_rst_n);
     end process;
 
+    ap_sync_axis_to_fft_U0_ap_ready <= (axis_to_fft_U0_ap_ready or ap_sync_reg_axis_to_fft_U0_ap_ready);
+    ap_sync_entry_proc_U0_ap_ready <= (entry_proc_U0_ap_ready or ap_sync_reg_entry_proc_U0_ap_ready);
+    ap_sync_ready <= (ap_sync_entry_proc_U0_ap_ready and ap_sync_axis_to_fft_U0_ap_ready);
     axis_to_fft_U0_ap_continue <= ap_const_logic_1;
-    axis_to_fft_U0_ap_start <= ap_const_logic_1;
+    axis_to_fft_U0_ap_start <= ((ap_sync_reg_axis_to_fft_U0_ap_ready xor ap_const_logic_1) and ap_start);
+    entry_proc_U0_ap_continue <= ap_const_logic_1;
+    entry_proc_U0_ap_start <= ((ap_sync_reg_entry_proc_U0_ap_ready xor ap_const_logic_1) and ap_start);
     fft_fci_fft_config_U0_ap_continue <= ap_const_logic_1;
     fft_fci_fft_config_U0_ap_start <= start_for_fft_fci_fft_config_U0_empty_n;
     fft_to_psa_U0_ap_continue <= ap_const_logic_1;
@@ -520,10 +853,6 @@ begin
     m_axis_result_TSTRB <= fft_to_psa_U0_m_axis_result_TSTRB;
     m_axis_result_TUSER <= fft_to_psa_U0_m_axis_result_TUSER;
     m_axis_result_TVALID <= fft_to_psa_U0_m_axis_result_TVALID;
-    psa_l_hi_s_read <= fft_to_psa_U0_psa_l_hi_s_read;
-    psa_l_lo_s_read <= fft_to_psa_U0_psa_l_lo_s_read;
-    psa_w_hi_s_read <= fft_to_psa_U0_psa_w_hi_s_read;
-    psa_w_lo_s_read <= fft_to_psa_U0_psa_w_lo_s_read;
     s_axis_data_TREADY <= axis_to_fft_U0_s_axis_data_TREADY;
     start_for_fft_fci_fft_config_U0_din <= (0=>ap_const_logic_1, others=>'-');
     start_for_fft_to_psa_U0_din <= (0=>ap_const_logic_1, others=>'-');

@@ -7,9 +7,29 @@
 
 `timescale 1 ns / 1 ps 
 
-(* CORE_GENERATION_INFO="fci_core_fci_core,hls_ip_2022_2,{HLS_INPUT_TYPE=cxx,HLS_INPUT_FLOAT=0,HLS_INPUT_FIXED=0,HLS_INPUT_PART=xc7a35t-cpg236-1,HLS_INPUT_CLOCK=20.000000,HLS_INPUT_ARCH=dataflow,HLS_SYN_CLOCK=14.600000,HLS_SYN_LAT=3200,HLS_SYN_TPT=3197,HLS_SYN_MEM=4,HLS_SYN_DSP=0,HLS_SYN_FF=10440,HLS_SYN_LUT=8862,HLS_VERSION=2022_2}" *)
+(* CORE_GENERATION_INFO="fci_core_fci_core,hls_ip_2022_2,{HLS_INPUT_TYPE=cxx,HLS_INPUT_FLOAT=0,HLS_INPUT_FIXED=0,HLS_INPUT_PART=xc7a35t-cpg236-1,HLS_INPUT_CLOCK=20.000000,HLS_INPUT_ARCH=dataflow,HLS_SYN_CLOCK=14.600000,HLS_SYN_LAT=3200,HLS_SYN_TPT=3197,HLS_SYN_MEM=4,HLS_SYN_DSP=0,HLS_SYN_FF=10940,HLS_SYN_LUT=9331,HLS_VERSION=2022_2}" *)
 
 module fci_core (
+        s_axi_control_AWVALID,
+        s_axi_control_AWREADY,
+        s_axi_control_AWADDR,
+        s_axi_control_WVALID,
+        s_axi_control_WREADY,
+        s_axi_control_WDATA,
+        s_axi_control_WSTRB,
+        s_axi_control_ARVALID,
+        s_axi_control_ARREADY,
+        s_axi_control_ARADDR,
+        s_axi_control_RVALID,
+        s_axi_control_RREADY,
+        s_axi_control_RDATA,
+        s_axi_control_RRESP,
+        s_axi_control_BVALID,
+        s_axi_control_BREADY,
+        s_axi_control_BRESP,
+        ap_clk,
+        ap_rst_n,
+        interrupt,
         s_axis_data_TDATA,
         s_axis_data_TKEEP,
         s_axis_data_TSTRB,
@@ -24,27 +44,39 @@ module fci_core (
         m_axis_result_TLAST,
         m_axis_result_TID,
         m_axis_result_TDEST,
-        psa_l_lo_s_dout,
-        psa_l_lo_s_empty_n,
-        psa_l_lo_s_read,
-        psa_l_hi_s_dout,
-        psa_l_hi_s_empty_n,
-        psa_l_hi_s_read,
-        psa_w_lo_s_dout,
-        psa_w_lo_s_empty_n,
-        psa_w_lo_s_read,
-        psa_w_hi_s_dout,
-        psa_w_hi_s_empty_n,
-        psa_w_hi_s_read,
-        ap_clk,
-        ap_rst_n,
         s_axis_data_TVALID,
         s_axis_data_TREADY,
         m_axis_result_TVALID,
         m_axis_result_TREADY
 );
 
+parameter    C_S_AXI_CONTROL_DATA_WIDTH = 32;
+parameter    C_S_AXI_CONTROL_ADDR_WIDTH = 6;
+parameter    C_S_AXI_DATA_WIDTH = 32;
 
+parameter C_S_AXI_CONTROL_WSTRB_WIDTH = (32 / 8);
+parameter C_S_AXI_WSTRB_WIDTH = (32 / 8);
+
+input   s_axi_control_AWVALID;
+output   s_axi_control_AWREADY;
+input  [C_S_AXI_CONTROL_ADDR_WIDTH - 1:0] s_axi_control_AWADDR;
+input   s_axi_control_WVALID;
+output   s_axi_control_WREADY;
+input  [C_S_AXI_CONTROL_DATA_WIDTH - 1:0] s_axi_control_WDATA;
+input  [C_S_AXI_CONTROL_WSTRB_WIDTH - 1:0] s_axi_control_WSTRB;
+input   s_axi_control_ARVALID;
+output   s_axi_control_ARREADY;
+input  [C_S_AXI_CONTROL_ADDR_WIDTH - 1:0] s_axi_control_ARADDR;
+output   s_axi_control_RVALID;
+input   s_axi_control_RREADY;
+output  [C_S_AXI_CONTROL_DATA_WIDTH - 1:0] s_axi_control_RDATA;
+output  [1:0] s_axi_control_RRESP;
+output   s_axi_control_BVALID;
+input   s_axi_control_BREADY;
+output  [1:0] s_axi_control_BRESP;
+input   ap_clk;
+input   ap_rst_n;
+output   interrupt;
 input  [15:0] s_axis_data_TDATA;
 input  [1:0] s_axis_data_TKEEP;
 input  [1:0] s_axis_data_TSTRB;
@@ -59,26 +91,35 @@ output  [0:0] m_axis_result_TUSER;
 output  [0:0] m_axis_result_TLAST;
 output  [0:0] m_axis_result_TID;
 output  [0:0] m_axis_result_TDEST;
-input  [9:0] psa_l_lo_s_dout;
-input   psa_l_lo_s_empty_n;
-output   psa_l_lo_s_read;
-input  [9:0] psa_l_hi_s_dout;
-input   psa_l_hi_s_empty_n;
-output   psa_l_hi_s_read;
-input  [9:0] psa_w_lo_s_dout;
-input   psa_w_lo_s_empty_n;
-output   psa_w_lo_s_read;
-input  [9:0] psa_w_hi_s_dout;
-input   psa_w_hi_s_empty_n;
-output   psa_w_hi_s_read;
-input   ap_clk;
-input   ap_rst_n;
 input   s_axis_data_TVALID;
 output   s_axis_data_TREADY;
 output   m_axis_result_TVALID;
 input   m_axis_result_TREADY;
 
  reg    ap_rst_n_inv;
+wire   [9:0] psa_l_lo;
+wire   [9:0] psa_l_hi;
+wire   [9:0] psa_w_lo;
+wire   [9:0] psa_w_hi;
+wire    ap_start;
+wire    ap_ready;
+wire    ap_done;
+wire    ap_idle;
+wire    entry_proc_U0_ap_start;
+wire    entry_proc_U0_ap_done;
+wire    entry_proc_U0_ap_continue;
+wire    entry_proc_U0_ap_idle;
+wire    entry_proc_U0_ap_ready;
+wire    entry_proc_U0_start_out;
+wire    entry_proc_U0_start_write;
+wire   [9:0] entry_proc_U0_psa_l_lo_c_din;
+wire    entry_proc_U0_psa_l_lo_c_write;
+wire   [9:0] entry_proc_U0_psa_l_hi_c_din;
+wire    entry_proc_U0_psa_l_hi_c_write;
+wire   [9:0] entry_proc_U0_psa_w_lo_c_din;
+wire    entry_proc_U0_psa_w_lo_c_write;
+wire   [9:0] entry_proc_U0_psa_w_hi_c_din;
+wire    entry_proc_U0_psa_w_hi_c_write;
 wire    axis_to_fft_U0_ap_start;
 wire    axis_to_fft_U0_ap_done;
 wire    axis_to_fft_U0_ap_continue;
@@ -89,32 +130,30 @@ wire    axis_to_fft_U0_start_write;
 wire    axis_to_fft_U0_s_axis_data_TREADY;
 wire   [31:0] axis_to_fft_U0_xn_s_din;
 wire    axis_to_fft_U0_xn_s_write;
-wire   [7:0] axis_to_fft_U0_config_s5_din;
-wire    axis_to_fft_U0_config_s5_write;
+wire   [7:0] axis_to_fft_U0_config_s17_din;
+wire    axis_to_fft_U0_config_s17_write;
 wire    fft_fci_fft_config_U0_ap_start;
 wire    fft_fci_fft_config_U0_ap_done;
 wire    fft_fci_fft_config_U0_ap_continue;
 wire    fft_fci_fft_config_U0_ap_idle;
 wire    fft_fci_fft_config_U0_ap_ready;
-wire    fft_fci_fft_config_U0_start_out;
-wire    fft_fci_fft_config_U0_start_write;
 wire    fft_fci_fft_config_U0_xn_s_read;
 wire   [31:0] fft_fci_fft_config_U0_xk_s_din;
 wire    fft_fci_fft_config_U0_xk_s_write;
-wire   [7:0] fft_fci_fft_config_U0_status_s4_din;
-wire    fft_fci_fft_config_U0_status_s4_write;
-wire    fft_fci_fft_config_U0_config_s5_read;
+wire   [7:0] fft_fci_fft_config_U0_status_s16_din;
+wire    fft_fci_fft_config_U0_status_s16_write;
+wire    fft_fci_fft_config_U0_config_s17_read;
 wire    fft_to_psa_U0_ap_start;
 wire    fft_to_psa_U0_ap_done;
 wire    fft_to_psa_U0_ap_continue;
 wire    fft_to_psa_U0_ap_idle;
 wire    fft_to_psa_U0_ap_ready;
 wire    fft_to_psa_U0_xk_s_read;
-wire    fft_to_psa_U0_status_s4_read;
-wire    fft_to_psa_U0_psa_l_lo_s_read;
-wire    fft_to_psa_U0_psa_l_hi_s_read;
-wire    fft_to_psa_U0_psa_w_lo_s_read;
-wire    fft_to_psa_U0_psa_w_hi_s_read;
+wire    fft_to_psa_U0_status_s16_read;
+wire    fft_to_psa_U0_psa_l_lo_read;
+wire    fft_to_psa_U0_psa_l_hi_read;
+wire    fft_to_psa_U0_psa_w_lo_read;
+wire    fft_to_psa_U0_psa_w_hi_read;
 wire   [31:0] fft_to_psa_U0_m_axis_result_TDATA;
 wire    fft_to_psa_U0_m_axis_result_TVALID;
 wire   [3:0] fft_to_psa_U0_m_axis_result_TKEEP;
@@ -123,6 +162,26 @@ wire   [0:0] fft_to_psa_U0_m_axis_result_TUSER;
 wire   [0:0] fft_to_psa_U0_m_axis_result_TLAST;
 wire   [0:0] fft_to_psa_U0_m_axis_result_TID;
 wire   [0:0] fft_to_psa_U0_m_axis_result_TDEST;
+wire    psa_l_lo_c_full_n;
+wire   [9:0] psa_l_lo_c_dout;
+wire   [2:0] psa_l_lo_c_num_data_valid;
+wire   [2:0] psa_l_lo_c_fifo_cap;
+wire    psa_l_lo_c_empty_n;
+wire    psa_l_hi_c_full_n;
+wire   [9:0] psa_l_hi_c_dout;
+wire   [2:0] psa_l_hi_c_num_data_valid;
+wire   [2:0] psa_l_hi_c_fifo_cap;
+wire    psa_l_hi_c_empty_n;
+wire    psa_w_lo_c_full_n;
+wire   [9:0] psa_w_lo_c_dout;
+wire   [2:0] psa_w_lo_c_num_data_valid;
+wire   [2:0] psa_w_lo_c_fifo_cap;
+wire    psa_w_lo_c_empty_n;
+wire    psa_w_hi_c_full_n;
+wire   [9:0] psa_w_hi_c_dout;
+wire   [2:0] psa_w_hi_c_num_data_valid;
+wire   [2:0] psa_w_hi_c_fifo_cap;
+wire    psa_w_hi_c_empty_n;
 wire    xn_s_full_n;
 wire   [31:0] xn_s_dout;
 wire   [1:0] xn_s_num_data_valid;
@@ -143,14 +202,98 @@ wire   [7:0] status_s_dout;
 wire   [1:0] status_s_num_data_valid;
 wire   [1:0] status_s_fifo_cap;
 wire    status_s_empty_n;
-wire   [0:0] start_for_fft_fci_fft_config_U0_din;
-wire    start_for_fft_fci_fft_config_U0_full_n;
-wire   [0:0] start_for_fft_fci_fft_config_U0_dout;
-wire    start_for_fft_fci_fft_config_U0_empty_n;
+wire    ap_sync_ready;
+reg    ap_sync_reg_entry_proc_U0_ap_ready;
+wire    ap_sync_entry_proc_U0_ap_ready;
+reg    ap_sync_reg_axis_to_fft_U0_ap_ready;
+wire    ap_sync_axis_to_fft_U0_ap_ready;
 wire   [0:0] start_for_fft_to_psa_U0_din;
 wire    start_for_fft_to_psa_U0_full_n;
 wire   [0:0] start_for_fft_to_psa_U0_dout;
 wire    start_for_fft_to_psa_U0_empty_n;
+wire   [0:0] start_for_fft_fci_fft_config_U0_din;
+wire    start_for_fft_fci_fft_config_U0_full_n;
+wire   [0:0] start_for_fft_fci_fft_config_U0_dout;
+wire    start_for_fft_fci_fft_config_U0_empty_n;
+wire    ap_ce_reg;
+
+// power-on initialization
+initial begin
+#0 ap_sync_reg_entry_proc_U0_ap_ready = 1'b0;
+#0 ap_sync_reg_axis_to_fft_U0_ap_ready = 1'b0;
+end
+
+fci_core_control_s_axi #(
+    .C_S_AXI_ADDR_WIDTH( C_S_AXI_CONTROL_ADDR_WIDTH ),
+    .C_S_AXI_DATA_WIDTH( C_S_AXI_CONTROL_DATA_WIDTH ))
+control_s_axi_U(
+    .AWVALID(s_axi_control_AWVALID),
+    .AWREADY(s_axi_control_AWREADY),
+    .AWADDR(s_axi_control_AWADDR),
+    .WVALID(s_axi_control_WVALID),
+    .WREADY(s_axi_control_WREADY),
+    .WDATA(s_axi_control_WDATA),
+    .WSTRB(s_axi_control_WSTRB),
+    .ARVALID(s_axi_control_ARVALID),
+    .ARREADY(s_axi_control_ARREADY),
+    .ARADDR(s_axi_control_ARADDR),
+    .RVALID(s_axi_control_RVALID),
+    .RREADY(s_axi_control_RREADY),
+    .RDATA(s_axi_control_RDATA),
+    .RRESP(s_axi_control_RRESP),
+    .BVALID(s_axi_control_BVALID),
+    .BREADY(s_axi_control_BREADY),
+    .BRESP(s_axi_control_BRESP),
+    .ACLK(ap_clk),
+    .ARESET(ap_rst_n_inv),
+    .ACLK_EN(1'b1),
+    .psa_l_lo(psa_l_lo),
+    .psa_l_hi(psa_l_hi),
+    .psa_w_lo(psa_w_lo),
+    .psa_w_hi(psa_w_hi),
+    .ap_start(ap_start),
+    .interrupt(interrupt),
+    .ap_ready(ap_ready),
+    .ap_done(ap_done),
+    .ap_idle(ap_idle)
+);
+
+fci_core_entry_proc entry_proc_U0(
+    .ap_clk(ap_clk),
+    .ap_rst(ap_rst_n_inv),
+    .ap_start(entry_proc_U0_ap_start),
+    .start_full_n(start_for_fft_to_psa_U0_full_n),
+    .ap_done(entry_proc_U0_ap_done),
+    .ap_continue(entry_proc_U0_ap_continue),
+    .ap_idle(entry_proc_U0_ap_idle),
+    .ap_ready(entry_proc_U0_ap_ready),
+    .start_out(entry_proc_U0_start_out),
+    .start_write(entry_proc_U0_start_write),
+    .psa_l_lo(psa_l_lo),
+    .psa_l_lo_c_din(entry_proc_U0_psa_l_lo_c_din),
+    .psa_l_lo_c_num_data_valid(psa_l_lo_c_num_data_valid),
+    .psa_l_lo_c_fifo_cap(psa_l_lo_c_fifo_cap),
+    .psa_l_lo_c_full_n(psa_l_lo_c_full_n),
+    .psa_l_lo_c_write(entry_proc_U0_psa_l_lo_c_write),
+    .psa_l_hi(psa_l_hi),
+    .psa_l_hi_c_din(entry_proc_U0_psa_l_hi_c_din),
+    .psa_l_hi_c_num_data_valid(psa_l_hi_c_num_data_valid),
+    .psa_l_hi_c_fifo_cap(psa_l_hi_c_fifo_cap),
+    .psa_l_hi_c_full_n(psa_l_hi_c_full_n),
+    .psa_l_hi_c_write(entry_proc_U0_psa_l_hi_c_write),
+    .psa_w_lo(psa_w_lo),
+    .psa_w_lo_c_din(entry_proc_U0_psa_w_lo_c_din),
+    .psa_w_lo_c_num_data_valid(psa_w_lo_c_num_data_valid),
+    .psa_w_lo_c_fifo_cap(psa_w_lo_c_fifo_cap),
+    .psa_w_lo_c_full_n(psa_w_lo_c_full_n),
+    .psa_w_lo_c_write(entry_proc_U0_psa_w_lo_c_write),
+    .psa_w_hi(psa_w_hi),
+    .psa_w_hi_c_din(entry_proc_U0_psa_w_hi_c_din),
+    .psa_w_hi_c_num_data_valid(psa_w_hi_c_num_data_valid),
+    .psa_w_hi_c_fifo_cap(psa_w_hi_c_fifo_cap),
+    .psa_w_hi_c_full_n(psa_w_hi_c_full_n),
+    .psa_w_hi_c_write(entry_proc_U0_psa_w_hi_c_write)
+);
 
 fci_core_axis_to_fft axis_to_fft_U0(
     .ap_clk(ap_clk),
@@ -177,24 +320,21 @@ fci_core_axis_to_fft axis_to_fft_U0(
     .xn_s_fifo_cap(xn_s_fifo_cap),
     .xn_s_full_n(xn_s_full_n),
     .xn_s_write(axis_to_fft_U0_xn_s_write),
-    .config_s5_din(axis_to_fft_U0_config_s5_din),
-    .config_s5_num_data_valid(config_s_num_data_valid),
-    .config_s5_fifo_cap(config_s_fifo_cap),
-    .config_s5_full_n(config_s_full_n),
-    .config_s5_write(axis_to_fft_U0_config_s5_write)
+    .config_s17_din(axis_to_fft_U0_config_s17_din),
+    .config_s17_num_data_valid(config_s_num_data_valid),
+    .config_s17_fifo_cap(config_s_fifo_cap),
+    .config_s17_full_n(config_s_full_n),
+    .config_s17_write(axis_to_fft_U0_config_s17_write)
 );
 
 fci_core_fft_fci_fft_config_s fft_fci_fft_config_U0(
     .ap_clk(ap_clk),
     .ap_rst(ap_rst_n_inv),
     .ap_start(fft_fci_fft_config_U0_ap_start),
-    .start_full_n(start_for_fft_to_psa_U0_full_n),
     .ap_done(fft_fci_fft_config_U0_ap_done),
     .ap_continue(fft_fci_fft_config_U0_ap_continue),
     .ap_idle(fft_fci_fft_config_U0_ap_idle),
     .ap_ready(fft_fci_fft_config_U0_ap_ready),
-    .start_out(fft_fci_fft_config_U0_start_out),
-    .start_write(fft_fci_fft_config_U0_start_write),
     .xn_s_dout(xn_s_dout),
     .xn_s_num_data_valid(xn_s_num_data_valid),
     .xn_s_fifo_cap(xn_s_fifo_cap),
@@ -205,16 +345,16 @@ fci_core_fft_fci_fft_config_s fft_fci_fft_config_U0(
     .xk_s_fifo_cap(xk_s_fifo_cap),
     .xk_s_full_n(xk_s_full_n),
     .xk_s_write(fft_fci_fft_config_U0_xk_s_write),
-    .status_s4_din(fft_fci_fft_config_U0_status_s4_din),
-    .status_s4_num_data_valid(status_s_num_data_valid),
-    .status_s4_fifo_cap(status_s_fifo_cap),
-    .status_s4_full_n(status_s_full_n),
-    .status_s4_write(fft_fci_fft_config_U0_status_s4_write),
-    .config_s5_dout(config_s_dout),
-    .config_s5_num_data_valid(config_s_num_data_valid),
-    .config_s5_fifo_cap(config_s_fifo_cap),
-    .config_s5_empty_n(config_s_empty_n),
-    .config_s5_read(fft_fci_fft_config_U0_config_s5_read)
+    .status_s16_din(fft_fci_fft_config_U0_status_s16_din),
+    .status_s16_num_data_valid(status_s_num_data_valid),
+    .status_s16_fifo_cap(status_s_fifo_cap),
+    .status_s16_full_n(status_s_full_n),
+    .status_s16_write(fft_fci_fft_config_U0_status_s16_write),
+    .config_s17_dout(config_s_dout),
+    .config_s17_num_data_valid(config_s_num_data_valid),
+    .config_s17_fifo_cap(config_s_fifo_cap),
+    .config_s17_empty_n(config_s_empty_n),
+    .config_s17_read(fft_fci_fft_config_U0_config_s17_read)
 );
 
 fci_core_fft_to_psa fft_to_psa_U0(
@@ -230,23 +370,31 @@ fci_core_fft_to_psa fft_to_psa_U0(
     .xk_s_fifo_cap(xk_s_fifo_cap),
     .xk_s_empty_n(xk_s_empty_n),
     .xk_s_read(fft_to_psa_U0_xk_s_read),
-    .status_s4_dout(status_s_dout),
-    .status_s4_num_data_valid(status_s_num_data_valid),
-    .status_s4_fifo_cap(status_s_fifo_cap),
-    .status_s4_empty_n(status_s_empty_n),
-    .status_s4_read(fft_to_psa_U0_status_s4_read),
-    .psa_l_lo_s_dout(psa_l_lo_s_dout),
-    .psa_l_lo_s_empty_n(psa_l_lo_s_empty_n),
-    .psa_l_lo_s_read(fft_to_psa_U0_psa_l_lo_s_read),
-    .psa_l_hi_s_dout(psa_l_hi_s_dout),
-    .psa_l_hi_s_empty_n(psa_l_hi_s_empty_n),
-    .psa_l_hi_s_read(fft_to_psa_U0_psa_l_hi_s_read),
-    .psa_w_lo_s_dout(psa_w_lo_s_dout),
-    .psa_w_lo_s_empty_n(psa_w_lo_s_empty_n),
-    .psa_w_lo_s_read(fft_to_psa_U0_psa_w_lo_s_read),
-    .psa_w_hi_s_dout(psa_w_hi_s_dout),
-    .psa_w_hi_s_empty_n(psa_w_hi_s_empty_n),
-    .psa_w_hi_s_read(fft_to_psa_U0_psa_w_hi_s_read),
+    .status_s16_dout(status_s_dout),
+    .status_s16_num_data_valid(status_s_num_data_valid),
+    .status_s16_fifo_cap(status_s_fifo_cap),
+    .status_s16_empty_n(status_s_empty_n),
+    .status_s16_read(fft_to_psa_U0_status_s16_read),
+    .psa_l_lo_dout(psa_l_lo_c_dout),
+    .psa_l_lo_num_data_valid(psa_l_lo_c_num_data_valid),
+    .psa_l_lo_fifo_cap(psa_l_lo_c_fifo_cap),
+    .psa_l_lo_empty_n(psa_l_lo_c_empty_n),
+    .psa_l_lo_read(fft_to_psa_U0_psa_l_lo_read),
+    .psa_l_hi_dout(psa_l_hi_c_dout),
+    .psa_l_hi_num_data_valid(psa_l_hi_c_num_data_valid),
+    .psa_l_hi_fifo_cap(psa_l_hi_c_fifo_cap),
+    .psa_l_hi_empty_n(psa_l_hi_c_empty_n),
+    .psa_l_hi_read(fft_to_psa_U0_psa_l_hi_read),
+    .psa_w_lo_dout(psa_w_lo_c_dout),
+    .psa_w_lo_num_data_valid(psa_w_lo_c_num_data_valid),
+    .psa_w_lo_fifo_cap(psa_w_lo_c_fifo_cap),
+    .psa_w_lo_empty_n(psa_w_lo_c_empty_n),
+    .psa_w_lo_read(fft_to_psa_U0_psa_w_lo_read),
+    .psa_w_hi_dout(psa_w_hi_c_dout),
+    .psa_w_hi_num_data_valid(psa_w_hi_c_num_data_valid),
+    .psa_w_hi_fifo_cap(psa_w_hi_c_fifo_cap),
+    .psa_w_hi_empty_n(psa_w_hi_c_empty_n),
+    .psa_w_hi_read(fft_to_psa_U0_psa_w_hi_read),
     .m_axis_result_TDATA(fft_to_psa_U0_m_axis_result_TDATA),
     .m_axis_result_TVALID(fft_to_psa_U0_m_axis_result_TVALID),
     .m_axis_result_TREADY(m_axis_result_TREADY),
@@ -256,6 +404,66 @@ fci_core_fft_to_psa fft_to_psa_U0(
     .m_axis_result_TLAST(fft_to_psa_U0_m_axis_result_TLAST),
     .m_axis_result_TID(fft_to_psa_U0_m_axis_result_TID),
     .m_axis_result_TDEST(fft_to_psa_U0_m_axis_result_TDEST)
+);
+
+fci_core_fifo_w10_d4_S psa_l_lo_c_U(
+    .clk(ap_clk),
+    .reset(ap_rst_n_inv),
+    .if_read_ce(1'b1),
+    .if_write_ce(1'b1),
+    .if_din(entry_proc_U0_psa_l_lo_c_din),
+    .if_full_n(psa_l_lo_c_full_n),
+    .if_write(entry_proc_U0_psa_l_lo_c_write),
+    .if_dout(psa_l_lo_c_dout),
+    .if_num_data_valid(psa_l_lo_c_num_data_valid),
+    .if_fifo_cap(psa_l_lo_c_fifo_cap),
+    .if_empty_n(psa_l_lo_c_empty_n),
+    .if_read(fft_to_psa_U0_psa_l_lo_read)
+);
+
+fci_core_fifo_w10_d4_S psa_l_hi_c_U(
+    .clk(ap_clk),
+    .reset(ap_rst_n_inv),
+    .if_read_ce(1'b1),
+    .if_write_ce(1'b1),
+    .if_din(entry_proc_U0_psa_l_hi_c_din),
+    .if_full_n(psa_l_hi_c_full_n),
+    .if_write(entry_proc_U0_psa_l_hi_c_write),
+    .if_dout(psa_l_hi_c_dout),
+    .if_num_data_valid(psa_l_hi_c_num_data_valid),
+    .if_fifo_cap(psa_l_hi_c_fifo_cap),
+    .if_empty_n(psa_l_hi_c_empty_n),
+    .if_read(fft_to_psa_U0_psa_l_hi_read)
+);
+
+fci_core_fifo_w10_d4_S psa_w_lo_c_U(
+    .clk(ap_clk),
+    .reset(ap_rst_n_inv),
+    .if_read_ce(1'b1),
+    .if_write_ce(1'b1),
+    .if_din(entry_proc_U0_psa_w_lo_c_din),
+    .if_full_n(psa_w_lo_c_full_n),
+    .if_write(entry_proc_U0_psa_w_lo_c_write),
+    .if_dout(psa_w_lo_c_dout),
+    .if_num_data_valid(psa_w_lo_c_num_data_valid),
+    .if_fifo_cap(psa_w_lo_c_fifo_cap),
+    .if_empty_n(psa_w_lo_c_empty_n),
+    .if_read(fft_to_psa_U0_psa_w_lo_read)
+);
+
+fci_core_fifo_w10_d4_S psa_w_hi_c_U(
+    .clk(ap_clk),
+    .reset(ap_rst_n_inv),
+    .if_read_ce(1'b1),
+    .if_write_ce(1'b1),
+    .if_din(entry_proc_U0_psa_w_hi_c_din),
+    .if_full_n(psa_w_hi_c_full_n),
+    .if_write(entry_proc_U0_psa_w_hi_c_write),
+    .if_dout(psa_w_hi_c_dout),
+    .if_num_data_valid(psa_w_hi_c_num_data_valid),
+    .if_fifo_cap(psa_w_hi_c_fifo_cap),
+    .if_empty_n(psa_w_hi_c_empty_n),
+    .if_read(fft_to_psa_U0_psa_w_hi_read)
 );
 
 fci_core_fifo_w32_d2_S xn_s_U(
@@ -278,14 +486,14 @@ fci_core_fifo_w8_d2_S config_s_U(
     .reset(ap_rst_n_inv),
     .if_read_ce(1'b1),
     .if_write_ce(1'b1),
-    .if_din(axis_to_fft_U0_config_s5_din),
+    .if_din(axis_to_fft_U0_config_s17_din),
     .if_full_n(config_s_full_n),
-    .if_write(axis_to_fft_U0_config_s5_write),
+    .if_write(axis_to_fft_U0_config_s17_write),
     .if_dout(config_s_dout),
     .if_num_data_valid(config_s_num_data_valid),
     .if_fifo_cap(config_s_fifo_cap),
     .if_empty_n(config_s_empty_n),
-    .if_read(fft_fci_fft_config_U0_config_s5_read)
+    .if_read(fft_fci_fft_config_U0_config_s17_read)
 );
 
 fci_core_fifo_w32_d2_S xk_s_U(
@@ -308,14 +516,27 @@ fci_core_fifo_w8_d2_S status_s_U(
     .reset(ap_rst_n_inv),
     .if_read_ce(1'b1),
     .if_write_ce(1'b1),
-    .if_din(fft_fci_fft_config_U0_status_s4_din),
+    .if_din(fft_fci_fft_config_U0_status_s16_din),
     .if_full_n(status_s_full_n),
-    .if_write(fft_fci_fft_config_U0_status_s4_write),
+    .if_write(fft_fci_fft_config_U0_status_s16_write),
     .if_dout(status_s_dout),
     .if_num_data_valid(status_s_num_data_valid),
     .if_fifo_cap(status_s_fifo_cap),
     .if_empty_n(status_s_empty_n),
-    .if_read(fft_to_psa_U0_status_s4_read)
+    .if_read(fft_to_psa_U0_status_s16_read)
+);
+
+fci_core_start_for_fft_to_psa_U0 start_for_fft_to_psa_U0_U(
+    .clk(ap_clk),
+    .reset(ap_rst_n_inv),
+    .if_read_ce(1'b1),
+    .if_write_ce(1'b1),
+    .if_din(start_for_fft_to_psa_U0_din),
+    .if_full_n(start_for_fft_to_psa_U0_full_n),
+    .if_write(entry_proc_U0_start_write),
+    .if_dout(start_for_fft_to_psa_U0_dout),
+    .if_empty_n(start_for_fft_to_psa_U0_empty_n),
+    .if_read(fft_to_psa_U0_ap_ready)
 );
 
 fci_core_start_for_fft_fci_fft_config_U0 start_for_fft_fci_fft_config_U0_U(
@@ -331,26 +552,53 @@ fci_core_start_for_fft_fci_fft_config_U0 start_for_fft_fci_fft_config_U0_U(
     .if_read(fft_fci_fft_config_U0_ap_ready)
 );
 
-fci_core_start_for_fft_to_psa_U0 start_for_fft_to_psa_U0_U(
-    .clk(ap_clk),
-    .reset(ap_rst_n_inv),
-    .if_read_ce(1'b1),
-    .if_write_ce(1'b1),
-    .if_din(start_for_fft_to_psa_U0_din),
-    .if_full_n(start_for_fft_to_psa_U0_full_n),
-    .if_write(fft_fci_fft_config_U0_start_write),
-    .if_dout(start_for_fft_to_psa_U0_dout),
-    .if_empty_n(start_for_fft_to_psa_U0_empty_n),
-    .if_read(fft_to_psa_U0_ap_ready)
-);
+always @ (posedge ap_clk) begin
+    if (ap_rst_n_inv == 1'b1) begin
+        ap_sync_reg_axis_to_fft_U0_ap_ready <= 1'b0;
+    end else begin
+        if (((ap_sync_ready & ap_start) == 1'b1)) begin
+            ap_sync_reg_axis_to_fft_U0_ap_ready <= 1'b0;
+        end else begin
+            ap_sync_reg_axis_to_fft_U0_ap_ready <= ap_sync_axis_to_fft_U0_ap_ready;
+        end
+    end
+end
+
+always @ (posedge ap_clk) begin
+    if (ap_rst_n_inv == 1'b1) begin
+        ap_sync_reg_entry_proc_U0_ap_ready <= 1'b0;
+    end else begin
+        if (((ap_sync_ready & ap_start) == 1'b1)) begin
+            ap_sync_reg_entry_proc_U0_ap_ready <= 1'b0;
+        end else begin
+            ap_sync_reg_entry_proc_U0_ap_ready <= ap_sync_entry_proc_U0_ap_ready;
+        end
+    end
+end
+
+assign ap_done = fft_to_psa_U0_ap_done;
+
+assign ap_idle = (fft_to_psa_U0_ap_idle & fft_fci_fft_config_U0_ap_idle & entry_proc_U0_ap_idle & axis_to_fft_U0_ap_idle);
+
+assign ap_ready = ap_sync_ready;
 
 always @ (*) begin
     ap_rst_n_inv = ~ap_rst_n;
 end
 
+assign ap_sync_axis_to_fft_U0_ap_ready = (axis_to_fft_U0_ap_ready | ap_sync_reg_axis_to_fft_U0_ap_ready);
+
+assign ap_sync_entry_proc_U0_ap_ready = (entry_proc_U0_ap_ready | ap_sync_reg_entry_proc_U0_ap_ready);
+
+assign ap_sync_ready = (ap_sync_entry_proc_U0_ap_ready & ap_sync_axis_to_fft_U0_ap_ready);
+
 assign axis_to_fft_U0_ap_continue = 1'b1;
 
-assign axis_to_fft_U0_ap_start = 1'b1;
+assign axis_to_fft_U0_ap_start = ((ap_sync_reg_axis_to_fft_U0_ap_ready ^ 1'b1) & ap_start);
+
+assign entry_proc_U0_ap_continue = 1'b1;
+
+assign entry_proc_U0_ap_start = ((ap_sync_reg_entry_proc_U0_ap_ready ^ 1'b1) & ap_start);
 
 assign fft_fci_fft_config_U0_ap_continue = 1'b1;
 
@@ -375,14 +623,6 @@ assign m_axis_result_TSTRB = fft_to_psa_U0_m_axis_result_TSTRB;
 assign m_axis_result_TUSER = fft_to_psa_U0_m_axis_result_TUSER;
 
 assign m_axis_result_TVALID = fft_to_psa_U0_m_axis_result_TVALID;
-
-assign psa_l_hi_s_read = fft_to_psa_U0_psa_l_hi_s_read;
-
-assign psa_l_lo_s_read = fft_to_psa_U0_psa_l_lo_s_read;
-
-assign psa_w_hi_s_read = fft_to_psa_U0_psa_w_hi_s_read;
-
-assign psa_w_lo_s_read = fft_to_psa_U0_psa_w_lo_s_read;
 
 assign s_axis_data_TREADY = axis_to_fft_U0_s_axis_data_TREADY;
 

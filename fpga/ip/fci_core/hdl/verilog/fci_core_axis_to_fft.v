@@ -32,11 +32,11 @@ module fci_core_axis_to_fft (
         xn_s_fifo_cap,
         xn_s_full_n,
         xn_s_write,
-        config_s5_din,
-        config_s5_num_data_valid,
-        config_s5_fifo_cap,
-        config_s5_full_n,
-        config_s5_write
+        config_s17_din,
+        config_s17_num_data_valid,
+        config_s17_fifo_cap,
+        config_s17_full_n,
+        config_s17_write
 );
 
 parameter    ap_ST_fsm_state1 = 3'd1;
@@ -67,17 +67,17 @@ input  [1:0] xn_s_num_data_valid;
 input  [1:0] xn_s_fifo_cap;
 input   xn_s_full_n;
 output   xn_s_write;
-output  [7:0] config_s5_din;
-input  [1:0] config_s5_num_data_valid;
-input  [1:0] config_s5_fifo_cap;
-input   config_s5_full_n;
-output   config_s5_write;
+output  [7:0] config_s17_din;
+input  [1:0] config_s17_num_data_valid;
+input  [1:0] config_s17_fifo_cap;
+input   config_s17_full_n;
+output   config_s17_write;
 
 reg ap_done;
 reg ap_idle;
 reg start_write;
 reg xn_s_write;
-reg config_s5_write;
+reg config_s17_write;
 
 reg    real_start;
 reg    start_once_reg;
@@ -85,7 +85,7 @@ reg    ap_done_reg;
 (* fsm_encoding = "none" *) reg   [2:0] ap_CS_fsm;
 wire    ap_CS_fsm_state1;
 reg    internal_ap_ready;
-reg    config_s5_blk_n;
+reg    config_s17_blk_n;
 wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start;
 wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done;
 wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle;
@@ -306,7 +306,7 @@ always @ (posedge ap_clk) begin
 end
 
 always @ (*) begin
-    if (((real_start == 1'b0) | (config_s5_full_n == 1'b0) | (ap_done_reg == 1'b1))) begin
+    if (((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1))) begin
         ap_ST_fsm_state1_blk = 1'b1;
     end else begin
         ap_ST_fsm_state1_blk = 1'b0;
@@ -341,17 +341,17 @@ end
 
 always @ (*) begin
     if ((~((real_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
-        config_s5_blk_n = config_s5_full_n;
+        config_s17_blk_n = config_s17_full_n;
     end else begin
-        config_s5_blk_n = 1'b1;
+        config_s17_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((real_start == 1'b0) | (config_s5_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
-        config_s5_write = 1'b1;
+    if ((~((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
+        config_s17_write = 1'b1;
     end else begin
-        config_s5_write = 1'b0;
+        config_s17_write = 1'b0;
     end
 end
 
@@ -398,7 +398,7 @@ end
 always @ (*) begin
     case (ap_CS_fsm)
         ap_ST_fsm_state1 : begin
-            if ((~((real_start == 1'b0) | (config_s5_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
+            if ((~((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
                 ap_NS_fsm = ap_ST_fsm_state2;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state1;
@@ -427,12 +427,12 @@ assign ap_CS_fsm_state2 = ap_CS_fsm[32'd1];
 assign ap_CS_fsm_state3 = ap_CS_fsm[32'd2];
 
 always @ (*) begin
-    ap_block_state1 = ((real_start == 1'b0) | (config_s5_full_n == 1'b0) | (ap_done_reg == 1'b1));
+    ap_block_state1 = ((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1));
 end
 
 assign ap_ready = internal_ap_ready;
 
-assign config_s5_din = 8'd1;
+assign config_s17_din = 8'd1;
 
 assign grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg;
 

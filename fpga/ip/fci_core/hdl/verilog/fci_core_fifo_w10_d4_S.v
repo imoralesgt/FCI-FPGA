@@ -7,12 +7,12 @@
 
 `timescale 1 ns / 1 ps
 
-module fci_core_start_for_fft_to_psa_U0
+module fci_core_fifo_w10_d4_S
 #(parameter
     MEM_STYLE   = "shiftReg",
-    DATA_WIDTH  = 1,
+    DATA_WIDTH  = 10,
     ADDR_WIDTH  = 2,
-    DEPTH       = 3)
+    DEPTH       = 4)
 (
     // system signal
     input  wire                  clk,
@@ -25,6 +25,8 @@ module fci_core_start_for_fft_to_psa_U0
     input  wire [DATA_WIDTH-1:0] if_din,
     
     // read 
+    output wire [ADDR_WIDTH:0]   if_num_data_valid, // for FRP
+    output wire [ADDR_WIDTH:0]   if_fifo_cap,       // for FRP
     output wire                  if_empty_n,
     input  wire                  if_read_ce,
     input  wire                  if_read,
@@ -41,11 +43,11 @@ reg                   empty_n = 1'b0;
 reg                   full_n  = 1'b1;
 // with almost full?  no 
 //------------------------Instantiation------------------
-fci_core_start_for_fft_to_psa_U0_ShiftReg 
+fci_core_fifo_w10_d4_S_ShiftReg 
 #(  .DATA_WIDTH (DATA_WIDTH),
     .ADDR_WIDTH (ADDR_WIDTH),
     .DEPTH      (DEPTH))
-U_fci_core_start_for_fft_to_psa_U0_ShiftReg (
+U_fci_core_fifo_w10_d4_S_ShiftReg (
     .clk        (clk),
     .we         (push),
     .addr       (addr),
@@ -55,7 +57,9 @@ U_fci_core_start_for_fft_to_psa_U0_ShiftReg (
 //------------------------Task and function--------------
 
 //------------------------Body---------------------------
-// has num_data_valid ?  no 
+// has num_data_valid ? 
+assign if_num_data_valid = mOutPtr + 1'b1; // yes
+assign if_fifo_cap = DEPTH; // yes 
 
 // has almost full ? 
 assign if_full_n  = full_n; //no 
@@ -104,11 +108,11 @@ end
 endmodule  
 
 
-module fci_core_start_for_fft_to_psa_U0_ShiftReg
+module fci_core_fifo_w10_d4_S_ShiftReg
 #(parameter
-    DATA_WIDTH  = 1,
+    DATA_WIDTH  = 10,
     ADDR_WIDTH  = 2,
-    DEPTH       = 3)
+    DEPTH       = 4)
 (
     input  wire                  clk,
     input  wire                  we,
