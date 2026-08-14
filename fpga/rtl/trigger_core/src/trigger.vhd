@@ -1,0 +1,70 @@
+-- Cross-level trigger: watches the live (undelayed) ADC sample and produces a single-cycle
+-- trigger_o pulse when it crosses threshold_i, in the direction selected by polarity_i.
+--
+-- polarity_i = '1': trigger on a rising crossing (signal goes from below threshold to
+--   at-or-above threshold) -- for positive-going pulses.
+-- polarity_i = '0': trigger on a falling crossing (signal goes from at-or-above threshold to
+--   below threshold) -- for negative-going pulses. This detector's real pulses dip below
+--   baseline (see project plan), so normal operation uses polarity_i = '0' with threshold_i set
+--   below the baseline level.
+--
+-- ADC data is offset binary, so the comparison is a plain unsigned compare.
+-- armed_i gates trigger_o so a new trigger can't fire while a capture is already in progress.
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity trigger is
+  generic (
+    DATA_WIDTH : integer := 14
+  );
+  port (
+    clk_i       : in  std_logic;
+    rstn_i      : in  std_logic;
+    armed_i     : in  std_logic;
+    adc_data_i  : in  std_logic_vector(DATA_WIDTH - 1 downto 0);
+    threshold_i : in  std_logic_vector(DATA_WIDTH - 1 downto 0);
+    polarity_i  : in  std_logic;
+    trigger_o   : out std_logic
+  );
+end entity trigger;
+
+architecture rtl of trigger is
+
+  -- Registered "was above threshold as of the previous clock edge" state.
+  signal above : std_logic;
+
+begin
+
+  -- above_now is a variable (not a signal) specifically so it's usable immediately within this
+  -- same process for edge detection against the signal `above`, which still holds last cycle's
+  -- value at that point (VHDL signal assignments only take effect at the next clock edge, so
+  -- comparing against `above` here correctly reads the pre-update, previous-cycle state).
+  process (clk_i)
+    variable above_now : std_logic;
+  begin
+    if rising_edge(clk_i) then
+      if rstn_i = '0' then
+        above     <= '0';
+        trigger_o <= '0';
+      else
+        if unsigned(adc_data_i) >= unsigned(threshold_i) then
+          above_now := '1';
+        else
+          above_now := '0';
+        end if;
+
+        if armed_i = '1' and
+           ((polarity_i = '1' and above_now = '1' and above = '0') or
+            (polarity_i = '0' and above_now = '0' and above = '1')) then
+          trigger_o <= '1';
+        else
+          trigger_o <= '0';
+        end if;
+
+        above <= above_now;
+      end if;
+    end if;
+  end process;
+
+end architecture rtl;

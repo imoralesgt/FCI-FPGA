@@ -13,7 +13,7 @@ WORK_DIR="$SCRIPT_DIR/xsim_work"
 mkdir -p "$WORK_DIR"
 cd "$WORK_DIR"
 
-xvhdl --2008 \
+xvhdl --93_mode \
   "$SRC_DIR/trigger_core_pkg.vhd" \
   "$SRC_DIR/delay_line.vhd" \
   "$SRC_DIR/trigger.vhd" \
@@ -23,6 +23,6 @@ xvhdl --2008 \
   "$SRC_DIR/trigger_core_top.vhd" \
   "$TB_DIR/trigger_core_tb.vhd"
 
-xelab --debug typical trigger_core_tb -s trigger_core_tb_sim
+xelab --93_mode --debug typical trigger_core_tb -s trigger_core_tb_sim
 
 xsim trigger_core_tb_sim -runall
