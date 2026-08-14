@@ -11,10 +11,13 @@
  * trigger_core that never arrives without a live triggered ADC capture.
  */
 
+#include "iic.h"
 #include "platform.h"
 #include "registers.h"
+#include "vga_dac.h"
 #include "xil_io.h"
 #include "xil_printf.h"
+#include "xstatus.h"
 
 static int g_fail_count = 0;
 
@@ -23,6 +26,15 @@ static void check_u32(const char *name, u32 expected, u32 actual) {
     xil_printf("  [PASS] %s = 0x%08x\r\n", name, actual);
   } else {
     xil_printf("  [FAIL] %s: wrote 0x%08x, read back 0x%08x\r\n", name, expected, actual);
+    g_fail_count++;
+  }
+}
+
+static void check_ok(const char *name, int ok) {
+  if (ok) {
+    xil_printf("  [PASS] %s\r\n", name);
+  } else {
+    xil_printf("  [FAIL] %s (no I2C ACK)\r\n", name);
     g_fail_count++;
   }
 }
@@ -75,12 +87,28 @@ static void test_fci_core(void) {
             Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_AP_CTRL_OFFSET) & FCI_CORE_AP_CTRL_AUTO_RESTART);
 }
 
+static void test_vga_dac(void) {
+  xil_printf("-- vga_dac (AD5697 @ 0x0D via axi_iic_0) --\r\n");
+
+  if (Iic_Init(AXI_IIC_DEVICE_ID) != XST_SUCCESS) {
+    xil_printf("  [FAIL] Iic_Init\r\n");
+    g_fail_count++;
+    return;
+  }
+
+  check_ok("VgaDac_Init (internal 2.5V reference)", VgaDac_Init());
+
+  check_ok("VgaDac_SetGainFine(1x)", VgaDac_SetGainFine(AD8330_DEFAULT_GAIN_FINE_LINEAR));
+  check_ok("VgaDac_SetGainCoarse(6x)", VgaDac_SetGainCoarse(AD8330_DEFAULT_GAIN_COARSE_LINEAR));
+}
+
 int main() {
   init_platform();
 
   xil_printf("\r\n=== FCI register bring-up test ===\r\n");
   test_trigger_core();
   test_fci_core();
+  test_vga_dac();
 
   xil_printf("=== %s (%d failure%s) ===\r\n", g_fail_count == 0 ? "TEST PASSED" : "TEST FAILED",
              g_fail_count, g_fail_count == 1 ? "" : "s");
