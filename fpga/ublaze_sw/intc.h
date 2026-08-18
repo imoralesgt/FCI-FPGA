@@ -19,4 +19,10 @@
  * vector, and enables interrupts globally (microblaze_enable_interrupts()). Call once at init. */
 void Intc_Init(u32 enable_mask, XInterruptHandler handler, void *callback_ref);
 
+/* Enables additional interrupt source(s) on top of whatever Intc_Init() already enabled, via the
+ * Set Interrupt Enable register (sets only the given bits, leaves everything else in IER alone).
+ * Use this instead of a second Intc_Init() call -- Intc_Init() writes IER directly, so calling it
+ * twice would silently disable whatever the first call enabled. */
+void Intc_EnableAdditional(u32 additional_mask);
+
 #endif /* SRC_INTC_H_ */

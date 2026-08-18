@@ -61,12 +61,23 @@
 /* ---------------------------------------------------------------------------------------------
  * axi_dma_0 (Simple DMA, no Scatter-Gather) -- S2MM path carries {PSA_l, PSA_w} per event into
  * axi_bram_ctrl_0; MM2S path reads it back to the MicroBlaze over S0_AXIS for fast readback.
+ *
+ * axi_dma_1 is a second, identically-configured Simple DMA instance added for raw-trace capture:
+ * S2MM carries trigger_core's raw ADC samples (tapped via axis_broadcaster_0, 16-bit stream) into
+ * the same axi_bram_ctrl_0 at a different offset (see RAW_TRACE_BRAM_BASEADDR below); MM2S reads
+ * back out over microblaze_0/S1_AXIS (note: stream index 1, not 0, in the getfslx() call). Both
+ * instances share the exact same channel-relative register layout, so dma_s2mm.h's functions take
+ * a dma_baseaddr parameter (AXI_DMA_BASEADDR or AXI_DMA_1_BASEADDR) rather than being duplicated.
  * ------------------------------------------------------------------------------------------- */
 #define AXI_DMA_BASEADDR XPAR_AXI_DMA_0_BASEADDR
 #define AXI_DMA_DEVICE_ID XPAR_AXI_DMA_0_DEVICE_ID
 
+#define AXI_DMA_1_BASEADDR XPAR_AXI_DMA_1_BASEADDR
+#define AXI_DMA_1_DEVICE_ID XPAR_AXI_DMA_1_DEVICE_ID
+
 /* c_include_sg=0 (Simple DMA): direct-register mode only, channel-relative offsets from
- * xaxidma_hw.h (XAXIDMA_TX_OFFSET/XAXIDMA_RX_OFFSET = MM2S/S2MM channel register bank base). */
+ * xaxidma_hw.h (XAXIDMA_TX_OFFSET/XAXIDMA_RX_OFFSET = MM2S/S2MM channel register bank base).
+ * Channel-relative, so the same offsets apply to axi_dma_1 too -- only the base address differs. */
 #define AXI_DMA_MM2S_DMACR_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_CR_OFFSET)
 #define AXI_DMA_MM2S_DMASR_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_SR_OFFSET)
 #define AXI_DMA_MM2S_SA_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_SRCADDR_OFFSET)
@@ -87,11 +98,32 @@
  * SR-side status flag above -- standard AXI DMA convention, not a separate generated macro. */
 #define AXI_DMA_CR_IOC_IRQ_EN_MASK XAXIDMA_IRQ_IOC_MASK
 
-/* axi_bram_ctrl_0 has no xparameters.h entry: it's mapped only into axi_dma_0's own Data_MM2S/
- * Data_S2MM address spaces, not into microblaze_0/Data (see fpga/bd/fci_bd.tcl's
- * assign_bd_address calls for axi_dma_0), so there's no generated macro to source this from --
- * keep this in sync with that offset (0xC0000000) if it ever changes. */
+/* axi_bram_ctrl_0/axi_bram_ctrl_1 have no xparameters.h entries: each is mapped only into the two
+ * DMA engines' own Data_MM2S/Data_S2MM address spaces, not into microblaze_0/Data (see
+ * fpga/bd/fci_bd.tcl's assign_bd_address calls), so there's no generated macro to source these
+ * from -- keep in sync with those offsets if they ever change.
+ *
+ * Two separate, same-width (32-bit) BRAM blocks rather than one shared/widened block: PSA_l/PSA_w
+ * (8KB, plenty of headroom for the 8-byte result plus double-buffer slots) and raw-trace capture
+ * (a second, independent 8KB block, dedicated to axi_dma_1). Deliberately not sharing one wider
+ * block across both DMA engines -- that would need axi_smc doing live width conversion between
+ * the 32-bit DMA masters and a wider shared memory, which is an unnecessary correctness risk for
+ * no real resource savings (two matched 8KB blocks costs about the same BRAM as one wide 16KB
+ * one). */
 #define FCI_RESULT_BRAM_BASEADDR 0xC0000000
+
+/* axi_dma_1's S2MM stream is 16-bit (matching trigger_core's raw samples) but its memory-side bus
+ * is 32-bit (C_M_AXI_S2MM_DATA_WIDTH, confirmed in the exported .hwh), so it packs two 16-bit
+ * samples per 32-bit memory word -- transfer length is still depth*2 bytes, but MM2S readback
+ * only needs depth/2 getfslx() calls, each unpacked into two samples (see main.c). */
+#define RAW_TRACE_BRAM_BASEADDR 0xC2000000
+
+/* ---------------------------------------------------------------------------------------------
+ * axi_timer_0 -- added for future use (calibrated wall-clock timing, per-event timestamps for
+ * list mode); not yet consumed by any firmware in this project.
+ * ------------------------------------------------------------------------------------------- */
+#define AXI_TIMER_0_BASEADDR XPAR_AXI_TIMER_0_BASEADDR
+#define AXI_TIMER_0_DEVICE_ID XPAR_AXI_TIMER_0_DEVICE_ID
 
 /* ---------------------------------------------------------------------------------------------
  * axi_iic_0 -- AD8330 VGA gain DAC (address/part TBC, see docs/fpga/DPP4SiPMCMOD_AFE.pdf)
@@ -106,14 +138,18 @@
 #define AXI_UARTLITE_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID
 
 /* ---------------------------------------------------------------------------------------------
- * microblaze_0_axi_intc -- xlconcat interrupt aggregation order: In0=dma s2mm, In1=uartlite,
- * In2=fci_core (see fpga/bd/fci_bd.tcl); axi_iic_0/iic2intc_irpt intentionally left unconnected
+ * microblaze_0_axi_intc -- xlconcat interrupt aggregation order (deliberately reordered so both
+ * DMA interrupts sit at the end): In0=uartlite, In1=fci_core, In2=axi_timer_0, In3=axi_dma_0
+ * s2mm, In4=axi_dma_1 s2mm (see fpga/bd/fci_bd.tcl). Vec IDs below are read from the generated
+ * xparameters.h rather than hardcoded, so this reordering doesn't require any code change here --
+ * only a BSP regeneration in Vitis. axi_iic_0/iic2intc_irpt intentionally left unconnected
  * (poll-only I2C).
  * ------------------------------------------------------------------------------------------- */
 #define AXI_INTC_BASEADDR XPAR_INTC_0_BASEADDR
 #define AXI_INTC_DEVICE_ID XPAR_INTC_0_DEVICE_ID
 
 #define INTC_DMA_S2MM_VEC_ID XPAR_INTC_0_AXIDMA_0_VEC_ID
+#define INTC_DMA_1_S2MM_VEC_ID XPAR_INTC_0_AXIDMA_1_VEC_ID
 #define INTC_UARTLITE_VEC_ID XPAR_INTC_0_UARTLITE_0_VEC_ID
 #define INTC_FCI_CORE_VEC_ID XPAR_INTC_0_FCI_CORE_0_VEC_ID
 
@@ -132,5 +168,6 @@
                                                              * once set (per xintc_l.h) */
 
 #define INTC_DMA_S2MM_BIT (1U << INTC_DMA_S2MM_VEC_ID)
+#define INTC_DMA_1_S2MM_BIT (1U << INTC_DMA_1_S2MM_VEC_ID)
 
 #endif /* SRC_REGISTERS_H_ */

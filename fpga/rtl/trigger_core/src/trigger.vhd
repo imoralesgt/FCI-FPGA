@@ -10,6 +10,16 @@
 --
 -- ADC data is offset binary, so the comparison is a plain unsigned compare.
 -- armed_i gates trigger_o so a new trigger can't fire while a capture is already in progress.
+--
+-- Reconfiguration hazard: `above` is the registered "was above threshold as of the previous
+-- clock edge" state, computed under whatever threshold_i/polarity_i were *then*. If threshold_i
+-- or polarity_i changes, `above_now` on the very next cycle is computed under the NEW
+-- configuration while `above` still reflects the OLD one -- a difference that can look exactly
+-- like a genuine crossing even though adc_data_i never moved. Confirmed on real hardware: this is
+-- what was producing "triggered" captures full of pure baseline noise every time firmware
+-- reprogrammed threshold_i. Fixed by registering the previous threshold_i/polarity_i and
+-- suppressing trigger_o for exactly the one cycle where either changed, while still updating
+-- `above` so the very next cycle onward compares correctly against the new configuration.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -34,6 +44,11 @@ architecture rtl of trigger is
   -- Registered "was above threshold as of the previous clock edge" state.
   signal above : std_logic;
 
+  -- Previous cycle's threshold_i/polarity_i, to detect a live reconfiguration and suppress the
+  -- false edge it would otherwise produce (see header comment).
+  signal threshold_q : std_logic_vector(DATA_WIDTH - 1 downto 0);
+  signal polarity_q  : std_logic;
+
 begin
 
   -- above_now is a variable (not a signal) specifically so it's usable immediately within this
@@ -41,12 +56,15 @@ begin
   -- value at that point (VHDL signal assignments only take effect at the next clock edge, so
   -- comparing against `above` here correctly reads the pre-update, previous-cycle state).
   process (clk_i)
-    variable above_now : std_logic;
+    variable above_now   : std_logic;
+    variable cfg_changed : boolean;
   begin
     if rising_edge(clk_i) then
       if rstn_i = '0' then
-        above     <= '0';
-        trigger_o <= '0';
+        above       <= '0';
+        trigger_o   <= '0';
+        threshold_q <= threshold_i;
+        polarity_q  <= polarity_i;
       else
         if unsigned(adc_data_i) >= unsigned(threshold_i) then
           above_now := '1';
@@ -54,7 +72,9 @@ begin
           above_now := '0';
         end if;
 
-        if armed_i = '1' and
+        cfg_changed := (threshold_i /= threshold_q) or (polarity_i /= polarity_q);
+
+        if armed_i = '1' and not cfg_changed and
            ((polarity_i = '1' and above_now = '1' and above = '0') or
             (polarity_i = '0' and above_now = '0' and above = '1')) then
           trigger_o <= '1';
@@ -62,7 +82,9 @@ begin
           trigger_o <= '0';
         end if;
 
-        above <= above_now;
+        above       <= above_now;
+        threshold_q <= threshold_i;
+        polarity_q  <= polarity_i;
       end if;
     end if;
   end process;

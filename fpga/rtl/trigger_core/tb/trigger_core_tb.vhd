@@ -70,9 +70,49 @@ architecture sim of trigger_core_tb is
   signal test_count : integer := 0;
   signal fail_count : integer := 0;
 
+  -- Set true only around the reconfiguration-hazard test below, while adc_data_i is held
+  -- deliberately constant -- any m_axis_tvalid rising edge seen during that window can only be a
+  -- spurious, reconfiguration-induced capture (trigger.vhd's now-fixed bug), not a real one.
+  signal expect_no_capture : boolean := false;
+  signal reconfig_fail     : boolean := false;
+
+  -- Stimulus helper: encodes an intended offset-binary sample value as the raw 2's-complement
+  -- bit pattern a real LTC2248 (MODE strapped to 2/3 VDD on this board) actually outputs for it
+  -- -- mirrors trigger_core_top's own (self-inverse, MSB-flip) conversion. Driving adc_data_i
+  -- through this function means every assertion below, expressed in offset-binary terms exactly
+  -- as before this conversion existed, continues to hold unchanged if and only if that
+  -- conversion is implemented correctly.
+  function ob_to_2c(v : integer) return std_logic_vector is
+    variable result : std_logic_vector(ADC_WIDTH - 1 downto 0);
+  begin
+    result := std_logic_vector(to_unsigned(v mod MOD_VAL, ADC_WIDTH));
+    result(ADC_WIDTH - 1) := not result(ADC_WIDTH - 1);
+    return result;
+  end function;
+
 begin
 
   clk_i <= not clk_i after CLK_PERIOD / 2;
+
+  -- Sole driver of reconfig_fail (a single un-resolved boolean can't have two drivers): re-arms
+  -- itself to false on expect_no_capture's rising edge, then latches true on any spurious
+  -- capture seen while it's set -- the stimulus process only ever reads it.
+  monitor_no_spurious : process
+    variable prev_tvalid : std_logic := '0';
+    variable prev_expect : boolean   := false;
+  begin
+    wait until rising_edge(clk_i);
+    if expect_no_capture and not prev_expect then
+      reconfig_fail <= false;
+    end if;
+    if expect_no_capture and m_axis_tvalid = '1' and prev_tvalid = '0' then
+      report "  FAIL: spurious capture (m_axis_tvalid rose) during reconfiguration-only stimulus"
+        severity error;
+      reconfig_fail <= true;
+    end if;
+    prev_tvalid := m_axis_tvalid;
+    prev_expect := expect_no_capture;
+  end process;
 
   dut : entity work.trigger_core_top
     generic map (
@@ -183,9 +223,9 @@ begin
       for i in 0 to (crossing_offset + depth_v + 64) loop
         wait until rising_edge(clk_i);
         if ascending then
-          adc_data_i <= std_logic_vector(to_unsigned((threshold - crossing_offset + i) mod MOD_VAL, ADC_WIDTH));
+          adc_data_i <= ob_to_2c(threshold - crossing_offset + i);
         else
-          adc_data_i <= std_logic_vector(to_unsigned((threshold + crossing_offset - i) mod MOD_VAL, ADC_WIDTH));
+          adc_data_i <= ob_to_2c(threshold + crossing_offset - i);
         end if;
       end loop;
 
@@ -282,6 +322,71 @@ begin
     run_test("boundary delay=2", 150, '1', 2, 16, true);
     run_test("boundary delay=256", 356, '1', 256, 300, true);
     run_test("boundary depth=4096", 150, '1', 4, 4096, true);
+
+    -- Reconfiguration hazard: on real hardware, reprogramming threshold/polarity while
+    -- adc_data_i doesn't move produced spurious "triggered" captures full of pure baseline noise
+    -- -- trigger.vhd's `above` was being compared across a threshold/polarity change boundary,
+    -- which can look exactly like a genuine crossing. Reproduces the same sequence here: hold
+    -- adc_data_i fixed and drive threshold/polarity through transitions that would have crossed
+    -- the old (leftover) comparator state, with monitor_no_spurious watching for any capture.
+    report "=== Test: reconfiguration hazard (no spurious capture) ===";
+    test_count    <= test_count + 1;
+    m_axis_tready <= '1';
+
+    -- Small, known depth/delay first (unrelated to the threshold/polarity hazard itself) so
+    -- that if the upcoming adc_data_i jump causes one real, legitimate trigger under whatever
+    -- threshold/polarity the previous test left behind, its capture drains quickly instead of
+    -- running for a leftover depth of up to 4096.
+    axi_write(8, 4);
+    axi_write(12, 16);
+
+    adc_data_i <= ob_to_2c(5000);
+    for i in 0 to 39 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    expect_no_capture <= true;
+
+    axi_write(0, 9000); -- threshold -> 9000: baseline (5000) < 9000, above settles to '0'
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    axi_write(4, 1); -- polarity -> RISING; threshold unchanged, above unchanged -- mundane
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    axi_write(0, 0); -- threshold 9000 -> 0: RISING hazard (above would jump 0->1 with adc_data_i
+                      -- untouched)
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    axi_write(4, 0); -- polarity -> FALLING; threshold unchanged (0), above unchanged -- mundane
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    axi_write(0, 16383); -- threshold 0 -> 16383: FALLING hazard (above would jump 1->0 with
+                          -- adc_data_i untouched)
+    for i in 0 to 19 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    expect_no_capture <= false;
+
+    if reconfig_fail then
+      fail_count <= fail_count + 1;
+      report "  Test 'reconfiguration hazard' FAILED" severity error;
+    else
+      report "  PASS (no spurious capture across 5 threshold/polarity reconfigurations, "
+             & "adc_data_i held constant)";
+    end if;
+
+    for i in 0 to 3 loop
+      wait until rising_edge(clk_i);
+    end loop;
 
     report "=== " & integer'image(test_count) & " tests run, " & integer'image(fail_count) & " failed ===";
     if fail_count = 0 then

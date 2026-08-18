@@ -308,7 +308,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>37af48c9</spirit:value>
+            <spirit:value>e1a64e9c</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -324,7 +324,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>37af48c9</spirit:value>
+            <spirit:value>e1a64e9c</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -862,7 +862,7 @@
       <spirit:file>
         <spirit:name>src/trigger_core_top.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
-        <spirit:userFileType>CHECKSUM_7e70ed6f</spirit:userFileType>
+        <spirit:userFileType>CHECKSUM_a1db68e4</spirit:userFileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
@@ -948,13 +948,13 @@
       <xilinx:definitionSource>package_project</xilinx:definitionSource>
       <xilinx:vendorDisplayName>FCI-FPGA project</xilinx:vendorDisplayName>
       <xilinx:coreRevision>1</xilinx:coreRevision>
-      <xilinx:coreCreationDateTime>2026-08-13T14:44:47Z</xilinx:coreCreationDateTime>
+      <xilinx:coreCreationDateTime>2026-08-17T14:47:44Z</xilinx:coreCreationDateTime>
     </xilinx:coreExtensions>
     <xilinx:packagingInfo>
       <xilinx:xilinxVersion>2022.2</xilinx:xilinxVersion>
       <xilinx:checksum xilinx:scope="busInterfaces" xilinx:value="7a68e95f"/>
       <xilinx:checksum xilinx:scope="memoryMaps" xilinx:value="c930e363"/>
-      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="d16bdae0"/>
+      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="05903fda"/>
       <xilinx:checksum xilinx:scope="ports" xilinx:value="5813dee6"/>
       <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="435ca1e8"/>
       <xilinx:checksum xilinx:scope="parameters" xilinx:value="da8d7125"/>

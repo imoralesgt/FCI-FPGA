@@ -18,3 +18,7 @@ void Intc_Init(u32 enable_mask, XInterruptHandler handler, void *callback_ref) {
   microblaze_register_handler(handler, callback_ref);
   microblaze_enable_interrupts();
 }
+
+void Intc_EnableAdditional(u32 additional_mask) {
+  Xil_Out32(AXI_INTC_BASEADDR + AXI_INTC_SIE_OFFSET, additional_mask);
+}

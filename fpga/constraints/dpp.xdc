@@ -50,6 +50,11 @@ set_property PULLUP true [get_ports {adc_of}]
 set_property PACKAGE_PIN V8 [get_ports {adc_of}]
 
 
+# adc_data[13:0] timing: see adc_timing.xdc (separate file -- must be scoped "Used in:
+# Implementation" only in the Vivado GUI, not Synthesis, or the referenced generated clock name
+# won't resolve yet and the constraint silently no-ops; confirmed twice via checkpoint inspection
+# that a same-file constraint here never actually took effect).
+
 set_property IOSTANDARD LVCMOS33 [get_ports adc_clk]
 #set_property IOSTANDARD LVCMOS33 [get_ports reset_rtl]
 #set_property IOSTANDARD LVCMOS33 [get_ports sys_clock]

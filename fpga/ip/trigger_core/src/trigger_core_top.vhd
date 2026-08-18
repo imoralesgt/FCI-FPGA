@@ -15,7 +15,9 @@ entity trigger_core_top is
     clk_i  : in std_logic;
     rstn_i : in std_logic;
 
-    -- Plain ADC input, offset binary. "Make External" at the block-design level.
+    -- Plain ADC input, raw from the pins: 2's complement (LTC2248's MODE pin is strapped to
+    -- 2/3 VDD on this board -- see architecture body for the offset-binary conversion done
+    -- internally). "Make External" at the block-design level.
     adc_data_i : in std_logic_vector(ADC_WIDTH - 1 downto 0);
 
     -- AXI4-Lite slave: threshold (0x00), polarity (0x04), delay (0x08), depth (0x0C).
@@ -59,6 +61,49 @@ architecture rtl of trigger_core_top is
   signal delay_sel : std_logic_vector(clog2(MAX_DELAY) - 1 downto 0);
   signal depth     : std_logic_vector(clog2(MAX_DEPTH) - 1 downto 0);
 
+  -- Raw ADC bus, registered with NO combinational logic in front of this flop -- confirmed against
+  -- the sibling gamma-spectroscopy project (same board/ADC, same clk_adc/clk_dpp-equivalent
+  -- clocking structure, and known to run clean even near detector saturation): its own first touch
+  -- of adc_data is exactly this pattern, `samples <= signed(adc_data) & ...`, straight into a
+  -- flop before any processing. All 14 bits get identical, symmetric pin-to-register timing this
+  -- way -- no bit is treated differently, unlike putting the MSB-flip conversion below ahead of
+  -- this register (which would have given the MSB an extra LUT relative to the other 13 bits,
+  -- right at the one timing-critical moment where any asymmetry matters most, given how thin the
+  -- margin on this unconstrained bus turned out to be in practice).
+  signal adc_data_q : std_logic_vector(ADC_WIDTH - 1 downto 0);
+
+  -- Force these 14 flops into the I/O blocks. Without this they are packed as ordinary fabric
+  -- flops and the placer scatters them: measured on the routed checkpoint of an earlier build,
+  -- they landed across SLICE_X39Y106..SLICE_X50Y116 (26 CLB rows apart) with port-to-flop delays
+  -- spanning 3.272 ns (bit 2) to 5.736 ns (bit 11) -- 2.464 ns of BIT-TO-BIT SKEW on a bus that
+  -- has to be latched as one coherent word every 20 ns.
+  --
+  -- That skew is what corrupted large pulses while leaving small ones intact. With the live
+  -- baseline near code 1855, the 2047->2048 major-carry boundary (where the whole low half of the
+  -- bus flips at once) sits only ~193 counts away: small pulses never reach it and change few
+  -- bits per sample, so skew is harmless, while any larger pulse crosses it on a fast edge and the
+  -- early- and late-arriving halves of the bus get latched from DIFFERENT ADC samples, yielding a
+  -- mixed old/new word. Observed captures bear this out -- the corruption on the rising edge
+  -- begins exactly at the sample reading 2047.
+  --
+  -- IOB packing gives every bit the same short, fixed pad-to-flop path, which is the standard
+  -- requirement for a source-synchronous parallel bus. The attribute lives here in the RTL rather
+  -- than in an XDC on purpose: it travels with the packaged IP and cannot silently miss its target
+  -- the way a hierarchical-path constraint can.
+  attribute IOB : string;
+  attribute IOB of adc_data_q : signal is "TRUE";
+
+  -- The LTC2248's MODE pin is strapped to 2/3 VDD on this board, which per its datasheet selects
+  -- 2's-complement output format, not the offset-binary format the rest of this core (trigger.vhd's
+  -- unsigned comparator, and fci_core downstream) assumes. The two formats differ by exactly the
+  -- MSB, so converting is a single bit inversion -- done here on the already-registered adc_data_q
+  -- (not on the raw port -- see above), so every comparison/delay/capture downstream operates on
+  -- offset-binary data that's one full cycle removed from the timing-critical capture moment. This
+  -- is board-specific integration knowledge, kept here rather than in trigger.vhd/delay_line.vhd
+  -- (which stay format-agnostic, "offset binary in"), matching this file's existing role as the
+  -- board-aware top level (ADC_WIDTH's default already documents "matches this board's LTC2248").
+  signal adc_data_ob : std_logic_vector(ADC_WIDTH - 1 downto 0);
+
   signal delayed_data : std_logic_vector(ADC_WIDTH - 1 downto 0);
   signal trigger_pulse : std_logic;
   signal armed          : std_logic;
@@ -79,6 +124,19 @@ begin
   m_axis_tuser <= (others => '0');
   m_axis_tid   <= (others => '0');
   m_axis_tdest <= (others => '0');
+
+  -- Deliberately no reset: an IOB input flop must be a plain clock-enabled/unconditioned register
+  -- for the packer to place it in the I/O block, and a reset here would buy nothing anyway -- this
+  -- is a pure data pipeline stage, overwritten from the pins every single cycle, and everything
+  -- downstream (delay_line, trigger, capture_engine) carries its own reset.
+  process (clk_i)
+  begin
+    if rising_edge(clk_i) then
+      adc_data_q <= adc_data_i;
+    end if;
+  end process;
+
+  adc_data_ob <= (not adc_data_q(ADC_WIDTH - 1)) & adc_data_q(ADC_WIDTH - 2 downto 0);
 
   u_axi4lite_regs : entity work.axi4lite_regs
     generic map (
@@ -119,7 +177,7 @@ begin
       clk_i       => clk_i,
       rstn_i      => rstn_i,
       delay_sel_i => delay_sel,
-      data_i      => adc_data_i,
+      data_i      => adc_data_ob,
       data_o      => delayed_data
     );
 
@@ -131,7 +189,7 @@ begin
       clk_i       => clk_i,
       rstn_i      => rstn_i,
       armed_i     => armed,
-      adc_data_i  => adc_data_i,
+      adc_data_i  => adc_data_ob,
       threshold_i => threshold,
       polarity_i  => polarity,
       trigger_o   => trigger_pulse
