@@ -325,9 +325,9 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.c_include_sg {0} \
     CONFIG.c_m_axis_mm2s_tdata_width {32} \
-    CONFIG.c_mm2s_burst_size {2} \
-    CONFIG.c_s2mm_burst_size {2} \
-    CONFIG.c_sg_length_width {8} \
+    CONFIG.c_mm2s_burst_size {8} \
+    CONFIG.c_s2mm_burst_size {8} \
+    CONFIG.c_sg_length_width {14} \
   ] $axi_dma_0
 
 
@@ -336,9 +336,10 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.c_include_sg {0} \
     CONFIG.c_m_axis_mm2s_tdata_width {32} \
-    CONFIG.c_mm2s_burst_size {2} \
-    CONFIG.c_s2mm_burst_size {2} \
+    CONFIG.c_mm2s_burst_size {256} \
+    CONFIG.c_s2mm_burst_size {256} \
     CONFIG.c_s_axis_s2mm_tdata_width {16} \
+    CONFIG.c_sg_length_width {18} \
   ] $axi_dma_1
 
 
@@ -397,12 +398,12 @@ proc create_root_design { parentCell } {
     CONFIG.CLKOUT2_USED {true} \
     CONFIG.CLKOUT3_JITTER {522.315} \
     CONFIG.CLKOUT3_PHASE_ERROR {668.310} \
-    CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {50} \
+    CONFIG.CLKOUT3_REQUESTED_OUT_FREQ {100.000} \
     CONFIG.CLKOUT3_USED {false} \
     CONFIG.CLK_IN1_BOARD_INTERFACE {sys_clock} \
     CONFIG.CLK_OUT1_PORT {clk_cpu} \
     CONFIG.CLK_OUT2_PORT {clk_adc} \
-    CONFIG.CLK_OUT3_PORT {clk_dsp} \
+    CONFIG.CLK_OUT3_PORT {clk_out3} \
     CONFIG.MMCM_CLKFBOUT_MULT_F {62.500} \
     CONFIG.MMCM_CLKOUT0_DIVIDE_F {15.000} \
     CONFIG.MMCM_CLKOUT1_DIVIDE {15} \
