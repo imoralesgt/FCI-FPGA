@@ -225,7 +225,7 @@ Two problems:
 Replaced with a **noise-band search**: sweep *up* from 0 in small steps with a few ms dwell, and
 record the first and last threshold that fire. The noise band is always present, independent of
 the detector, and fires at kHz, so milliseconds are decisive. Calibration then parks at the band
-centre, captures immediately, and measures mean/σ from the pre-trigger region.
+center, captures immediately, and measures mean/σ from the pre-trigger region.
 
 Two follow-on fixes were needed: the step size had to drop from 64 to 8 (the band is only ~±4σ ≈ 56
 counts wide on a quiet baseline — *narrower than the original step*), and the event-counter
@@ -305,7 +305,7 @@ questions its probe should be moved to `adc_data_q` (post capture register).
   ~30 cps, and the real cause was §4.3.
 - **The encoding hypothesis was raised early and dismissed on bad reasoning.** The fold point was
   placed at offset-binary midscale 8192 instead of at analog zero, where the *misread* jumps
-  16383→0; and the fingerprint was described as "a cliff" without recognising that a cliff, a
+  16383→0; and the fingerprint was described as "a cliff" without recognizing that a cliff, a
   clipped far side and a cliff back *is* spike-plateau-undershoot. That misplacement is what led to
   the skew and VGA detours.
 
@@ -330,6 +330,25 @@ At the normal operating point (fine gain 1.0 → code 819, coarse 6.0 → code 7
 | headroom to analog zero | ~6300 counts |
 | polarity (digitised) | **rising** — pulses go UP from baseline |
 
+### Constants and what fixes them
+
+Most numbers in this design are forced by something measurable. A few are not, and the difference
+matters — this project lost several sessions to constants that looked derived and were not
+(thresholds 1900 and 2100, tuned against a mis-encoded signal; a 64-count scan step that turned out
+wider than the noise band it was searching for). Each constant is therefore classified below.
+
+| constant | value | what fixes it |
+|---|---|---|
+| `CAPTURE_DEPTH` | 1024 | **Hard interface constraint.** Must equal `fci_core`'s `N_SAMPLES`: `trigger_core` streams exactly this many beats and `axis_to_fft` reads exactly that many, so a mismatch either hangs the pipeline or desyncs every frame after it. Not tunable. |
+| output FIFO depth (`capture_engine`) | 2 | **Derived** from the buffer's 1-cycle read latency: one read already in flight when TREADY drops, plus the beat already being presented. Three would be dead area; one would drop data. |
+| `BASELINE_SAMPLES` | 64 | **Derived.** Must lie entirely inside the `TRIGGER_DELAY` pre-trigger region, so anything below 100 works; 64 leaves margin while still averaging enough samples for a usable σ. |
+| noise-scan `STEP` | 8 | **Derived.** Must be well under the noise band width. On a quiet baseline σ ≈ 7, so the band is only ~±4σ ≈ 56 counts — a step of 64 stepped straight over it (§4.4). |
+| AD5697 fine / coarse codes | 819 / 765 | **Derived** from the two control-law formulas (§4.2), cross-checked against the sibling project's host-side API and confirmed on hardware by the gain bisect. |
+| FFT bin spacing | 48.83 kHz | **Derived**: 50 Msps / 1024. |
+| `TRIGGER_DELAY` | 100 | **Chosen.** Sets the pre/post-trigger split; any value above `BASELINE_SAMPLES` and within the delay line's 2..256 range is valid. Adjust to taste. |
+| `THRESHOLD_SIGMA_MULT` | 8 | **Tuning knob — not derived.** The paper's 4σ is for offline analysis of recorded traces; on a live comparator at 50 Msps it would fire ~1500 false triggers/s against a ~30 cps real rate. 8 was picked to sit clear of the noise, and is the intended thing to adjust: raise it if noise triggers persist, lower it if genuine small events are missed. |
+| `psa_l_hi` / `psa_w_hi` | 25 / 90 | **Inherited, not derived for this detector.** These came from `fci_core_tb.cpp` and were never re-derived against the measured pulse. They are mismatched — see below. |
+
 ### Known issue: FCI windows are mismatched to this pulse
 
 τ ≈ 1.4 µs puts the spectral corner at 1/(2πτ) ≈ 114 kHz. With 1024 samples at 50 Msps the FFT bin
@@ -342,6 +361,46 @@ into the ratio. Narrowing `psa_l` toward the first 2–3 bins is the direction t
 sensitivity to decay-constant differences, and it is an AXI4-Lite parameter change — no rebuild.
 
 ---
+
+## 7a. Issue #10 — trigger_core output rate halved (fixed)
+
+`trigger_core`'s AXI4-Stream output ran at 25 Msps against a 50 Msps capture: TVALID toggled
+1/0/1/0 continuously instead of staying high.
+
+The issue text suspected the lockstep `axis_broadcaster` or the DMAs, but the ILA capture rules
+that out — **TREADY was steady high while TVALID toggled**. A consumer applying backpressure would
+show the opposite. The stall was inside `capture_engine.vhd`.
+
+`circular_buffer` has a 1-cycle registered read latency. The FSM used a *single* `addr` register as
+both the buffer read address and the current-beat pointer, so after every accepted beat it had to
+spend a dead cycle waiting for `buf_rd_data_i` to catch up to the new address:
+
+```vhdl
+elsif m_axis_tready_i = '1' then      -- beat accepted
+  addr       <= addr + 1;
+  data_valid <= '0';                  -- forced low for the next full cycle
+```
+
+A hard 50% duty cycle, independent of anything downstream.
+
+**Fix:** stop serializing "advance address" and "present data"; pipeline them. `issue_addr` now runs
+ahead, presenting a new address every cycle it is allowed to, and returning words land in a 2-entry
+FIFO feeding the stream output. Two entries is exactly right: when TREADY deasserts, one read is
+already in flight and must be absorbed, on top of the beat already being presented. Issue is gated
+on the occupancy the FIFO will have *next* cycle (`count + push - pop`), which makes overflow
+structurally impossible rather than merely unlikely.
+
+**Verification.** The testbench now counts idle cycles between the first accepted beat and TLAST
+whenever TREADY is held high, and fails on any. Reverting the RTL makes it fail with exactly
+`depth - 1` bubbles per capture — 4095 for a 4096-beat trace — which is the 50% duty cycle
+quantified:
+
+```
+with the fix:      PASS (beats=4096, mid-stream idle cycles=0)
+fix reverted:      FAIL: 4095 idle cycle(s) mid-stream with tready held high
+```
+
+All 7 scenarios pass, and the IP was repackaged and byte-compared against the RTL.
 
 ## 8. Current state
 
@@ -356,8 +415,6 @@ sensitivity to decay-constant differences, and it is an AXI4-Lite parameter chan
 ### Open items
 
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
-- `capture_engine.vhd` STREAM-side throughput: `data_valid` is forced low for one cycle after every
-  accepted beat, halving the rate to 25 Msps. Diagnosed, deliberately deferred.
 - PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
 - Baseline restorer + trapezoidal shaper cores — discussion only, not started

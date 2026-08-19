@@ -29,6 +29,14 @@
 #include "xil_printf.h"
 #include "xstatus.h"
 
+/* trigger_core's capture depth. NOT a tunable: it must equal fci_core's N_SAMPLES exactly.
+ * trigger_core streams exactly this many beats per capture and fci_core's axis_to_fft loop reads
+ * exactly that many, so any mismatch either hangs the pipeline (fci_core waiting on beats that
+ * never arrive) or desyncs every frame after it. Named rather than written inline at each of the
+ * four sites that program it, because a literal 1024 reads like a tunable and this is a hard
+ * interface constraint between two cores. */
+#define CAPTURE_DEPTH 1024
+
 static int g_fail_count = 0;
 
 static void check_u32(const char *name, u32 expected, u32 actual) {
@@ -63,8 +71,8 @@ static void test_trigger_core(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, 100);
   check_u32("delay", 100, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET));
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
-  check_u32("depth", 1024, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET));
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
+  check_u32("depth", CAPTURE_DEPTH, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET));
 
   /* Polarity RISING. An earlier comment here claimed falling, on the strength of an oscilloscope
    * check of the ANALOG pulse -- but what matters is the digitized polarity after the front end's
@@ -139,9 +147,12 @@ static void print_psa(const char *label, u32 raw28) {
  * not an exact figure. */
 #define DMA_POLL_ITERS_200MS 500000
 #define DMA_POLL_ITERS_2S (DMA_POLL_ITERS_200MS * 10) /* P ~= 1 - exp(-30*2) ~= 100% */
-/* For waits that must catch a REAL detector event with no source present -- background only (NORM
- * + cosmics) runs at a few Hz at most, where 2s is not a safe margin. */
-#define DMA_POLL_ITERS_10S (DMA_POLL_ITERS_200MS * 50)
+/* Waits that must catch a REAL detector event. Background here is ~30 cps, so P(no event in 1 s)
+ * = exp(-30) ~= 1e-13 -- 2 s is already far past the point where waiting longer buys anything. An
+ * earlier version used 10 s, sized from an event-rate estimate that was 10x low; that only made
+ * every failing run slower to report. The timeout is set so that EXPIRY IS ITSELF INFORMATIVE:
+ * at this rate it means the pipeline is broken, never that the detector was quiet. */
+#define DMA_POLL_ITERS_EVENT DMA_POLL_ITERS_2S
 
 /* auto_restart + ap_start together (test_fci_core() above only set auto_restart, deliberately not
  * starting it without a live trigger source). Called once before calibrate_threshold()/
@@ -172,23 +183,98 @@ static volatile u32 g_raw_ready_depth = 0;
  * happened since I last checked," which g_raw_ready_buf alone can't (it stays non-zero forever
  * once set). Used by set_trigger_threshold() below to wait out its own self-inflicted trigger. */
 static volatile u32 g_raw_event_count = 0;
+/* Bytes the S2MM channel is armed for. Deliberately the FULL buffer capacity, NOT the expected
+ * packet length (depth * 2).
+ *
+ * Arming for exactly the expected length makes the channel fragile in a way that costs the whole
+ * acquisition chain: if a packet ever runs longer than the programmed length -- a boundary slip, a
+ * re-arm landing mid-packet, an RTL bug -- the DataMover raises DMAIntErr and HALTS. A halted S2MM
+ * never re-arms itself, and because axis_broadcaster_0 is lockstep it also freezes fci_core and
+ * trigger_core, so one bad packet reads as "the whole design is dead" (observed 2026-08-18:
+ * raw_events stuck at 1, S2MM_DMASR=0x11).
+ *
+ * Arming for capacity cannot overrun for any packet up to RAW_TRACE_MAX_SAMPLES beats, and TLAST
+ * still terminates the transfer at the true packet boundary. The byte count actually received is
+ * then read back from the length register, which is strictly better information than assuming the
+ * depth register still holds what it held when the trigger fired.
+ *
+ * HARDWARE COUPLING: axi_dma_1's c_sg_length_width (the buffer-length register width) must be at
+ * least ceil(log2(RAW_TRACE_ARM_BYTES + 1)) = 13 bits for this value to survive the write. The
+ * register silently truncates, and a truncated 4096 is 0 -- which the DataMover reports as
+ * DMAIntErr, the same error code as a packet overrun, from a completely different cause. Not
+ * hypothetical: axi_dma_0 shipped at 8 bits (max 255 bytes) until 2026-08-18. Both DMAs are now
+ * at 16, which leaves margin; if this constant ever grows past 65535, that width must grow too. */
+#define RAW_TRACE_ARM_BYTES (CAPTURE_DEPTH * 2)
+/* NOTE (2026-08-18): this is deliberately back to the EXACT expected packet length, not the buffer
+ * capacity above. Capacity arming is the more robust pattern and the reasoning above still holds --
+ * but it relies on TLAST to terminate the transfer, and on this hardware TLAST is currently not
+ * ending the S2MM transfer: the channel swallowed two 1024-beat packets and raised DMAIntErr at
+ * 4096 bytes. Exact-length arming completes at the byte count instead, which is the configuration
+ * that ran 10,000+ events without a single error.
+ *
+ * The cost of this choice is that a TLAST fault stays invisible rather than loud, so the `last rx=`
+ * figure in report_raw_path_state() is the thing to watch: 2048 bytes means the packet ended where
+ * it should. Revert to RAW_TRACE_MAX_SAMPLES * 2 once the TLAST path into axi_dma_1 is understood. */
+static volatile u32 g_raw_last_len = 0; /* bytes in the most recent completed transfer */
+static volatile u32 g_fsl_timeouts = 0; /* MM2S readbacks that never delivered; see the ISR */
+/* ~240 us at 50 MHz. An 8-byte MM2S transfer completes in well under a microsecond, so this is
+ * pure margin -- its only job is to be finite, because the alternative is an unbounded stall. */
+#define MM2S_WAIT_ITERS 2000
+
+/* Counts how often the raw-trace channel had to be reset. A nonzero value here with acquisition
+ * still running means errors are occurring but no longer fatal -- which is exactly the information
+ * needed to tell "one unlucky packet" apart from "every packet is malformed". */
+static volatile u32 g_dma1_recoveries = 0;
+/* Consecutive recoveries with no clean capture in between. Recovery is worth having for an
+ * occasional bad packet, but unbounded it is actively harmful: when the error repeats immediately
+ * the ISR resets and re-arms forever (measured 378k times in one run) and NOTHING else can be
+ * observed -- no captures, no calibration, and the original fault buried under firmware thrashing.
+ * After this many consecutive failures the channel is left halted on purpose, which restores the
+ * previous, more informative behaviour: one error, then a stable state the diagnostics can read. */
+#define DMA1_MAX_CONSEC_RECOVERIES 8
+static volatile u32 g_dma1_consec_fail = 0;
+static volatile u32 g_dma1_gave_up = 0;
 
 static void service_dma1_event(void) {
+  /* Snapshot status and byte count BEFORE the ack clears the completion state. The S2MM length
+   * register reads back what was actually received, which is the truth; the trigger_core depth
+   * register only says what SHOULD have arrived. */
+  u32 sr = Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET);
+  u32 rx_bytes = Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_LENGTH_OFFSET);
+
   DmaS2mm_AckComplete(AXI_DMA_1_BASEADDR);
 
+  int errored = (sr & AXI_DMA_SR_ERR_ALL_MASK) != 0;
+  int completed = (sr & AXI_DMA_SR_IOC_IRQ_MASK) != 0;
+
   u32 just_completed = g_raw_write_buf;
-  u32 depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
-  if (depth == 0 || depth > RAW_TRACE_MAX_SAMPLES)
-    depth = RAW_TRACE_MAX_SAMPLES; /* guard the fixed-size buffers above */
 
   /* Re-arm into the other slot before publishing/reading this one, same reasoning as the PSA
    * double-buffer below. */
   g_raw_write_buf = (g_raw_write_buf == RAW_TRACE_BUF_A) ? RAW_TRACE_BUF_B : RAW_TRACE_BUF_A;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+  if (errored) {
+    if (g_dma1_consec_fail >= DMA1_MAX_CONSEC_RECOVERIES) {
+      g_dma1_gave_up = 1; /* leave it halted; stop the spin so the state stays readable */
+      return;
+    }
+    g_dma1_consec_fail++;
+    g_dma1_recoveries++;
+    DmaS2mm_RecoverIfHalted(AXI_DMA_1_BASEADDR); /* reset clears the halt */
+  }
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES);
 
-  g_raw_ready_buf = just_completed;
-  g_raw_ready_depth = depth;
-  g_raw_event_count++;
+  /* Publish ONLY a clean, non-empty completion. Counting error recoveries as events made
+   * g_raw_event_count advance on entries where no data arrived at all, which fed straight back
+   * into find_noise_band(): every scan step saw the counter move and reported a "noise band"
+   * spanning 0..16376 -- including thresholds that cannot physically fire. The scan was measuring
+   * the recovery loop rather than the detector. */
+  if (completed && !errored && rx_bytes > 0) {
+    g_dma1_consec_fail = 0; /* a good transfer re-earns the recovery budget */
+    g_raw_ready_buf = just_completed;
+    g_raw_ready_depth = rx_bytes / 2; /* 16-bit stream: 2 bytes per sample */
+    g_raw_last_len = rx_bytes;
+    g_raw_event_count++;
+  }
 }
 
 /* trigger_core's `above` comparator (trigger.vhd) is continuously live, re-evaluated every clk_i
@@ -234,6 +320,14 @@ static void service_dma0_event(void) {
   DmaS2mm_ArmTransfer(AXI_DMA_BASEADDR, g_write_buf, 8);
 
   DmaMm2s_ArmTransfer(AXI_DMA_BASEADDR, just_completed, 8);
+  /* Never issue the blocking FSL read without first confirming the words are coming. getfslx() with
+   * FSL_DEFAULT stalls the core until a word arrives, and this runs inside the ISR -- so a failed
+   * readback wedges the firmware permanently with interrupts disabled and no output at all. That is
+   * what turned a DMA error into a silent stop mid-line. */
+  if (!DmaMm2s_WaitDone(AXI_DMA_BASEADDR, MM2S_WAIT_ITERS)) {
+    g_fsl_timeouts++;
+    return;
+  }
   u32 raw_l, raw_w;
   getfslx(raw_l, 0, FSL_DEFAULT);
   getfslx(raw_w, 0, FSL_DEFAULT);
@@ -273,12 +367,8 @@ static void start_raw_trace_pipeline(void) {
     return;
   }
 
-  u32 depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
-  if (depth == 0 || depth > RAW_TRACE_MAX_SAMPLES)
-    depth = RAW_TRACE_MAX_SAMPLES;
-
   g_raw_write_buf = RAW_TRACE_BUF_A;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES);
 
   Intc_Init(INTC_DMA_1_S2MM_BIT, intc_isr, NULL);
 }
@@ -297,9 +387,13 @@ static void start_raw_trace_pipeline(void) {
 static u16 g_trace[RAW_TRACE_MAX_SAMPLES];
 
 /* Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace. Kept separate from
- * printing so calibrate_threshold() can analyse a trace without dumping it over the UART. */
-static void read_raw_trace(u32 buf_addr, u32 depth) {
+ * printing so calibrate_threshold() can analyze a trace without dumping it over the UART. */
+static int read_raw_trace(u32 buf_addr, u32 depth) {
   DmaMm2s_ArmTransfer(AXI_DMA_1_BASEADDR, buf_addr, depth * 2);
+  if (!DmaMm2s_WaitDone(AXI_DMA_1_BASEADDR, MM2S_WAIT_ITERS)) {
+    g_fsl_timeouts++; /* see service_dma0_event(): do NOT fall through to a blocking read */
+    return 0;
+  }
   u32 copied = 0;
   while (copied < depth) {
     u32 word;
@@ -308,10 +402,14 @@ static void read_raw_trace(u32 buf_addr, u32 depth) {
     if (copied < depth)
       g_trace[copied++] = (u16)((word >> 16) & 0xFFFF);
   }
+  return 1;
 }
 
 static void print_raw_trace(u32 buf_addr, u32 depth) {
-  read_raw_trace(buf_addr, depth);
+  if (!read_raw_trace(buf_addr, depth)) {
+    xil_printf("  [FAIL] MM2S readback timed out -- no trace to print\r\n");
+    return;
+  }
 
   xil_printf("RAW,%d\r\n", depth);
   for (u32 i = 0; i < depth; i++)
@@ -327,10 +425,31 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
  *     Idle=0 means a transfer is in flight, i.e. beats are stuck mid-stream.
  *   INTC ISR raw status / IER enables / IPR pending. IOC set in DMASR while the matching IPR bit
  *     never clears points at the interrupt path, not the datapath. */
+/* Names the S2MM status bits instead of leaving a hex word to be looked up in PG021. The error
+ * bits matter most: DMAIntErr halts the channel permanently, and in direct-register mode it means
+ * either a zero transfer length or -- far more likely here -- a packet LARGER than the programmed
+ * buffer, i.e. the stream ran past `depth` beats without TLAST. A halted channel then stalls the
+ * lockstep broadcaster and takes the whole acquisition chain down with it, which is why a single
+ * error shows up as "nothing works" rather than as one lost trace. */
+static void print_dmasr(const char *label, u32 sr) {
+  xil_printf("  [DIAG] %s DMASR=0x%08x%s%s%s%s%s%s\r\n", label, sr,
+             (sr & 0x00000001u) ? " HALTED" : "",
+             (sr & 0x00000002u) ? " IDLE" : "",
+             (sr & 0x00000010u) ? " DMAIntErr(len=0 or packet>buffer)" : "",
+             (sr & 0x00000020u) ? " DMASlvErr" : "",
+             (sr & 0x00000040u) ? " DMADecErr" : "",
+             (sr & 0x00001000u) ? " IOC" : "");
+}
+
 static void report_raw_path_state(void) {
-  xil_printf("  [DIAG] dma1 S2MM_DMASR=0x%08x  MM2S_DMASR=0x%08x  raw_events=%d\r\n",
-             Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET),
-             Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_MM2S_DMASR_OFFSET), g_raw_event_count);
+  print_dmasr("dma1 S2MM", Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET));
+  print_dmasr("dma1 MM2S", Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_MM2S_DMASR_OFFSET));
+  xil_printf("  [DIAG] raw_events=%d  last rx=%d bytes (%d samples)  trigger_core depth=%d\r\n",
+             g_raw_event_count, g_raw_last_len, g_raw_last_len / 2,
+             Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET));
+  xil_printf("  [DIAG] fsl timeouts=%d  dma1 recoveries=%d (consec=%d%s)  clean captures=%d\r\n",
+             g_fsl_timeouts, g_dma1_recoveries, g_dma1_consec_fail,
+             g_dma1_gave_up ? ", GAVE UP" : "", g_raw_event_count);
   xil_printf("  [DIAG] intc ISR=0x%08x IER=0x%08x IPR=0x%08x MER=0x%08x (dma1 bit=0x%08x)\r\n",
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_ISR_OFFSET),
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IER_OFFSET),
@@ -422,6 +541,9 @@ static int find_noise_band(u32 *out_lo, u32 *out_hi) {
    * at higher event rates the pre-trigger window catches tails of earlier pulses. 8 samples the
    * band several times over even in the quietest case. */
   const u32 STEP = 8;
+  /* ~300 us at 50 MHz: comfortably longer than the ~85 us a capture needs to retire. */
+#define SETTLE_ITERS (DMA_POLL_ITERS_200MS / 200)
+
   const u32 DWELL = DMA_POLL_ITERS_200MS / 100; /* ~ms. A capture streams in ~20-40 us, and in-band
                                                  * noise crosses at kHz, so this is many times over
                                                  * what a real band needs -- while staying far too
@@ -442,7 +564,11 @@ static int find_noise_band(u32 *out_lo, u32 *out_hi) {
      * polarity, since `above` is then permanently 1. Program first, let anything in flight retire,
      * then snapshot, then dwell. */
     set_trigger_threshold(t);
-    for (volatile u32 q = 0; q < 20000; q++) {
+    /* Let any capture already in flight under the previous threshold retire before snapshotting.
+     * A capture is 1024 beats plus fci_core's 3197-cycle interval, ~4200 cycles ~= 85 us, so a few
+     * hundred microseconds is ample. This used to be 20000 iterations (~2.4 ms), four times the
+     * dwell it protects and ~80% of the whole scan's cost, for no benefit. */
+    for (volatile u32 q = 0; q < SETTLE_ITERS; q++) {
     }
     u32 before = g_raw_event_count;
     for (u32 w = 0; w < DWELL && g_raw_event_count == before; w++) {
@@ -468,9 +594,19 @@ static int calibrate_threshold(void) {
   xil_printf("-- threshold calibration (auto, %d sigma over baseline) --\r\n",
              THRESHOLD_SIGMA_MULT);
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
+
+  /* A halted or errored S2MM cannot complete ANY capture, so every one of the scan's 2048 steps
+   * would dwell and fail -- seconds of silence ending in "no noise band found", which describes a
+   * symptom and not the cause. Check once, up front, and name the real fault immediately. */
+  if (!g_dma1_gave_up && DmaS2mm_RecoverIfHalted(AXI_DMA_1_BASEADDR)) {
+    g_dma1_recoveries++;
+    xil_printf("  [WARN] axi_dma_1 S2MM was halted on an error -- reset and re-armed\r\n");
+    g_raw_write_buf = RAW_TRACE_BUF_A;
+    DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES);
+  }
 
   u32 band_lo, band_hi;
   if (!find_noise_band(&band_lo, &band_hi)) {
@@ -479,15 +615,15 @@ static int calibrate_threshold(void) {
     g_fail_count++;
     return 0;
   }
-  /* Band centre is the baseline, to within the scan step -- a useful cross-check against the mean
+  /* Band center is the baseline, to within the scan step -- a useful cross-check against the mean
    * computed from the trace below, since the two are measured completely differently. */
   u32 band_mid = (band_lo + band_hi) / 2;
-  xil_printf("  [INFO] noise band spans thresholds %d..%d (centre %d)\r\n", band_lo, band_hi,
+  xil_printf("  [INFO] noise band spans thresholds %d..%d (center %d)\r\n", band_lo, band_hi,
              band_mid);
 
-  /* Park at the CENTRE of the band, not its top edge. The edges are by definition where crossings
+  /* Park at the CENTER of the band, not its top edge. The edges are by definition where crossings
    * are rarest, so parking there can find the band and then wait out the timeout without a single
-   * capture; the centre crosses at kHz and returns immediately. */
+   * capture; the center crosses at kHz and returns immediately. */
   u32 count_before = g_raw_event_count;
   set_trigger_threshold(band_mid);
   u32 waited;
@@ -503,7 +639,11 @@ static int calibrate_threshold(void) {
   u32 depth = g_raw_ready_depth;
   if (depth > BASELINE_SAMPLES) /* only the pre-trigger region is guaranteed quiet */
     depth = BASELINE_SAMPLES;
-  read_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
+  if (!read_raw_trace(g_raw_ready_buf, g_raw_ready_depth)) {
+    xil_printf("  [FAIL] MM2S readback timed out during calibration\r\n");
+    g_fail_count++;
+    return 0;
+  }
 
   u32 sum = 0;
   for (u32 i = 0; i < depth; i++)
@@ -658,15 +798,16 @@ static void test_vga_fine_bisect(void) {
      * that pulse is what the bisect is measuring. Background-only rates make this the slow step. */
     u32 count_before = g_raw_event_count;
     u32 waited;
-    for (waited = 0; g_raw_event_count == count_before && waited < DMA_POLL_ITERS_10S; waited++) {
+    for (waited = 0; g_raw_event_count == count_before && waited < DMA_POLL_ITERS_EVENT; waited++) {
     }
     if (g_raw_event_count == count_before) {
-      xil_printf("  [INFO] no event captured within ~10s at this gain\r\n");
+      xil_printf("  [INFO] no event captured within ~2s at this gain\r\n");
       continue;
     }
 
     u32 depth = g_raw_ready_depth;
-    read_raw_trace(g_raw_ready_buf, depth);
+    if (!read_raw_trace(g_raw_ready_buf, depth))
+      continue;
 
     u32 stat_n = (depth > BASELINE_SAMPLES) ? BASELINE_SAMPLES : depth;
     u32 sum = 0;
@@ -748,14 +889,17 @@ static void test_encoding_fold_demo(void) {
 
   u32 count_before = g_raw_event_count;
   u32 waited;
-  for (waited = 0; g_raw_event_count == count_before && waited < DMA_POLL_ITERS_10S; waited++) {
+  for (waited = 0; g_raw_event_count == count_before && waited < DMA_POLL_ITERS_EVENT; waited++) {
   }
   if (g_raw_event_count == count_before) {
-    xil_printf("  [INFO] no event reached %d within ~10s -- gain still too low to reach the fold\r\n",
+    xil_printf("  [INFO] no event reached %d within ~2s -- gain still too low to reach the fold\r\n",
                select);
   } else {
     u32 depth = g_raw_ready_depth;
-    read_raw_trace(g_raw_ready_buf, depth);
+    if (!read_raw_trace(g_raw_ready_buf, depth)) {
+      xil_printf("  [FAIL] MM2S readback timed out -- cannot render the fold\r\n");
+      goto restore_gain;
+    }
 
     u32 peak = 0, peak_idx = 0, crossings = 0;
     for (u32 i = 0; i < depth; i++) {
@@ -779,6 +923,7 @@ static void test_encoding_fold_demo(void) {
       xil_printf("%d,%d,%d\r\n", i, g_trace[i], g_trace[i] ^ ANALOG_ZERO_CODE);
   }
 
+restore_gain:
   xil_printf("  [INFO] restoring normal gain\r\n");
   VgaDac_SetGainFine(AD8330_DEFAULT_GAIN_FINE_LINEAR);
   VgaDac_SetGainCoarse(AD8330_DEFAULT_GAIN_COARSE_LINEAR);
@@ -807,10 +952,10 @@ static void test_encoding_fold_demo(void) {
 static void test_live_event(void) {
   xil_printf("-- live event: trigger_core -> fci_core -> BRAM (interrupt-driven) --\r\n");
 
-  xil_printf("  [INFO] waiting for a live trigger (up to ~10s)...\r\n");
+  xil_printf("  [INFO] waiting for a live trigger (up to ~2s)...\r\n");
   u32 count_before = g_event_count;
   u32 waited;
-  for (waited = 0; g_event_count == count_before && waited < DMA_POLL_ITERS_10S; waited++) {
+  for (waited = 0; g_event_count == count_before && waited < DMA_POLL_ITERS_EVENT; waited++) {
   }
   if (g_event_count == count_before) {
     xil_printf("  [FAIL] timed out waiting for a triggered event (check threshold/detector)\r\n");
@@ -868,7 +1013,7 @@ static void start_result_pipeline(void) {
 static void start_continuous_capture(void) {
   xil_printf("-- continuous interrupt-driven capture --\r\n");
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
   set_trigger_threshold(g_calibrated_threshold); /* see calibrate_threshold() */
