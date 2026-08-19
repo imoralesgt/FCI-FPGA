@@ -47,17 +47,4 @@ DmaS2mmResult DmaS2mm_PollComplete(u32 dma_baseaddr, u32 max_iters);
  * DmaS2mm_ArmTransfer(). */
 void DmaS2mm_AckComplete(u32 dma_baseaddr);
 
-/* Waits (bounded) for an MM2S transfer to complete, so callers can avoid issuing a BLOCKING FSL
- * read for data that will never arrive. Returns 1 on completion, 0 on error or timeout.
- *
- * This exists because getfslx(..., FSL_DEFAULT) compiles to a blocking `get` instruction: it stalls
- * the core until a word appears. service_dma0_event() runs one inside the ISR, so a failed readback
- * wedges the whole firmware with interrupts disabled and no output at all -- observed 2026-08-18,
- * where the serial log stopped mid-sequence at the calibration header while MM2S read HALTED. */
-int DmaMm2s_WaitDone(u32 dma_baseaddr, u32 max_iters);
-
-/* Clears a halted-on-error S2MM channel by resetting the core. Returns 1 if an error was present
- * and the reset was performed, 0 if the channel was healthy. The caller must re-arm after a 1. */
-int DmaS2mm_RecoverIfHalted(u32 dma_baseaddr);
-
 #endif /* SRC_DMA_S2MM_H_ */

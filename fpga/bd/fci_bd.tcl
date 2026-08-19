@@ -325,9 +325,9 @@ proc create_root_design { parentCell } {
   set_property -dict [list \
     CONFIG.c_include_sg {0} \
     CONFIG.c_m_axis_mm2s_tdata_width {32} \
-    CONFIG.c_mm2s_burst_size {16} \
+    CONFIG.c_mm2s_burst_size {2} \
     CONFIG.c_s2mm_burst_size {2} \
-    CONFIG.c_sg_length_width {16} \
+    CONFIG.c_sg_length_width {8} \
   ] $axi_dma_0
 
 
@@ -339,7 +339,6 @@ proc create_root_design { parentCell } {
     CONFIG.c_mm2s_burst_size {2} \
     CONFIG.c_s2mm_burst_size {2} \
     CONFIG.c_s_axis_s2mm_tdata_width {16} \
-    CONFIG.c_sg_length_width {16} \
   ] $axi_dma_1
 
 
@@ -461,15 +460,12 @@ proc create_root_design { parentCell } {
     CONFIG.C_DATA_DEPTH {2048} \
     CONFIG.C_MON_TYPE {MIX} \
     CONFIG.C_NUM_MONITOR_SLOTS {4} \
-    CONFIG.C_NUM_OF_PROBES {3} \
+    CONFIG.C_NUM_OF_PROBES {1} \
     CONFIG.C_PROBE0_TYPE {0} \
-    CONFIG.C_PROBE1_TYPE {0} \
-    CONFIG.C_PROBE2_TYPE {0} \
     CONFIG.C_SLOT_0_APC_EN {0} \
     CONFIG.C_SLOT_0_AXI_DATA_SEL {1} \
     CONFIG.C_SLOT_0_AXI_TRIG_SEL {1} \
     CONFIG.C_SLOT_0_INTF_TYPE {xilinx.com:interface:axis_rtl:1.0} \
-    CONFIG.C_SLOT_0_TYPE {0} \
     CONFIG.C_SLOT_1_APC_EN {0} \
     CONFIG.C_SLOT_1_AXI_DATA_SEL {1} \
     CONFIG.C_SLOT_1_AXI_TRIG_SEL {1} \
@@ -479,21 +475,10 @@ proc create_root_design { parentCell } {
     CONFIG.C_SLOT_2_AXI_DATA_SEL {1} \
     CONFIG.C_SLOT_2_AXI_TRIG_SEL {1} \
     CONFIG.C_SLOT_2_INTF_TYPE {xilinx.com:interface:axis_rtl:1.0} \
-    CONFIG.C_SLOT_2_TYPE {0} \
     CONFIG.C_SLOT_3_APC_EN {0} \
     CONFIG.C_SLOT_3_AXI_DATA_SEL {1} \
     CONFIG.C_SLOT_3_AXI_TRIG_SEL {1} \
     CONFIG.C_SLOT_3_INTF_TYPE {xilinx.com:interface:axis_rtl:1.0} \
-    CONFIG.C_SLOT_3_TYPE {0} \
-    CONFIG.C_SLOT_4_APC_EN {0} \
-    CONFIG.C_SLOT_4_AXI_DATA_SEL {1} \
-    CONFIG.C_SLOT_4_AXI_TRIG_SEL {1} \
-    CONFIG.C_SLOT_4_INTF_TYPE {xilinx.com:interface:axis_rtl:1.0} \
-    CONFIG.C_SLOT_4_TYPE {0} \
-    CONFIG.C_SLOT_5_APC_EN {0} \
-    CONFIG.C_SLOT_5_AXI_DATA_SEL {1} \
-    CONFIG.C_SLOT_5_AXI_TRIG_SEL {1} \
-    CONFIG.C_SLOT_5_INTF_TYPE {xilinx.com:interface:axis_rtl:1.0} \
   ] $system_ila_0
 
 
@@ -506,10 +491,12 @@ proc create_root_design { parentCell } {
   connect_bd_intf_net -intf_net axi_bram_ctrl_1_BRAM_PORTA [get_bd_intf_pins axi_bram_ctrl_1/BRAM_PORTA] [get_bd_intf_pins axi_bram_ctrl_1_bram/BRAM_PORTA]
   connect_bd_intf_net -intf_net axi_bram_ctrl_1_BRAM_PORTB [get_bd_intf_pins axi_bram_ctrl_1/BRAM_PORTB] [get_bd_intf_pins axi_bram_ctrl_1_bram/BRAM_PORTB]
   connect_bd_intf_net -intf_net axi_dma_0_M_AXIS_MM2S [get_bd_intf_pins axi_dma_0/M_AXIS_MM2S] [get_bd_intf_pins microblaze_0/S0_AXIS]
+connect_bd_intf_net -intf_net [get_bd_intf_nets axi_dma_0_M_AXIS_MM2S] [get_bd_intf_pins axi_dma_0/M_AXIS_MM2S] [get_bd_intf_pins system_ila_0/SLOT_0_AXIS]
+  set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets axi_dma_0_M_AXIS_MM2S]
   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_MM2S [get_bd_intf_pins axi_dma_0/M_AXI_MM2S] [get_bd_intf_pins axi_smc/S00_AXI]
   connect_bd_intf_net -intf_net axi_dma_0_M_AXI_S2MM [get_bd_intf_pins axi_dma_0/M_AXI_S2MM] [get_bd_intf_pins axi_smc/S01_AXI]
   connect_bd_intf_net -intf_net axi_dma_1_M_AXIS_MM2S [get_bd_intf_pins axi_dma_1/M_AXIS_MM2S] [get_bd_intf_pins microblaze_0/S1_AXIS]
-connect_bd_intf_net -intf_net [get_bd_intf_nets axi_dma_1_M_AXIS_MM2S] [get_bd_intf_pins axi_dma_1/M_AXIS_MM2S] [get_bd_intf_pins system_ila_0/SLOT_0_AXIS]
+connect_bd_intf_net -intf_net [get_bd_intf_nets axi_dma_1_M_AXIS_MM2S] [get_bd_intf_pins axi_dma_1/M_AXIS_MM2S] [get_bd_intf_pins system_ila_0/SLOT_1_AXIS]
   set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets axi_dma_1_M_AXIS_MM2S]
   connect_bd_intf_net -intf_net axi_dma_1_M_AXI_MM2S [get_bd_intf_pins axi_dma_1/M_AXI_MM2S] [get_bd_intf_pins axi_smc/S02_AXI]
   connect_bd_intf_net -intf_net axi_dma_1_M_AXI_S2MM [get_bd_intf_pins axi_dma_1/M_AXI_S2MM] [get_bd_intf_pins axi_smc/S03_AXI]
@@ -519,10 +506,8 @@ connect_bd_intf_net -intf_net [get_bd_intf_nets axi_dma_1_M_AXIS_MM2S] [get_bd_i
   connect_bd_intf_net -intf_net axi_uartlite_0_UART [get_bd_intf_ports usb_uart_ftdi] [get_bd_intf_pins axi_uartlite_0/UART]
   connect_bd_intf_net -intf_net axis_broadcaster_0_M00_AXIS [get_bd_intf_pins axis_broadcaster_0/M00_AXIS] [get_bd_intf_pins fci_core_0/s_axis_data]
   connect_bd_intf_net -intf_net axis_broadcaster_0_M01_AXIS [get_bd_intf_pins axi_dma_1/S_AXIS_S2MM] [get_bd_intf_pins axis_broadcaster_0/M01_AXIS]
-connect_bd_intf_net -intf_net [get_bd_intf_nets axis_broadcaster_0_M01_AXIS] [get_bd_intf_pins axis_broadcaster_0/M01_AXIS] [get_bd_intf_pins system_ila_0/SLOT_3_AXIS]
-  set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets axis_broadcaster_0_M01_AXIS]
   connect_bd_intf_net -intf_net fci_core_0_m_axis_result [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM] [get_bd_intf_pins fci_core_0/m_axis_result]
-connect_bd_intf_net -intf_net [get_bd_intf_nets fci_core_0_m_axis_result] [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM] [get_bd_intf_pins system_ila_0/SLOT_1_AXIS]
+connect_bd_intf_net -intf_net [get_bd_intf_nets fci_core_0_m_axis_result] [get_bd_intf_pins axi_dma_0/S_AXIS_S2MM] [get_bd_intf_pins system_ila_0/SLOT_2_AXIS]
   set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets fci_core_0_m_axis_result]
   connect_bd_intf_net -intf_net microblaze_0_axi_dp [get_bd_intf_pins microblaze_0/M_AXI_DP] [get_bd_intf_pins microblaze_0_axi_periph/S00_AXI]
   connect_bd_intf_net -intf_net microblaze_0_axi_periph_M01_AXI [get_bd_intf_pins axi_uartlite_0/S_AXI] [get_bd_intf_pins microblaze_0_axi_periph/M01_AXI]
@@ -538,7 +523,7 @@ connect_bd_intf_net -intf_net [get_bd_intf_nets fci_core_0_m_axis_result] [get_b
   connect_bd_intf_net -intf_net microblaze_0_intc_axi [get_bd_intf_pins microblaze_0_axi_intc/s_axi] [get_bd_intf_pins microblaze_0_axi_periph/M00_AXI]
   connect_bd_intf_net -intf_net microblaze_0_interrupt [get_bd_intf_pins microblaze_0/INTERRUPT] [get_bd_intf_pins microblaze_0_axi_intc/interrupt]
   connect_bd_intf_net -intf_net trigger_core_0_m_axis [get_bd_intf_pins axis_broadcaster_0/S_AXIS] [get_bd_intf_pins trigger_core_0/m_axis]
-connect_bd_intf_net -intf_net [get_bd_intf_nets trigger_core_0_m_axis] [get_bd_intf_pins axis_broadcaster_0/S_AXIS] [get_bd_intf_pins system_ila_0/SLOT_2_AXIS]
+connect_bd_intf_net -intf_net [get_bd_intf_nets trigger_core_0_m_axis] [get_bd_intf_pins axis_broadcaster_0/S_AXIS] [get_bd_intf_pins system_ila_0/SLOT_3_AXIS]
   set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets trigger_core_0_m_axis]
 
   # Create port connections
@@ -558,10 +543,6 @@ connect_bd_intf_net -intf_net [get_bd_intf_nets trigger_core_0_m_axis] [get_bd_i
   connect_bd_net -net rst_clk_wiz_0_100M_bus_struct_reset [get_bd_pins microblaze_0_local_memory/SYS_Rst] [get_bd_pins rst_clk_wiz_0_100M/bus_struct_reset]
   connect_bd_net -net rst_clk_wiz_0_100M_mb_reset [get_bd_pins microblaze_0/Reset] [get_bd_pins microblaze_0_axi_intc/processor_rst] [get_bd_pins rst_clk_wiz_0_100M/mb_reset]
   connect_bd_net -net rst_clk_wiz_0_100M_peripheral_aresetn [get_bd_pins axi_bram_ctrl_0/s_axi_aresetn] [get_bd_pins axi_bram_ctrl_1/s_axi_aresetn] [get_bd_pins axi_dma_0/axi_resetn] [get_bd_pins axi_dma_1/axi_resetn] [get_bd_pins axi_iic_0/s_axi_aresetn] [get_bd_pins axi_smc/aresetn] [get_bd_pins axi_timer_0/s_axi_aresetn] [get_bd_pins axi_uartlite_0/s_axi_aresetn] [get_bd_pins axis_broadcaster_0/aresetn] [get_bd_pins fci_core_0/ap_rst_n] [get_bd_pins microblaze_0_axi_intc/s_axi_aresetn] [get_bd_pins microblaze_0_axi_periph/ARESETN] [get_bd_pins microblaze_0_axi_periph/M00_ARESETN] [get_bd_pins microblaze_0_axi_periph/M01_ARESETN] [get_bd_pins microblaze_0_axi_periph/M02_ARESETN] [get_bd_pins microblaze_0_axi_periph/M03_ARESETN] [get_bd_pins microblaze_0_axi_periph/M04_ARESETN] [get_bd_pins microblaze_0_axi_periph/M05_ARESETN] [get_bd_pins microblaze_0_axi_periph/M06_ARESETN] [get_bd_pins microblaze_0_axi_periph/M07_ARESETN] [get_bd_pins microblaze_0_axi_periph/S00_ARESETN] [get_bd_pins rst_clk_wiz_0_100M/peripheral_aresetn] [get_bd_pins system_ila_0/resetn] [get_bd_pins trigger_core_0/rstn_i]
-  connect_bd_net -net s_axis_data_TREADY [get_bd_pins fci_core_0/s_axis_data_TREADY] [get_bd_pins system_ila_0/probe1]
-  set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_nets s_axis_data_TREADY]
-  connect_bd_net -net s_axis_s2mm_tready [get_bd_pins axi_dma_1/s_axis_s2mm_tready] [get_bd_pins system_ila_0/probe2]
-  set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_nets s_axis_s2mm_tready]
   connect_bd_net -net sys_clock_1 [get_bd_ports sys_clock] [get_bd_pins clk_wiz_0/clk_in1]
 
   # Create address segments

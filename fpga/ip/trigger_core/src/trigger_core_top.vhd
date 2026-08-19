@@ -76,22 +76,20 @@ architecture rtl of trigger_core_top is
   -- flops and the placer scatters them: measured on the routed checkpoint of an earlier build,
   -- they landed across SLICE_X39Y106..SLICE_X50Y116 (26 CLB rows apart) with port-to-flop delays
   -- spanning 3.272 ns (bit 2) to 5.736 ns (bit 11) -- 2.464 ns of BIT-TO-BIT SKEW on a bus that
-  -- has to be latched as one coherent word every 20 ns. With the attribute: 14/14 in ILOGICE2.IFF,
-  -- 1.448..1.480 ns, 0.032 ns skew, and hold slack on the bus went from +0.146 to +1.992 ns.
+  -- has to be latched as one coherent word every 20 ns.
   --
-  -- This is kept because giving every bit the same short, fixed pad-to-flop path is simply the
-  -- correct way to capture a source-synchronous parallel bus, and it costs nothing. The attribute
-  -- lives here in the RTL rather than in an XDC on purpose: it travels with the packaged IP and
-  -- cannot silently miss its target the way a hierarchical-path constraint can.
+  -- That skew is what corrupted large pulses while leaving small ones intact. With the live
+  -- baseline near code 1855, the 2047->2048 major-carry boundary (where the whole low half of the
+  -- bus flips at once) sits only ~193 counts away: small pulses never reach it and change few
+  -- bits per sample, so skew is harmless, while any larger pulse crosses it on a fast edge and the
+  -- early- and late-arriving halves of the bus get latched from DIFFERENT ADC samples, yielding a
+  -- mixed old/new word. Observed captures bear this out -- the corruption on the rising edge
+  -- begins exactly at the sample reading 2047.
   --
-  -- It is NOT the fix for the amplitude-dependent pulse distortion seen during bring-up, though an
-  -- earlier version of this comment claimed exactly that. Two independent disproofs:
-  --   * system_ila_0's probe0 samples these same pads through its own fabric registers, which this
-  --     attribute never touched, measuring 3.548..7.099 ns -- 3.551 ns of skew, MORE than this path
-  --     had before the fix -- and it shows clean pulses. If 3.551 ns does not corrupt the bus,
-  --     2.464 ns was not corrupting it either.
-  --   * The real cause was found and reproduced on demand: it is the 2's-complement misread handled
-  --     just below. See that comment for the confirming capture.
+  -- IOB packing gives every bit the same short, fixed pad-to-flop path, which is the standard
+  -- requirement for a source-synchronous parallel bus. The attribute lives here in the RTL rather
+  -- than in an XDC on purpose: it travels with the packaged IP and cannot silently miss its target
+  -- the way a hierarchical-path constraint can.
   attribute IOB : string;
   attribute IOB of adc_data_q : signal is "TRUE";
 
@@ -104,27 +102,6 @@ architecture rtl of trigger_core_top is
   -- is board-specific integration knowledge, kept here rather than in trigger.vhd/delay_line.vhd
   -- (which stay format-agnostic, "offset binary in"), matching this file's existing role as the
   -- board-aware top level (ADC_WIDTH's default already documents "matches this board's LTC2248").
-  --
-  -- THIS IS THE FIX for the amplitude-dependent pulse distortion that dominated bring-up (a fast
-  -- overshoot spike, a flat plateau, an undershoot, then a slow settle, on large pulses only, with
-  -- small ones passing intact). Reading 2's complement as unsigned maps analog value V to U = V for
-  -- V >= 0 and V + 16384 for V < 0: monotonic everywhere EXCEPT across analog zero, where U folds
-  -- from 16383 straight to 0. The baseline sits ~6300 counts below analog zero (offset-binary
-  -- ~1861; the same baseline read raw is 1861 xor 8192 = 10053, which is the "baseline close to
-  -- 10000" recorded in the early bring-up logs). Pulses smaller than that gap never reach the fold;
-  -- larger ones cross it and cliff, and if they also over-range they clip flat at the rail on the
-  -- far side before cliffing back on the way down.
-  --
-  -- Reproduced on hardware 2026-08-18 by rendering one capture both ways (firmware's
-  -- test_encoding_fold_demo(), gain raised until a pulse crossed analog zero):
-  --     idx  corrected  as-read-before-fix
-  --      97     6335        14527
-  --      98     8935          743   <- crosses analog zero, folds 16383->0
-  --     101    16383         8191   <- clipped at the rail
-  --     ...    16383         8191      (85 samples of flat plateau)
-  --     232     8225           33   <- decayed to near zero: the "undershoot"
-  --     233     8163        16355   <- folds back, then settles slowly to baseline
-  -- The corrected column over those same samples is a clean pulse.
   signal adc_data_ob : std_logic_vector(ADC_WIDTH - 1 downto 0);
 
   signal delayed_data : std_logic_vector(ADC_WIDTH - 1 downto 0);

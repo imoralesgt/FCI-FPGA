@@ -12,7 +12,7 @@
  * tests -- reporting PASS/FAIL per step over UART. Then hands off to continuous interrupt-driven
  * acquisition, printing one FCI value per event.
  *
- * DOES NOT RETURN: the acquisition loop runs until reset. The platform must already be initialized
+ * DOES NOT RETURN: the acquisition loop runs until reset. The platform must already be initialised
  * (init_platform()) before calling this. */
 void Bringup_Run(void);
 
