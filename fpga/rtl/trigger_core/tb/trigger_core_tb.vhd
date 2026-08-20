@@ -177,7 +177,11 @@ begin
       delay_v       : natural;
       depth_v       : natural;
       ascending     : boolean;
-      backpressure  : boolean := false
+      backpressure  : boolean := false;
+      -- Long-stall mode: hold tready low for hundreds of cycles at a time, the way fci_core does
+      -- while it works through a frame (its interval is 3197 cycles, so trigger_core sees a stall
+      -- far longer than the short 1-in-7 hiccup `backpressure` models).
+      long_stall    : boolean := false
     ) is
       variable crossing_offset : integer;
       variable beats           : integer := 0;
@@ -188,6 +192,10 @@ begin
       variable cross_pos       : integer := -1;
       variable cycle_count     : integer := 0;
       variable expect_pos      : integer;
+      -- Throughput regression (repo issue #10): with tready held high, capture_engine must
+      -- present a beat EVERY cycle once streaming has started. Any idle cycle mid-stream means
+      -- the read pipeline is stalling on itself again and the effective output rate has halved.
+      variable bubbles         : integer := 0;
     begin
       test_count <= test_count + 1;
       report "=== Test: " & test_name & " ===";
@@ -235,10 +243,17 @@ begin
         cycle_count := cycle_count + 1;
         if backpressure and (cycle_count mod 7 = 0) then
           m_axis_tready <= '0';
+        elsif long_stall and ((cycle_count mod 600) < 300) then
+          m_axis_tready <= '0';
         else
           m_axis_tready <= '1';
         end if;
         wait until rising_edge(clk_i);
+        -- Count idle cycles between the first accepted beat and tlast. Only meaningful when we
+        -- are not deliberately deasserting tready ourselves.
+        if (not backpressure) and (not long_stall) and beats > 0 and m_axis_tvalid = '0' then
+          bubbles := bubbles + 1;
+        end if;
         if m_axis_tvalid = '1' and m_axis_tready = '1' then
           this_val := to_integer(unsigned(m_axis_tdata(ADC_WIDTH - 1 downto 0)));
           if beats = 0 then
@@ -279,6 +294,12 @@ begin
         report "  FAIL: expected " & integer'image(depth_v) & " beats, got " & integer'image(beats);
       end if;
 
+      if (not backpressure) and (not long_stall) and bubbles /= 0 then
+        ok := false;
+        report "  FAIL: " & integer'image(bubbles) & " idle cycle(s) mid-stream with tready held "
+               & "high -- output rate is not one beat per cycle (issue #10)";
+      end if;
+
       -- The crossing sample should land at position `delay_v` from the start of the capture
       -- (delay_v samples of pre-trigger history, then the crossing sample itself, then
       -- post-trigger samples) -- allow a small fixed tolerance for the trigger/capture pipeline's
@@ -297,7 +318,8 @@ begin
 
       if ok then
         report "  PASS (first_val=" & integer'image(first_val) & ", beats=" & integer'image(beats)
-               & ", cross_pos=" & integer'image(cross_pos) & ")";
+               & ", cross_pos=" & integer'image(cross_pos) & ", mid-stream idle cycles="
+               & integer'image(bubbles) & ")";
       else
         fail_count <= fail_count + 1;
         report "  Test '" & test_name & "' FAILED" severity error;
@@ -322,6 +344,8 @@ begin
     run_test("boundary delay=2", 150, '1', 2, 16, true);
     run_test("boundary delay=256", 356, '1', 256, 300, true);
     run_test("boundary depth=4096", 150, '1', 4, 4096, true);
+    -- Mirrors the real system: depth 1024 with stalls the length of an fci_core frame.
+    run_test("long stall (fci_core-like), depth=1024", 150, '1', 100, 1024, true, false, true);
 
     -- Reconfiguration hazard: on real hardware, reprogramming threshold/polarity while
     -- adc_data_i doesn't move produced spurious "triggered" captures full of pure baseline noise

@@ -51,13 +51,16 @@ Register map (AXI4-Lite):
 | 0x08 | `delay`     | pre-trigger samples, clamped 2..256 |
 | 0x0C | `depth`     | capture length, clamped 1..4096 |
 
-Verified by a self-checking testbench (`xvhdl`/`xelab`/`xsim`), **7/7 scenarios passing**
-throughout the project, including a reconfiguration-hazard case added later (§4.1).
+Verified by a self-checking testbench (`xvhdl`/`xelab`/`xsim`), currently **8/8 scenarios
+passing**: six original functional and boundary cases, a reconfiguration-hazard case added after
+§4.1, and a long-stall throughput case added for §7a.
 
 ### Block design and firmware
 
-`clk_cpu` / `clk_adc` / `clk_dsp` all at 50 MHz. `trigger_core` → `axis_broadcaster_0` →
-{`fci_core` → `axi_dma_0`, `axi_dma_1` raw-trace tap}. MicroBlaze firmware drives everything by
+`clk_cpu` and `clk_adc`, both 50 MHz, from one MMCM (`NUM_OUT_CLKS = 2`; the third output,
+`clk_dsp`, was dropped once nothing needed a separate DSP clock domain). `trigger_core` →
+`axis_broadcaster_0` → {`fci_core` → `axi_dma_0`, `axi_dma_1` raw-trace tap}, with
+`axi_dma_1` configured for 256-beat bursts (§7b). MicroBlaze firmware drives everything by
 hand-poked AXI4-Lite plus two interrupt-driven DMA channels; BRAM readback goes through MM2S + FSL
 because `axi_bram_ctrl_*` is mapped only into the DMA address spaces, not into `microblaze_0/Data`.
 
@@ -225,7 +228,7 @@ Two problems:
 Replaced with a **noise-band search**: sweep *up* from 0 in small steps with a few ms dwell, and
 record the first and last threshold that fire. The noise band is always present, independent of
 the detector, and fires at kHz, so milliseconds are decisive. Calibration then parks at the band
-centre, captures immediately, and measures mean/σ from the pre-trigger region.
+center, captures immediately, and measures mean/σ from the pre-trigger region.
 
 Two follow-on fixes were needed: the step size had to drop from 64 to 8 (the band is only ~±4σ ≈ 56
 counts wide on a quiet baseline — *narrower than the original step*), and the event-counter
@@ -305,9 +308,20 @@ questions its probe should be moved to `adc_data_q` (post capture register).
   ~30 cps, and the real cause was §4.3.
 - **The encoding hypothesis was raised early and dismissed on bad reasoning.** The fold point was
   placed at offset-binary midscale 8192 instead of at analog zero, where the *misread* jumps
-  16383→0; and the fingerprint was described as "a cliff" without recognising that a cliff, a
+  16383→0; and the fingerprint was described as "a cliff" without recognizing that a cliff, a
   clipped far side and a cliff back *is* spike-plateau-undershoot. That misplacement is what led to
   the skew and VGA detours.
+
+- **Automatic error recovery was added before the error was understood**, and it was unbounded. It
+  reset and re-armed the DMA on every fault, converting one diagnosable failure into 378,713 resets
+  and zero clean captures — it deleted the evidence needed to diagnose it. Recovery belongs *after*
+  a fault is characterized, and always with a retry bound (§7c).
+- **Several things were changed in one step** — DMA parameters, ILA topology and firmware together —
+  which left nothing to bisect when the system stopped acquiring. The batch had to be reverted whole,
+  and the actual fix was then found in one change from the restored baseline (§7b).
+- **The rollback initially went too far**, reverting the §7a `capture_engine` fix along with the
+  diagnostics even though it had been in the working system and was never suspect. Reverting to a
+  known-good state means reverting the *suspect* changes, not every recent one.
 
 The general lesson: every hypothesis here was eventually settled by a **measurement that could have
 come out the other way** — the ILA skew numbers, the gain bisect, the fold demo. The ones that
@@ -330,9 +344,31 @@ At the normal operating point (fine gain 1.0 → code 819, coarse 6.0 → code 7
 | headroom to analog zero | ~6300 counts |
 | polarity (digitised) | **rising** — pulses go UP from baseline |
 
+### Constants and what fixes them
+
+Most numbers in this design are forced by something measurable. A few are not, and the difference
+matters — this project lost several sessions to constants that looked derived and were not
+(thresholds 1900 and 2100, tuned against a mis-encoded signal; a 64-count scan step that turned out
+wider than the noise band it was searching for). Each constant is therefore classified below.
+
+| constant | value | what fixes it |
+|---|---|---|
+| capture depth | 1024 | **Hard interface constraint.** Must equal `fci_core`'s `N_SAMPLES`: `trigger_core` streams exactly this many beats and `axis_to_fft` reads exactly that many, so a mismatch either hangs the pipeline or desyncs every frame after it. Not tunable. Currently written as a bare literal in three places in `bringup.c` — promoting it to a named constant is an open item (§9). |
+| output FIFO depth (`capture_engine`) | 2 | **Derived** from the buffer's 1-cycle read latency: one read already in flight when TREADY drops, plus the beat already being presented. Three would be dead area; one would drop data. |
+| `axi_dma_1` burst size | 256 | **Bounded by the protocol.** 256 is the AXI4 maximum burst length for an INCR transaction, so this is the floor on per-beat address-phase overhead rather than a tuned value (§7b). |
+| `axi_dma_1` `c_sg_length_width` | 18 | **Chosen, with headroom.** 12 bits would carry today's 2048-byte trace and 13 the 4096-byte maximum; 18 leaves room to grow the trace without another block-design change. |
+| `BASELINE_SAMPLES` | 64 | **Derived.** Must lie entirely inside the `TRIGGER_DELAY` pre-trigger region, so anything below 100 works; 64 leaves margin while still averaging enough samples for a usable σ. |
+| noise-scan `STEP` | 8 | **Derived.** Must be well under the noise band width. On a quiet baseline σ ≈ 7, so the band is only ~±4σ ≈ 56 counts — a step of 64 stepped straight over it (§4.4). |
+| AD5697 fine / coarse codes | 819 / 765 | **Derived** from the two control-law formulas (§4.2), cross-checked against the sibling project's host-side API and confirmed on hardware by the gain bisect. |
+| FFT bin spacing | 48.83 kHz | **Derived**: 50 Msps / 1024. |
+| `TRIGGER_DELAY` | 100 | **Chosen.** Sets the pre/post-trigger split; any value above `BASELINE_SAMPLES` and within the delay line's 2..256 range is valid. Adjust to taste. |
+| `THRESHOLD_SIGMA_MULT` | 8 | **Tuning knob — not derived.** The paper's 4σ is for offline analysis of recorded traces; on a live comparator at 50 Msps it would fire ~1500 false triggers/s against a ~30 cps real rate. 8 was picked to sit clear of the noise, and is the intended thing to adjust: raise it if noise triggers persist, lower it if genuine small events are missed. |
+| `psa_l_hi` / `psa_w_hi` | 25 / 90 | **Inherited, not derived for this detector.** These came from `fci_core_tb.cpp` and were never re-derived against the measured pulse. They are mismatched — see below. |
+
 ### Known issue: FCI windows are mismatched to this pulse
 
-τ ≈ 1.4 µs puts the spectral corner at 1/(2πτ) ≈ 114 kHz. With 1024 samples at 50 Msps the FFT bin
+τ ≈ 1.4 µs — independently corroborated by the sibling project's τ_d = 1.21 µs for the same
+detector class (§8) — puts the spectral corner at 1/(2πτ) ≈ 114 kHz. With 1024 samples at 50 Msps the FFT bin
 spacing is 48.83 kHz, so the corner sits at **bin ~2.3** and essentially all pulse energy lands in
 the first few bins. The current windows are `psa_l` = bins 1–25 (to 1.22 MHz) and `psa_w` = bins
 1–90 (to 4.39 MHz) — both capture nearly the same energy, pinning FCI near 1.
@@ -343,24 +379,288 @@ sensitivity to decay-constant differences, and it is an AXI4-Lite parameter chan
 
 ---
 
-## 8. Current state
+## 7a. Issue #10 — trigger_core output rate halved (fixed)
 
-- `fci_core` and `trigger_core` built, verified, packaged; testbench 7/7
+`trigger_core`'s AXI4-Stream output ran at 25 Msps against a 50 Msps capture: TVALID toggled
+1/0/1/0 continuously instead of staying high.
+
+The issue text suspected the lockstep `axis_broadcaster` or the DMAs, but the ILA capture rules
+that out — **TREADY was steady high while TVALID toggled**. A consumer applying backpressure would
+show the opposite. The stall was inside `capture_engine.vhd`.
+
+`circular_buffer` has a 1-cycle registered read latency. The FSM used a *single* `addr` register as
+both the buffer read address and the current-beat pointer, so after every accepted beat it had to
+spend a dead cycle waiting for `buf_rd_data_i` to catch up to the new address:
+
+```vhdl
+elsif m_axis_tready_i = '1' then      -- beat accepted
+  addr       <= addr + 1;
+  data_valid <= '0';                  -- forced low for the next full cycle
+```
+
+A hard 50% duty cycle, independent of anything downstream.
+
+**Fix:** stop serializing "advance address" and "present data"; pipeline them. `issue_addr` now runs
+ahead, presenting a new address every cycle it is allowed to, and returning words land in a 2-entry
+FIFO feeding the stream output. Two entries is exactly right: when TREADY deasserts, one read is
+already in flight and must be absorbed, on top of the beat already being presented. Issue is gated
+on the occupancy the FIFO will have *next* cycle (`count + push - pop`), which makes overflow
+structurally impossible rather than merely unlikely.
+
+**Verification.** The testbench now counts idle cycles between the first accepted beat and TLAST
+whenever TREADY is held high, and fails on any. Reverting the RTL makes it fail with exactly
+`depth - 1` bubbles per capture — 4095 for a 4096-beat trace — which is the 50% duty cycle
+quantified:
+
+```
+with the fix:      PASS (beats=4096, mid-stream idle cycles=0)
+fix reverted:      FAIL: 4095 idle cycle(s) mid-stream with tready held high
+```
+
+All 8 scenarios pass, and the IP was repackaged and byte-compared against the RTL.
+
+## 7b. Raw-trace backpressure — the DMA burst size
+
+Fixing §7a moved the bottleneck rather than removing it. With `capture_engine` finally offering one
+beat per cycle, `trigger_core` presents a sustained 50 Msps stream, and the ILA then showed genuine
+backpressure for the first time: TREADY *low* on the raw-trace tap, which is the opposite of the
+§7a signature and therefore a different problem with the same symptom.
+
+Two extra ILA probes — `fci_core_0/s_axis_data_TREADY` and `axi_dma_1/s_axis_s2mm_tready` —
+identified the slow consumer directly, with no inference needed. (These were part of the diagnostic
+build that had to be reverted for unrelated reasons, §7c, so they are not in the design today; the
+capture below is from that build.)
+
+![trigger_core TVALID high, TREADY low; fci_core ready, axi_dma_1 not](images/ila-backpressure-dma1-tready-low.png)
+
+`s_axis_data_TREADY` (`fci_core`) is **steady high**. `s_axis_s2mm_tready` (`axi_dma_1`) is **low**,
+pulsing only in short bursts. `trigger_core`'s `m_axis` therefore sits at TVALID = 1, TREADY = 0.
+
+Because `axis_broadcaster_0` is lockstep, this is not a local problem. No beat advances unless
+*both* masters accept it, so `axi_dma_1` alone was rate-limiting `fci_core` as well.
+
+`axi_dma_1` was configured with `c_s2mm_burst_size = 2`. Every two beats of data
+therefore paid for a full AXI address phase plus a SmartConnect arbitration round. At 50 Msps the
+memory side could not retire transactions fast enough, S2MM's internal buffer filled, and TREADY
+dropped — the stream was rate-limited by transaction overhead, not by bandwidth.
+
+**Fix** (`59422f3`):
+
+| parameter | was | now | what fixes it |
+|---|---|---|---|
+| `axi_dma_1` `c_mm2s_burst_size` / `c_s2mm_burst_size` | 2 | **256** | 256 is the AXI4 maximum burst length for an INCR transaction — the largest value the protocol allows, so this is the floor on address-phase overhead, not a tuned midpoint. It cuts transactions per trace by 128×. |
+| `axi_dma_1` `c_sg_length_width` | unset (default 14) | **18** | Sizes the LENGTH register: 18 bits holds 262143 bytes against a present maximum of 4096 (`RAW_TRACE_MAX_SAMPLES` 2048 × 2 bytes). Headroom, chosen — 13 bits would carry the 4096-byte maximum. |
+| `axi_dma_0` burst sizes | 2 | **8** | `axi_dma_0` carries one 8-byte FCI result per event at ~30 events/s, so it has no throughput problem to solve. Raised off the minimum for margin rather than for throughput; going to 256 would buy nothing here and would cost buffer BRAM. |
+| `axi_dma_0` `c_sg_length_width` | 8 | **14** | 8 bits caps a transfer at 255 bytes. That was sufficient for the 8-byte result and is why it never failed, but it left no room for batching several results per transfer later. |
+
+**Result.** The same ILA view after the change — `trigger_core`'s `m_axis` is `Active` with
+TVALID = 1 and TREADY = 1 held continuously across the whole 2048-sample window, streaming beats
+without a gap:
+
+![Continuous stream beats, TREADY steady high](images/ila-backpressure-solved.png)
+
+**The fix is not free, and the cost lands in the scarcest resource.** `axi_dma_1` now occupies
+5 BRAM tiles (4 ×RAMB36 + 2 ×RAMB18) against 2 before the change, and the design total moved from
+37.5 to 40.5 of 50 tiles — the +3 accounts for the whole difference. Deeper bursts need deeper
+buffers. See §8 for why that matters for what comes next.
+
+---
+
+## 7c. A rollback, and why
+
+Between §7a and §7b there is a detour worth recording, because the mistake in it is a process
+mistake rather than a technical one.
+
+After the backpressure appeared, several things were changed at once (`c8dda35`): DMA burst and
+length-width parameters on both channels, the two TREADY probes from §7b plus two extra monitor
+slots with the existing slots renumbered, and a batch of firmware diagnostics including automatic
+DMA error recovery. The system then stopped acquiring entirely — `DMAIntErr`, one clean transfer after a
+fresh bitstream and a permanent halt after it.
+
+Two compounding errors followed:
+
+1. **The recovery loop was unbounded.** It reset and re-armed the DMA on every error, which turned
+   one diagnosable failure into 378,713 resets and zero clean captures. It destroyed the only
+   evidence that could have identified the failure — the state of the core at the moment it first
+   went wrong. Bounding it to 8 consecutive attempts restored observability immediately; the
+   counter then read `recoveries=8 (consec=8, GAVE UP)` instead of a six-digit number. The frozen
+   state it was masking looks like this — `trigger_core` stuck at TVALID = 1, TLAST = 1, TREADY = 0
+   with `axi_dma_1`'s MM2S stream inactive and `s_axis_s2mm_tready` flat:
+
+   ![Pipeline frozen with TLAST held](images/ila-frozen-tlast-stuck.png)
+
+2. **Nothing could be bisected**, because BD parameters, ILA topology and firmware had all moved
+   together. There was no single-variable experiment available.
+
+The resolution was to revert the whole batch (`de5b230`) back to the last configuration known to
+acquire, keeping only the §7a `capture_engine` fix, which had been in the working system and was
+never in question. From that restored baseline the burst size was the single next change, and it
+worked (§7b).
+
+The `DMAIntErr` sequence itself was never isolated to a specific change and is not claimed to be
+explained here. What is established is that it did not survive the revert, and that neither
+`c_sg_length_width` value was capable of causing it: `axi_dma_0` at 8 bits caps at 255 bytes
+against an 8-byte payload, and `axi_dma_1`'s default 14 bits caps at 16383 against 2048.
+
+One part of the batch did earn its keep and should be re-applied first: the two TREADY probes.
+They are what turned "there is backpressure somewhere" into "`axi_dma_1` is the slow consumer and
+`fci_core` is not," which is the measurement §7b rests on. The rest of the diagnostics are preserved
+in `c8dda35` and are worth re-applying **one at a time, with a hardware test between each** — see
+the open items in §9.
+
+---
+
+## 8. Resource budget and headroom
+
+Measured from the routed checkpoint of the current build (`report_utilization -hierarchical`),
+not estimated:
+
+| resource | used | available | % |
+|---|---|---|---|
+| Slice LUTs | 16970 | 20800 | **81.59** |
+| Slice registers | 24110 | 41600 | 57.96 |
+| Slices | 6870 | 8150 | 84.29 |
+| BRAM tiles | 40.5 | 50 | **81.00** |
+| DSP48E1 | 16 | 90 | 17.78 |
+
+Fully routed, no routing errors, WNS **+1.811 ns**, WHS **+0.019 ns**.
+
+Per block, largest first:
+
+| block | LUTs | FFs | BRAM tiles | DSP |
+|---|---|---|---|---|
+| `fci_core_0` | 3919 | 5767 | 2 (4 ×RAMB18) | 13 |
+| `axi_smc` | 3496 | 3996 | 0 | 0 |
+| **`system_ila_0`** | **2054** | 2995 | **9.5** | 0 |
+| `microblaze_0` | 1570 | 1304 | 0 | 3 |
+| `axi_dma_1` | 1309 | 1926 | 5 | 0 |
+| `axi_dma_0` | 1209 | 1809 | 2 | 0 |
+| `trigger_core_0` | 1166 | 3846 | 2 | 0 |
+| **`dbg_hub`** | **450** | 741 | 0 | 0 |
+| `axis_broadcaster_0` | 4 | 2 | 0 | 0 |
+
+### What removing the debug logic frees
+
+`system_ila_0` + `dbg_hub` together are **2504 LUTs (12.0% of the device)** and **9.5 of 50 BRAM
+tiles (19%)**. Removing both:
+
+| | now | debug removed | free afterward |
+|---|---|---|---|
+| LUTs | 81.6% | **69.5%** | 6334 |
+| BRAM tiles | 81.0% | **62.0%** | 19 |
+| FFs | 58.0% | 49.0% | 21226 |
+| DSP | 17.8% | 17.8% | 74 |
+
+Partial reduction is also available: ILA storage scales with total probe width × depth, so dropping
+from 4 monitor slots to 1–2 recovers most of the BRAM, and halving `C_DATA_DEPTH` from 2048 to 1024
+halves it again. `C_SLOT_n_AXI_DATA_SEL = 0` captures control signals only (~4 bits instead of ~26
+per AXIS slot). The 2048 depth is itself derived, and should not be cut without
+re-deriving it: `trigger_core` captures a full 1024-sample trace before it streams any of it, so
+the raw ADC bus and the triggered output are offset by 1024 cycles and a window has to hold both
+to be readable.
+
+### What the planned blocks need
+
+Two observations shape the plan. **LUTs and BRAM are the binding constraints; flip-flops and DSPs
+are abundant** (58% and 18%). And **the histogram dominates BRAM while everything else is logic.**
+
+On Artix-7 a RAMB36E1 in 1K×36 mode is 1024 deep at up to 36 bits, so a histogram's tile count is
+set by channel count alone — counter width up to 36 bits is free:
+
+| histogram | RAMB36 tiles |
+|---|---|
+| 4K channels × 32-bit | 4 |
+| 8K × 32-bit | 8 |
+| 16K × 32-bit | 16 |
+
+The 19 tiles freed by removing debug cover **16K channels with 3 to spare**, or 8K comfortably.
+
+#### Sizing the trapezoidal filter from the sibling project
+
+The trapezoidal filter is the one block whose cost swings hard on a design choice — its two delay
+lines are *k* and *k+m* samples deep, and at 50 Msps a long shaping time gets expensive fast. That
+choice does not have to be guessed: the `NSIL-MCA-DPP4SiPM` sibling runs the same detector class on
+the same board and its settings are known good.
+
+![Sibling project detector and MCA shaping settings](images/sibling-mca-shaping-settings.png)
+
+| sibling setting | value | at 50 Msps |
+|---|---|---|
+| shaper peaking time | 2.5 µs | *k* = **125 samples** |
+| shaper flat top | 1.0 µs | *m* = **50 samples** |
+| detector decay τ_d | 1.21 µs | Jordanov–Knoll *M* = τ/T ≈ **60.5** |
+| detector rise τ_r | 206 ns | rise *time constant* — not directly comparable to the 420 ns rise *duration* in §7 |
+| BLR threshold gain | 4.00 | baseline restorer gate |
+| coarse VGA gain | 6.00 | independently confirms the 6.0 → code 765 in §4.2 |
+
+τ_d = 1.21 µs also corroborates the ~1.4 µs measured here (§7) from a completely separate
+measurement on a separate design, which is worth more than either figure alone.
+
+That settles the delay-line question. Total storage is *k* + (*k*+*m*) = 300 samples × 14 bits,
+which as SRL32s is about **140 LUTs** — SRL territory with no argument, not the BRAM-versus-logic
+trade that a 10 µs shaping time would have forced. Revisit only if this detector turns out to need
+a much longer peaking time than the sibling's.
+
+Logic estimates for the four blocks — estimates, not measurements, and to be replaced with
+synthesis numbers as each block is built:
+
+| block | LUTs | BRAM | DSP |
+|---|---|---|---|
+| baseline restorer (gated moving average or IIR) | ~300 | 0 | 0–1 |
+| trapezoidal filter (*k*=125, *m*=50, *M*≈60.5) | ~350 | 0 | 1 |
+| histogram read-modify-write control | ~200 | (see table above) | 0 |
+| PSD: `ENERGY` / `ENERGY_SHORT` | ~300 | 0 | 0 |
+| **total** | **~1150** | **0 beyond the histogram** | **~2** |
+
+Against 6334 free LUTs and 74 free DSPs after the ILA is removed, the logic is not the constraint.
+The histogram's channel count is.
+
+The CAEN-style PSD block is the cheapest of the four by a wide margin: two gated accumulators over
+two integration windows on the baseline-restored stream, plus window counters and comparators. It
+needs no memory of its own, since the pre-gate history it integrates over is already held by
+`trigger_core`'s pre-trigger delay line.
+
+`axi_smc` at 3496 LUTs is the largest block never examined for reduction. Its cost scales with
+slave-port count, and it currently carries four (MM2S and S2MM for both DMA channels).
+
+---
+
+## 9. Current state
+
+- `fci_core` and `trigger_core` built, verified, packaged; testbench **8/8**
 - Full chain running: trigger → capture → FCI → BRAM → UART, interrupt-driven, both DMA channels
   continuously serviced
+- `trigger_core` streams at the full 50 Msps (§7a) and `axi_dma_1` keeps up with it (§7b) — TVALID
+  and TREADY both steady high, no bubbles and no backpressure anywhere in the chain
 - Automatic threshold calibration from the measured noise floor (`mean + 8σ`; the paper's 4σ is for
   offline analysis — at 50 Msps it would fire ~1500 false triggers/s)
 - Traces clean at all tested gains; the artifact reproduces only when deliberately re-created
-- `main.c` reduced to an entry point; `Bringup_Run()` in `bringup.c` (call currently commented out)
+- `main.c` reduced to an entry point calling `Bringup_Run()`; all bring-up lives in `bringup.c`
+- 81.6% LUT, 81.0% BRAM, fully routed at WNS +1.811 ns (§8)
 
 ### Open items
 
+**Re-apply from `c8dda35`, one at a time with a hardware test between each** (see §7c for why the
+batch had to be reverted):
+
+- The two TREADY ILA probes — highest value, already proven useful in §7b
+- FSL hang guard: `getfslx(..., FSL_DEFAULT)` compiles to a *blocking* `get`, so a missing beat
+  hangs MicroBlaze with no diagnostic. A non-blocking variant plus a timeout is the fix
+- `wait_running` in the DMA arm sequence — PG021 specifies set `DMACR.RS`, wait for `DMASR.Halted`
+  to clear, *then* write address and length; the current sequence does not wait
+- Noise-band calibration refinements, and `CAPTURE_DEPTH` as a named constant (the capture depth is
+  currently the bare literal 1024 in three places in `bringup.c`, with the constraint that ties it
+  to `fci_core`'s `N_SAMPLES` recorded only in a comment)
+- **Not** the unbounded DMA recovery — see §7c
+
+**Next features:**
+
+- Spectroscopy chain: baseline restoration → trapezoidal filter → histogram builder (§8 for sizing)
+- CAEN-style PSD block: `ENERGY` and `ENERGY_SHORT` from two integration windows after baseline
+  restoration
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
-- `capture_engine.vhd` STREAM-side throughput: `data_valid` is forced low for one cycle after every
-  accepted beat, halving the rate to 25 Msps. Diagnosed, deliberately deferred.
 - PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
-- Baseline restorer + trapezoidal shaper cores — discussion only, not started
 
 ### Diagnostics retained
 
@@ -376,7 +676,7 @@ Both live in `bringup.c` behind compile-time flags, default **off**:
 ## Appendix: ILA note
 
 Early in bring-up the ILA showed `trigger_core`'s `m_axis` TVALID toggling 1/0 on alternate cycles,
-delivering an effective half data rate — the `capture_engine` throughput issue listed as open above:
+delivering an effective half data rate — repo issue #10, diagnosed and fixed in §7a:
 
 ![TVALID toggling on the trigger_core stream](images/ila-tvalid-half-rate.png)
 
