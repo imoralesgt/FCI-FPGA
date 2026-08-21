@@ -4,11 +4,16 @@
 -- polarity_i = '1': trigger on a rising crossing (signal goes from below threshold to
 --   at-or-above threshold) -- for positive-going pulses.
 -- polarity_i = '0': trigger on a falling crossing (signal goes from at-or-above threshold to
---   below threshold) -- for negative-going pulses. This detector's real pulses dip below
---   baseline (see project plan), so normal operation uses polarity_i = '0' with threshold_i set
---   below the baseline level.
+--   below threshold) -- for negative-going pulses. Note the digitised pulses on this detector go
+--   UP from baseline (project log, section 7), so normal operation is polarity_i = '1' with a
+--   small positive threshold, despite the analogue pulse at the AFE output being negative-going.
 --
--- ADC data is offset binary, so the comparison is a plain unsigned compare.
+-- Sample data is SIGNED, centred on zero by blr_core upstream, so the comparison is a signed
+-- compare and threshold_i is a signed level. That matters for more than tidiness: with a restored
+-- baseline at zero, a physically sensible threshold for this detector's positive-going pulses is a
+-- small positive number, and the useful part of the range sits either side of zero. An unsigned
+-- compare would read every negative sample -- half the noise distribution -- as a huge positive
+-- value, so the comparator would sit permanently "above" and never produce an edge.
 -- armed_i gates trigger_o so a new trigger can't fire while a capture is already in progress.
 --
 -- Reconfiguration hazard: `above` is the registered "was above threshold as of the previous
@@ -66,7 +71,7 @@ begin
         threshold_q <= threshold_i;
         polarity_q  <= polarity_i;
       else
-        if unsigned(adc_data_i) >= unsigned(threshold_i) then
+        if signed(adc_data_i) >= signed(threshold_i) then
           above_now := '1';
         else
           above_now := '0';

@@ -3,11 +3,21 @@
 -- See fpga/rtl/trigger_core (project plan) for the full architecture rationale.
 library ieee;
 use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
 use work.trigger_core_pkg.all;
 
 entity trigger_core_top is
   generic (
-    ADC_WIDTH  : integer := 14; -- matches this board's LTC2248
+    -- Width of the SAMPLE datapath, not of the ADC. blr_core upstream subtracts a signed baseline
+    -- from a signed 14-bit converter word, so its output spans +/-16383 and needs 15 bits; 16 is
+    -- the byte-multiple AXI4-Stream wants and is what blr_core emits. Truncating back to 14 here
+    -- would silently clip the largest excursions -- exactly the pulses that matter most.
+    ADC_WIDTH  : integer := 16;
+    -- Retained only for a standalone build fed directly from an offset-binary converter. With
+    -- blr_core upstream the stream is already signed and this must be false -- but note the whole
+    -- offset-binary representation is gone from the normal chain now, so there is no longer a
+    -- double-conversion hazard to trip over, just a format this core can still accept.
+    ADC_IS_2C  : boolean := false;
     MAX_DELAY  : integer := 256;
     MAX_DEPTH  : integer := 4096
   );
@@ -15,10 +25,14 @@ entity trigger_core_top is
     clk_i  : in std_logic;
     rstn_i : in std_logic;
 
-    -- Plain ADC input, raw from the pins: 2's complement (LTC2248's MODE pin is strapped to
-    -- 2/3 VDD on this board -- see architecture body for the offset-binary conversion done
-    -- internally). "Make External" at the block-design level.
-    adc_data_i : in std_logic_vector(ADC_WIDTH - 1 downto 0);
+    -- Sample stream in, from blr_core. AXI4-Stream for CONNECTIVITY only: s_axis_tready is
+    -- driven permanently high, because this is a continuous 50 Msps converter stream with no
+    -- buffer behind it -- a beat not taken is a sample destroyed, so backpressure here would
+    -- corrupt the time base rather than delay it. blr_core's matching master ignores tready for
+    -- the same reason. TDATA is 16 bits with the ADC_WIDTH sample in the low bits.
+    s_axis_tdata  : in  std_logic_vector(15 downto 0);
+    s_axis_tvalid : in  std_logic;
+    s_axis_tready : out std_logic;
 
     -- AXI4-Lite slave: threshold (0x00), polarity (0x04), delay (0x08), depth (0x0C).
     s_axi_awaddr  : in  std_logic_vector(4 downto 0);
@@ -43,7 +57,9 @@ entity trigger_core_top is
     m_axis_tdata  : out std_logic_vector(15 downto 0);
     m_axis_tkeep  : out std_logic_vector(1 downto 0);
     m_axis_tstrb  : out std_logic_vector(1 downto 0);
-    m_axis_tuser  : out std_logic_vector(0 downto 0);
+    -- 64-bit event timestamp, held constant across every beat of a frame. See the timestamp
+    -- comment in the architecture body for why it travels in-band rather than in a register.
+    m_axis_tuser  : out std_logic_vector(63 downto 0);
     m_axis_tlast  : out std_logic;
     m_axis_tid    : out std_logic_vector(0 downto 0);
     m_axis_tdest  : out std_logic_vector(0 downto 0);
@@ -72,26 +88,12 @@ architecture rtl of trigger_core_top is
   -- margin on this unconstrained bus turned out to be in practice).
   signal adc_data_q : std_logic_vector(ADC_WIDTH - 1 downto 0);
 
-  -- Force these 14 flops into the I/O blocks. Without this they are packed as ordinary fabric
-  -- flops and the placer scatters them: measured on the routed checkpoint of an earlier build,
-  -- they landed across SLICE_X39Y106..SLICE_X50Y116 (26 CLB rows apart) with port-to-flop delays
-  -- spanning 3.272 ns (bit 2) to 5.736 ns (bit 11) -- 2.464 ns of BIT-TO-BIT SKEW on a bus that
-  -- has to be latched as one coherent word every 20 ns.
-  --
-  -- That skew is what corrupted large pulses while leaving small ones intact. With the live
-  -- baseline near code 1855, the 2047->2048 major-carry boundary (where the whole low half of the
-  -- bus flips at once) sits only ~193 counts away: small pulses never reach it and change few
-  -- bits per sample, so skew is harmless, while any larger pulse crosses it on a fast edge and the
-  -- early- and late-arriving halves of the bus get latched from DIFFERENT ADC samples, yielding a
-  -- mixed old/new word. Observed captures bear this out -- the corruption on the rising edge
-  -- begins exactly at the sample reading 2047.
-  --
-  -- IOB packing gives every bit the same short, fixed pad-to-flop path, which is the standard
-  -- requirement for a source-synchronous parallel bus. The attribute lives here in the RTL rather
-  -- than in an XDC on purpose: it travels with the packaged IP and cannot silently miss its target
-  -- the way a hierarchical-path constraint can.
-  attribute IOB : string;
-  attribute IOB of adc_data_q : signal is "TRUE";
+  -- NOTE: this register used to carry an `attribute IOB` forcing it into the I/O blocks, because
+  -- the input was wired straight to the ADC pins. blr_core now sits between the pins and this
+  -- core, so this is a fabric-to-fabric register and the attribute has no pad to target; it moved
+  -- to blr_core_top along with ownership of the pins. The measurements behind it, and the two
+  -- disproofs of the bus-skew hypothesis it was once wrongly credited with fixing, are in the
+  -- project log (section 5).
 
   -- The LTC2248's MODE pin is strapped to 2/3 VDD on this board, which per its datasheet selects
   -- 2's-complement output format, not the offset-binary format the rest of this core (trigger.vhd's
@@ -102,7 +104,31 @@ architecture rtl of trigger_core_top is
   -- is board-specific integration knowledge, kept here rather than in trigger.vhd/delay_line.vhd
   -- (which stay format-agnostic, "offset binary in"), matching this file's existing role as the
   -- board-aware top level (ADC_WIDTH's default already documents "matches this board's LTC2248").
+  --
+  -- THIS IS THE FIX for the amplitude-dependent pulse distortion that dominated bring-up (a fast
+  -- overshoot spike, a flat plateau, an undershoot, then a slow settle, on large pulses only, with
+  -- small ones passing intact). Reading 2's complement as unsigned maps analog value V to U = V for
+  -- V >= 0 and V + 16384 for V < 0: monotonic everywhere EXCEPT across analog zero, where U folds
+  -- from 16383 straight to 0. The baseline sits ~6300 counts below analog zero (offset-binary
+  -- ~1861; the same baseline read raw is 1861 xor 8192 = 10053, which is the "baseline close to
+  -- 10000" recorded in the early bring-up logs). Pulses smaller than that gap never reach the fold;
+  -- larger ones cross it and cliff, and if they also over-range they clip flat at the rail on the
+  -- far side before cliffing back on the way down.
+  --
+  -- Reproduced on hardware 2026-08-18 by rendering one capture both ways (firmware's
+  -- test_encoding_fold_demo(), gain raised until a pulse crossed analog zero):
+  --     idx  corrected  as-read-before-fix
+  --      97     6335        14527
+  --      98     8935          743   <- crosses analog zero, folds 16383->0
+  --     101    16383         8191   <- clipped at the rail
+  --     ...    16383         8191      (85 samples of flat plateau)
+  --     232     8225           33   <- decayed to near zero: the "undershoot"
+  --     233     8163        16355   <- folds back, then settles slowly to baseline
+  -- The corrected column over those same samples is a clean pulse.
   signal adc_data_ob : std_logic_vector(ADC_WIDTH - 1 downto 0);
+
+  signal ts_counter : unsigned(63 downto 0); -- free-running cycle count, the time reference
+  signal ts_latched : unsigned(63 downto 0); -- value at the trigger, held for the whole frame
 
   signal delayed_data : std_logic_vector(ADC_WIDTH - 1 downto 0);
   signal trigger_pulse : std_logic;
@@ -119,9 +145,27 @@ begin
 
   -- AXI-Stream side-channel bytes/sideband: fixed, not meaningful for this simple single-stream
   -- design, but driven to match fci_core's port signature exactly for direct wiring.
+  -- See the port comment: never backpressure a free-running converter stream.
+  s_axis_tready <= '1';
+
   m_axis_tkeep <= (others => '1');
   m_axis_tstrb <= (others => '1');
-  m_axis_tuser <= (others => '0');
+  -- Event timestamp. A free-running cycle counter is latched the moment the trigger fires and
+  -- held on TUSER for every beat of the resulting frame, so each consumer -- psd_core, fci_core,
+  -- the shaper -- can tag its own result with the pulse it came from. This has to be in-band
+  -- rather than a counter register the CPU reads, because each consumer buffers its results
+  -- independently: once psd_core has a result FIFO, position in the output sequence no longer
+  -- implies a common event, and only a tag carried with the data still pairs them.
+  --
+  -- The counter is free-running from reset and is never gated: it is the time reference, so a
+  -- stall would silently distort every interval derived from it. At 50 MHz, 64 bits wraps after
+  -- ~11,700 years, so wrap handling is not a case the firmware has to carry.
+  --
+  -- Latching at the trigger (not at the start of streaming) is what makes the value mean "when the
+  -- pulse crossed threshold" rather than "when the core got round to draining it". Holding it
+  -- until the next trigger is safe because this core is single-buffered: armed_o is only high in
+  -- IDLE, so exactly one frame is ever in flight.
+  m_axis_tuser <= std_logic_vector(ts_latched);
   m_axis_tid   <= (others => '0');
   m_axis_tdest <= (others => '0');
 
@@ -132,15 +176,40 @@ begin
   process (clk_i)
   begin
     if rising_edge(clk_i) then
-      adc_data_q <= adc_data_i;
+      if s_axis_tvalid = '1' then
+        adc_data_q <= s_axis_tdata(ADC_WIDTH - 1 downto 0);
+      end if;
     end if;
   end process;
 
-  adc_data_ob <= (not adc_data_q(ADC_WIDTH - 1)) & adc_data_q(ADC_WIDTH - 2 downto 0);
+  gen_2c : if ADC_IS_2C generate
+    adc_data_ob <= (not adc_data_q(ADC_WIDTH - 1)) & adc_data_q(ADC_WIDTH - 2 downto 0);
+  end generate gen_2c;
+
+  -- Already offset binary (blr_core converted it upstream): pass through untouched.
+  gen_ob : if not ADC_IS_2C generate
+    adc_data_ob <= adc_data_q;
+  end generate gen_ob;
+
+  timestamp_counter : process (clk_i)
+  begin
+    if rising_edge(clk_i) then
+      if rstn_i = '0' then
+        ts_counter <= (others => '0');
+        ts_latched <= (others => '0');
+      else
+        ts_counter <= ts_counter + 1;
+        if trigger_pulse = '1' then
+          ts_latched <= ts_counter;
+        end if;
+      end if;
+    end if;
+  end process timestamp_counter;
 
   u_axi4lite_regs : entity work.axi4lite_regs
     generic map (
-      C_ADDR_WIDTH => 5
+      C_ADDR_WIDTH => 5,
+      DATA_WIDTH   => ADC_WIDTH
     )
     port map (
       clk_i         => clk_i,

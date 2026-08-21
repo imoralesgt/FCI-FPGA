@@ -21,15 +21,22 @@ end entity trigger_core_tb;
 
 architecture sim of trigger_core_tb is
 
-  constant ADC_WIDTH  : integer := 14;
+  -- 16-bit signed sample datapath, matching blr_core's output. The ADC itself is 14-bit; the two
+  -- extra bits are headroom for blr_core's baseline subtraction.
+  constant ADC_WIDTH  : integer := 16;
   constant MAX_DELAY  : integer := 256;
   constant MAX_DEPTH  : integer := 4096;
   constant CLK_PERIOD : time    := 20 ns;
-  constant MOD_VAL     : integer := 16384; -- 2**ADC_WIDTH
+  constant MOD_VAL     : integer := 65536; -- 2**ADC_WIDTH, for the consecutive-value wrap check
 
   signal clk_i      : std_logic := '0';
   signal rstn_i     : std_logic := '0';
-  signal adc_data_i : std_logic_vector(ADC_WIDTH - 1 downto 0) := (others => '0');
+  -- Kept as a 14-bit stimulus signal and widened to the core's 16-bit TDATA below, so every
+  -- existing `adc_data_i <= ob_to_2c(...)` line in the scenarios stays as it was.
+  signal adc_data_i    : std_logic_vector(ADC_WIDTH - 1 downto 0) := (others => '0');
+  signal s_axis_tdata  : std_logic_vector(ADC_WIDTH - 1 downto 0);
+  signal s_axis_tvalid : std_logic := '1';
+  signal s_axis_tready : std_logic;
 
   signal s_axi_awaddr  : std_logic_vector(4 downto 0)  := (others => '0');
   signal s_axi_awvalid : std_logic := '0';
@@ -52,7 +59,7 @@ architecture sim of trigger_core_tb is
   signal m_axis_tdata  : std_logic_vector(15 downto 0);
   signal m_axis_tkeep  : std_logic_vector(1 downto 0);
   signal m_axis_tstrb  : std_logic_vector(1 downto 0);
-  signal m_axis_tuser  : std_logic_vector(0 downto 0);
+  signal m_axis_tuser  : std_logic_vector(63 downto 0);
   signal m_axis_tlast  : std_logic;
   signal m_axis_tid    : std_logic_vector(0 downto 0);
   signal m_axis_tdest  : std_logic_vector(0 downto 0);
@@ -76,21 +83,19 @@ architecture sim of trigger_core_tb is
   signal expect_no_capture : boolean := false;
   signal reconfig_fail     : boolean := false;
 
-  -- Stimulus helper: encodes an intended offset-binary sample value as the raw 2's-complement
-  -- bit pattern a real LTC2248 (MODE strapped to 2/3 VDD on this board) actually outputs for it
-  -- -- mirrors trigger_core_top's own (self-inverse, MSB-flip) conversion. Driving adc_data_i
-  -- through this function means every assertion below, expressed in offset-binary terms exactly
-  -- as before this conversion existed, continues to hold unchanged if and only if that
-  -- conversion is implemented correctly.
+  -- Stimulus helper: the stream carries signed samples now, so driving a level is a plain signed cast -- no format
+  -- conversion anywhere in the chain. Kept as a function so the scenarios read unchanged.
   function ob_to_2c(v : integer) return std_logic_vector is
     variable result : std_logic_vector(ADC_WIDTH - 1 downto 0);
   begin
-    result := std_logic_vector(to_unsigned(v mod MOD_VAL, ADC_WIDTH));
-    result(ADC_WIDTH - 1) := not result(ADC_WIDTH - 1);
+    result := std_logic_vector(to_signed(v, ADC_WIDTH));
     return result;
   end function;
 
 begin
+
+  -- The datapath is 16-bit signed end to end now, so the stimulus vector is the TDATA vector.
+  s_axis_tdata <= adc_data_i;
 
   clk_i <= not clk_i after CLK_PERIOD / 2;
 
@@ -123,7 +128,9 @@ begin
     port map (
       clk_i         => clk_i,
       rstn_i        => rstn_i,
-      adc_data_i    => adc_data_i,
+      s_axis_tdata  => s_axis_tdata,
+      s_axis_tvalid => s_axis_tvalid,
+      s_axis_tready => s_axis_tready,
       s_axi_awaddr  => s_axi_awaddr,
       s_axi_awvalid => s_axi_awvalid,
       s_axi_awready => s_axi_awready,
@@ -255,7 +262,7 @@ begin
           bubbles := bubbles + 1;
         end if;
         if m_axis_tvalid = '1' and m_axis_tready = '1' then
-          this_val := to_integer(unsigned(m_axis_tdata(ADC_WIDTH - 1 downto 0)));
+          this_val := to_integer(unsigned(m_axis_tdata));
           if beats = 0 then
             first_val := this_val;
           else

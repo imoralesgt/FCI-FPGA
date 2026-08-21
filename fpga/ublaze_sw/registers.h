@@ -36,6 +36,88 @@
 #define TRIGGER_CORE_POLARITY_FALLING 0x0
 
 /* ---------------------------------------------------------------------------------------------
+ * blr_core (fpga/rtl/blr_core) -- hand-written AXI4-Lite register map, keep in sync with
+ * blr_axi4lite_regs.vhd.
+ *
+ * blr_core sits between the ADC pins and trigger_core and restores the baseline to ZERO, emitting
+ * SIGNED samples. Thresholds, integration references and trace statistics are all signed levels
+ * about zero -- there is no mid-scale constant anywhere in the chain.
+ * ------------------------------------------------------------------------------------------- */
+#define BLR_CORE_BASEADDR XPAR_BLR_CORE_0_BASEADDR
+
+#define BLR_SHIFT_OFFSET 0x00    /* [3:0]  EMA shift k; time constant = 2^k samples */
+#define BLR_GATE_THR_OFFSET 0x04 /* [13:0] freeze the estimator at/above this deviation */
+#define BLR_CTRL_OFFSET 0x08     /* [0] bypass, [1] hold */
+#define BLR_STATUS_OFFSET 0x0C   /* RO: [13:0] live baseline (SIGNED, sign-extend on read),
+                                  *     [31] gate open */
+#define BLR_HOLDOFF_OFFSET 0x10  /* [11:0] extra closed samples after a pulse falls back in range */
+
+#define BLR_CTRL_BYPASS_MASK (1U << 0)
+#define BLR_CTRL_HOLD_MASK (1U << 1)
+#define BLR_STATUS_BASELINE_MASK 0x3FFFU
+#define BLR_STATUS_GATE_OPEN_MASK (1U << 31)
+
+/* Width of the signed baseline field in BLR_STATUS_OFFSET, for sign extension in blr.c. */
+#define BLR_BASELINE_BITS 14
+
+/* ---------------------------------------------------------------------------------------------
+ * psd_core (fpga/rtl/psd_core) -- hand-written AXI4-Lite register map, keep in sync with
+ * psd_axi4lite_regs.vhd.
+ * ------------------------------------------------------------------------------------------- */
+#define PSD_CORE_BASEADDR XPAR_PSD_CORE_0_BASEADDR
+
+#define PSD_PRE_TRIGGER_OFFSET 0x00  /* must match trigger_core's delay register */
+#define PSD_PRE_GATE_OFFSET 0x04
+#define PSD_SHORT_GATE_OFFSET 0x08
+#define PSD_LONG_GATE_OFFSET 0x0C
+#define PSD_BASELINE_REF_OFFSET 0x10 /* SIGNED residual-pedestal trim; 0 when fed by blr_core */
+#define PSD_CTRL_OFFSET 0x14         /* W, self-clearing: [0] pop, [1] clear */
+#define PSD_STATUS_OFFSET 0x18       /* RO */
+#define PSD_ENERGY_SHORT_OFFSET 0x1C /* RO, signed */
+#define PSD_ENERGY_LONG_OFFSET 0x20  /* RO, signed */
+#define PSD_TS_LO_OFFSET 0x24        /* RO */
+#define PSD_TS_HI_OFFSET 0x28        /* RO */
+#define PSD_EVENT_COUNT_OFFSET 0x2C  /* RO */
+#define PSD_WATERMARK_OFFSET 0x30    /* irq_o asserts at this FIFO level; 0 disables */
+
+#define PSD_CTRL_POP_MASK (1U << 0)
+#define PSD_CTRL_CLEAR_MASK (1U << 1)
+#define PSD_STATUS_EMPTY_MASK (1U << 0)
+#define PSD_STATUS_FULL_MASK (1U << 1)
+#define PSD_STATUS_OVERFLOW_MASK (1U << 2)
+#define PSD_STATUS_LEVEL_SHIFT 8
+#define PSD_STATUS_LEVEL_MASK 0x3FU
+
+/* ---------------------------------------------------------------------------------------------
+ * fci_sink (fpga/rtl/fci_sink) -- buffered AXI4-Lite result window on fci_core's output, which
+ * replaced axi_dma_0. Keep in sync with fci_sink_axi4lite_regs.vhd.
+ * ------------------------------------------------------------------------------------------- */
+/* Guarded because the block design is what decides whether this core exists: while fci_core's
+ * results still travel over axi_dma_0, there is no XPAR_FCI_SINK_0_BASEADDR to reference and an
+ * unguarded macro here would break the build for a BD that is otherwise perfectly valid. */
+#ifdef XPAR_FCI_SINK_0_BASEADDR
+#define FCI_SINK_BASEADDR XPAR_FCI_SINK_0_BASEADDR
+#endif
+
+#define FCI_SINK_CTRL_OFFSET 0x00        /* W, self-clearing: [0] pop, [1] clear */
+#define FCI_SINK_STATUS_OFFSET 0x04      /* RO */
+#define FCI_SINK_PSA_L_OFFSET 0x08       /* RO, Q12.16 */
+#define FCI_SINK_PSA_W_OFFSET 0x0C       /* RO, Q12.16 */
+#define FCI_SINK_TS_LO_OFFSET 0x10       /* RO */
+#define FCI_SINK_TS_HI_OFFSET 0x14       /* RO */
+#define FCI_SINK_EVENT_COUNT_OFFSET 0x18 /* RO */
+#define FCI_SINK_WATERMARK_OFFSET 0x1C
+
+#define FCI_SINK_CTRL_POP_MASK (1U << 0)
+#define FCI_SINK_CTRL_CLEAR_MASK (1U << 1)
+#define FCI_SINK_STATUS_EMPTY_MASK (1U << 0)
+#define FCI_SINK_STATUS_FULL_MASK (1U << 1)
+#define FCI_SINK_STATUS_OVERFLOW_MASK (1U << 2)
+#define FCI_SINK_STATUS_FRAMING_ERR_MASK (1U << 3)
+#define FCI_SINK_STATUS_LEVEL_SHIFT 8
+#define FCI_SINK_STATUS_LEVEL_MASK 0x3FU
+
+/* ---------------------------------------------------------------------------------------------
  * fci_core (fpga/hls/fci_core) -- Vitis HLS-generated s_axi_control map, offsets taken directly
  * from xfci_core_hw.h rather than retyped, so a future HLS re-synth/re-export can't desync them.
  * ------------------------------------------------------------------------------------------- */
@@ -138,9 +220,10 @@
 #define AXI_UARTLITE_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID
 
 /* ---------------------------------------------------------------------------------------------
- * microblaze_0_axi_intc -- xlconcat interrupt aggregation order (deliberately reordered so both
- * DMA interrupts sit at the end): In0=uartlite, In1=fci_core, In2=axi_timer_0, In3=axi_dma_0
- * s2mm, In4=axi_dma_1 s2mm (see fpga/bd/fci_bd.tcl). Vec IDs below are read from the generated
+ * microblaze_0_axi_intc -- xlconcat interrupt aggregation order. As currently wired in
+ * fpga/bd/fci_bd.tcl: In0=uartlite, In1=axi_timer_0, In2=fci_core, In3=psd_core, In4=axi_dma_0
+ * s2mm, In5=axi_dma_1 s2mm. This order has changed more than once; nothing in firmware depends on
+ * it because every vector ID below is read from the generated xparameters.h. Vec IDs below are read from the generated
  * xparameters.h rather than hardcoded, so this reordering doesn't require any code change here --
  * only a BSP regeneration in Vitis. axi_iic_0/iic2intc_irpt intentionally left unconnected
  * (poll-only I2C).
