@@ -135,10 +135,12 @@ architecture rtl of trigger_core_top is
   signal armed          : std_logic;
 
   signal buf_wr_en   : std_logic;
-  signal buf_wr_addr  : std_logic_vector(ADDR_WIDTH - 1 downto 0);
+  -- One bit wider than the capture depth needs: capture_engine is double-buffered and uses
+  -- the top bit to select which half it is addressing.
+  signal buf_wr_addr  : std_logic_vector(ADDR_WIDTH downto 0);
   signal buf_wr_data   : std_logic_vector(ADC_WIDTH - 1 downto 0);
   signal buf_rd_en    : std_logic;
-  signal buf_rd_addr   : std_logic_vector(ADDR_WIDTH - 1 downto 0);
+  signal buf_rd_addr   : std_logic_vector(ADDR_WIDTH downto 0);
   signal buf_rd_data    : std_logic_vector(ADC_WIDTH - 1 downto 0);
 
 begin
@@ -291,7 +293,9 @@ begin
   u_circular_buffer : entity work.circular_buffer
     generic map (
       DATA_WIDTH => ADC_WIDTH,
-      DEPTH      => MAX_DEPTH
+      -- Twice MAX_DEPTH: capture_engine is double-buffered and uses the top address bit as the
+      -- buffer select, so both halves share this one dual-port RAM.
+      DEPTH      => 2 * MAX_DEPTH
     )
     port map (
       clk_i     => clk_i,

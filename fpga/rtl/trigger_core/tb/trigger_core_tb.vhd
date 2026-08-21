@@ -337,6 +337,13 @@ begin
       end loop;
     end procedure;
 
+    -- Double-buffering scenario state (see the scenario below for what it proves).
+    constant DEPTH_D : integer := 16;
+    variable beats_d : integer;
+    variable lasts_d : integer;
+    variable guard_d : integer;
+    variable ok_d    : boolean;
+
   begin
     rstn_i <= '0';
     for i in 0 to 4 loop
@@ -360,6 +367,75 @@ begin
     -- which can look exactly like a genuine crossing. Reproduces the same sequence here: hold
     -- adc_data_i fixed and drive threshold/polarity through transitions that would have crossed
     -- the old (leftover) comparator state, with monitor_no_spurious watching for any capture.
+    ---------------------------------------------------------------------------
+    -- The point of double-buffering: a second trigger arriving while the first trace is still
+    -- draining must be ACCEPTED, not dropped. Single-buffered, armed_o was high only in IDLE, so
+    -- every event during a stream was lost -- half the live time at full rate.
+    --
+    -- armed_o is internal to trigger_core_top, so this is checked behaviourally: hold tready low
+    -- so nothing drains, fire two triggers, then release tready and require TWO complete traces
+    -- (2 x depth beats, exactly 2 TLASTs). A single-buffered core yields one.
+    report "=== Test: second trigger during stream is captured (double buffering) ===";
+    test_count <= test_count + 1;
+    beats_d := 0; lasts_d := 0; guard_d := 0; ok_d := true;
+
+    m_axis_tready <= '0';
+    axi_write(0, 150);
+    axi_write(4, 1);
+    axi_write(8, 4);
+    axi_write(12, DEPTH_D);
+
+    adc_data_i <= ob_to_2c(100);
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(200);            -- first crossing
+    for i in 0 to DEPTH_D + 20 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    adc_data_i <= ob_to_2c(100);
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(200);            -- second crossing, first trace still undrained
+    for i in 0 to DEPTH_D + 20 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(100);
+
+    m_axis_tready <= '1';
+    while lasts_d < 2 and guard_d < 20 * DEPTH_D loop
+      wait until rising_edge(clk_i);
+      guard_d := guard_d + 1;
+      if m_axis_tvalid = '1' and m_axis_tready = '1' then
+        beats_d := beats_d + 1;
+        if m_axis_tlast = '1' then
+          lasts_d := lasts_d + 1;
+        end if;
+      end if;
+    end loop;
+
+    if lasts_d /= 2 then
+      ok_d := false;
+      report "  FAIL: expected 2 traces, got " & integer'image(lasts_d)
+             & " (a single-buffered core drops the second trigger)";
+    end if;
+    if beats_d /= 2 * DEPTH_D then
+      ok_d := false;
+      report "  FAIL: expected " & integer'image(2 * DEPTH_D) & " beats, got "
+             & integer'image(beats_d);
+    end if;
+    if ok_d then
+      report "  PASS (2 traces, " & integer'image(beats_d)
+             & " beats -- second trigger accepted during stream)";
+    else
+      fail_count <= fail_count + 1;
+      report "  Test 'double buffering' FAILED" severity error;
+    end if;
+    wait until rising_edge(clk_i);
+
+    ---------------------------------------------------------------------------
     report "=== Test: reconfiguration hazard (no spurious capture) ===";
     test_count    <= test_count + 1;
     m_axis_tready <= '1';
