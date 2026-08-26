@@ -23,6 +23,10 @@
 #include "iic.h"
 #include "intc.h"
 #include "platform.h"
+#include "acquisition.h"
+#include "blr.h"
+#include "fci_sink.h"
+#include "psd.h"
 #include "registers.h"
 #include "vga_dac.h"
 #include "xil_io.h"
@@ -82,6 +86,43 @@ static void test_trigger_core(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, 16383);
 }
+
+/* fci_sink replaces axi_dma_0 on fci_core's result path. Kept as a switch rather than a deletion
+ * because the block design is what decides which of the two exists: set this to 0 to build against
+ * a BD that still carries axi_dma_0, 1 for one that carries fci_sink. Nothing else in this file
+ * needs touching to move between them. */
+#define FCI_RESULT_VIA_FCI_SINK 0
+
+static void test_blr_core(void) {
+  xil_printf("-- blr_core registers --\r\n");
+  check_ok("blr register write/read", Blr_SelfTest(BLR_CORE_BASEADDR));
+
+  /* The estimator seeds from the first sample after reset, so by the time firmware runs it has
+   * long since converged on whatever the input is doing. A baseline of exactly 0 means it never
+   * saw a sample -- the likeliest cause being that the ADC stream is not reaching it at all. */
+  s32 baseline = Blr_GetBaseline(BLR_CORE_BASEADDR);
+  xil_printf("  [INFO] blr baseline = %d, gate %s\r\n", (int)baseline,
+             Blr_GateOpen(BLR_CORE_BASEADDR) ? "open" : "shut");
+  check_ok("blr baseline is tracking (nonzero)", baseline != 0);
+}
+
+static void test_psd_core(void) {
+  xil_printf("-- psd_core registers --\r\n");
+  check_ok("psd register write/read", Psd_SelfTest(PSD_CORE_BASEADDR));
+  Psd_Clear(PSD_CORE_BASEADDR);
+  check_ok("psd FIFO empty after clear", Psd_Level(PSD_CORE_BASEADDR) == 0);
+}
+
+#if FCI_RESULT_VIA_FCI_SINK
+static void test_fci_sink(void) {
+  xil_printf("-- fci_sink registers --\r\n");
+  FciSink_SetWatermark(FCI_SINK_BASEADDR, 7);
+  check_ok("fci_sink watermark write/read",
+           Xil_In32(FCI_SINK_BASEADDR + FCI_SINK_WATERMARK_OFFSET) == 7);
+  FciSink_Clear(FCI_SINK_BASEADDR);
+  check_ok("fci_sink FIFO empty after clear", FciSink_Level(FCI_SINK_BASEADDR) == 0);
+}
+#endif
 
 static void test_fci_core(void) {
   xil_printf("-- fci_core @ 0x%08x --\r\n", FCI_CORE_BASEADDR);
@@ -207,11 +248,15 @@ static void service_dma1_event(void) {
  * Whether or not this flush happens to fire a capture, it doesn't matter to correctness: callers
  * needing a guaranteed-fresh, uncontaminated trace (test_raw_trace_capture()) wait for
  * g_raw_event_count to advance from their *own* entry value, not from anything recorded here. */
-static void set_trigger_threshold(u32 threshold) {
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, 16383);
+static void set_trigger_threshold(s32 threshold) {
+  /* Park at the top of the signed range first so nothing can fire mid-update. 32767 is the most
+   * positive 16-bit signed level, unreachable by any real sample. */
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, 32767);
   for (volatile u32 i = 0; i < 1000; i++) {
   }
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, threshold);
+  /* Written as a 16-bit two's-complement pattern; the core's threshold register is signed and
+   * masks to its own width, so a negative level round-trips correctly. */
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, (u32)threshold & 0xFFFFu);
 }
 
 /* --- axi_dma_0 (PSA result) double buffering. test_dma_s2mm() below owns
@@ -294,7 +339,10 @@ static void start_raw_trace_pipeline(void) {
  * with the FSL reads, two more real events completing mid-print could let the ISR wrap back around
  * and overwrite the very buffer still being printed from. Copy first, print after, and that race
  * can't happen. */
-static u16 g_trace[RAW_TRACE_MAX_SAMPLES];
+/* SIGNED. blr_core restores the baseline to zero and emits signed samples, so a quiet trace sits
+ * around 0 and undershoot is genuinely negative. Reading these as unsigned would render every
+ * below-baseline sample as ~65000 and turn the noise statistics into nonsense. */
+static s16 g_trace[RAW_TRACE_MAX_SAMPLES];
 
 /* Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace. Kept separate from
  * printing so calibrate_threshold() can analyse a trace without dumping it over the UART. */
@@ -304,9 +352,9 @@ static void read_raw_trace(u32 buf_addr, u32 depth) {
   while (copied < depth) {
     u32 word;
     getfslx(word, 1, FSL_DEFAULT);
-    g_trace[copied++] = (u16)(word & 0xFFFF);
+    g_trace[copied++] = (s16)(word & 0xFFFF);
     if (copied < depth)
-      g_trace[copied++] = (u16)((word >> 16) & 0xFFFF);
+      g_trace[copied++] = (s16)((word >> 16) & 0xFFFF);
   }
 }
 
@@ -358,10 +406,24 @@ static void report_raw_path_state(void) {
  * samples are quiet baseline recorded before whatever caused the trigger -- true even when the
  * trigger itself fired on noise, which is exactly the situation this recovers from. */
 #define TRIGGER_DELAY 100
+
+/* Pre-trigger samples included in both PSD gates. Kept here next to TRIGGER_DELAY because the gate
+ * start is derived from the two together, and report_gate_scan() must use the same arithmetic
+ * psd_core does or the scan would describe a different window than the one being measured. */
+#define PSD_PRE_GATE_SAMPLES 32
 #define BASELINE_SAMPLES 64 /* comfortably inside the TRIGGER_DELAY pre-trigger region */
 #define THRESHOLD_SIGMA_MULT 8
 
-static u32 g_calibrated_threshold; /* 0 until calibrate_threshold() succeeds */
+/* SIGNED: a level on the zero-centred restored stream, so a small positive number in normal
+ * operation rather than a large offset-binary code. */
+static s32 g_calibrated_threshold; /* 0 until calibrate_threshold() succeeds */
+
+/* Measured baseline sigma from the last successful calibration. Retained because blr_core's gate
+ * threshold is derived from it (see Blr_GateThresholdForSigma): the gate has to sit clear of the
+ * noise, and the only honest source for "how much noise" is the same measurement the trigger
+ * threshold already uses. 0 means calibration has not run, and Acq_Configure() falls back to the
+ * hardware reset default rather than deriving a threshold from a number it does not have. */
+static u32 g_last_sigma;
 
 static u32 isqrt_u32(u32 v) {
   u32 r = 0, bit = 1UL << 30;
@@ -505,23 +567,26 @@ static int calibrate_threshold(void) {
     depth = BASELINE_SAMPLES;
   read_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
 
-  u32 sum = 0;
+  /* Signed throughout: with the baseline restored to zero the mean is near 0 and can legitimately
+   * be negative, so an unsigned accumulator would wrap on the first below-zero sample. */
+  s32 sum = 0;
   for (u32 i = 0; i < depth; i++)
     sum += g_trace[i];
-  u32 mean = sum / depth;
+  s32 mean = sum / (s32)depth;
 
   /* 64-bit accumulator: if the "pre-trigger" window is not actually quiet (a pulse landing early,
    * or a capture triggered mid-event), a single outlier contributes d*d up to ~2.7e8 and a u32
    * would wrap, producing a silently wrong sigma and thus a nonsense threshold. */
   u64 var_acc = 0;
   for (u32 i = 0; i < depth; i++) {
-    int d = (int)g_trace[i] - (int)mean;
-    var_acc += (u64)((s64)d * d);
+    s32 d = (s32)g_trace[i] - mean;
+    var_acc += (u64)((s64)d * (s64)d);
   }
   u32 sigma = isqrt_u32((u32)(var_acc / depth));
   if (sigma == 0) /* a perfectly flat window would otherwise collapse the margin to zero */
     sigma = 1;
 
+  g_last_sigma = sigma;
   g_calibrated_threshold = mean + THRESHOLD_SIGMA_MULT * sigma;
   xil_printf("  [INFO] baseline mean=%d sigma=%d over %d pre-trigger samples\r\n", mean, sigma,
              depth);
@@ -539,6 +604,44 @@ static int calibrate_threshold(void) {
  * a stale capture (spurious or otherwise) sitting in g_raw_ready_buf -- so a plain "is it
  * non-zero" check could return old data instead of a fresh one. Waiting for the count to move
  * guarantees whatever we read was captured after this function started looking. */
+/* Cumulative charge as a function of long-gate length, over the trace currently in g_trace.
+ *
+ * This exists because the long gate cannot be derived from the pulse decay alone. The AFE's
+ * response undershoots after a pulse, so past some length the gate starts integrating NEGATIVE
+ * signal and the measured charge falls again. The first hardware run showed 14% of events with
+ * El < Es -- impossible for a positive pulse, since the long gate contains the short one -- which
+ * is that undershoot being included.
+ *
+ * The useful long gate is the one at the maximum of this curve: long enough to collect the tail,
+ * short enough to stop before the undershoot. Printing the curve turns that into a measurement
+ * instead of a guess. */
+/* Prints a value scaled by 10000 as a decimal, e.g. -5000 -> "-0.5000".
+ *
+ * The sign has to be handled before the split, not after: in C, -5000/10000 truncates toward zero
+ * and gives 0, so printing the quotient and remainder separately would render -0.5000 as "0.5000"
+ * -- correct magnitude, silently wrong sign. It only shows up for values between -1 and 0, which
+ * is exactly the range a marginally-negative tail integral lands in. */
+static void print_fixed4(s32 scaled) {
+  s32 mag = (scaled < 0) ? -scaled : scaled;
+  if (scaled < 0)
+    xil_printf("-");
+  xil_printf("%d.%04d", mag / 10000, mag % 10000);
+}
+
+static void report_gate_scan(u32 depth) {
+  u32 gate_start = (TRIGGER_DELAY > PSD_PRE_GATE_SAMPLES) ? TRIGGER_DELAY - PSD_PRE_GATE_SAMPLES : 0;
+  xil_printf("# [SCAN] cumulative charge vs long-gate length (gate starts at sample %d)\r\n",
+             gate_start);
+  for (u32 len = 50; len <= 600; len += 50) {
+    if (gate_start + len > depth)
+      break;
+    s32 acc = 0;
+    for (u32 i = gate_start; i < gate_start + len; i++)
+      acc += g_trace[i];
+    xil_printf("# [SCAN] len=%3d  charge=%d\r\n", len, acc);
+  }
+}
+
 static void test_raw_trace_capture(void) {
   xil_printf("-- raw_trace: latest capture via axi_dma_1 --\r\n");
 
@@ -555,6 +658,7 @@ static void test_raw_trace_capture(void) {
 
   xil_printf("  [PASS] captured %d raw samples:\r\n", g_raw_ready_depth);
   print_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
+  report_gate_scan(g_raw_ready_depth);
 }
 
 /* --- VGA fine-gain bisect (diagnostic) -----------------------------------------------------
@@ -599,8 +703,12 @@ static const u16 VGA_BISECT_CODES[] = {0, 205, 410, 819, 1638};
  * only, to keep the UART log readable. */
 static int vga_bisect_should_dump(u16 code) { return code == 0 || code == 819; }
 
-static void report_trace_metrics(u32 depth, u32 mean, u32 sigma) {
-  u32 peak = 0, peak_idx = 0;
+static void report_trace_metrics(u32 depth, s32 mean, u32 sigma) {
+  /* Seeded from a real sample rather than 0: on a signed, zero-centred stream a fixed unsigned
+   * seed is not a valid starting extreme -- an all-negative trace would report a peak of 0 that
+   * no sample ever attained. */
+  s32 peak = g_trace[0];
+  u32 peak_idx = 0;
   for (u32 i = 0; i < depth; i++) {
     if (g_trace[i] > peak) {
       peak = g_trace[i];
@@ -608,19 +716,19 @@ static void report_trace_metrics(u32 depth, u32 mean, u32 sigma) {
     }
   }
 
-  u32 plateau_floor = (peak > 3 * sigma) ? peak - 3 * sigma : 0;
+  s32 plateau_floor = peak - 3 * (s32)sigma;
   u32 plateau = 0;
   for (u32 i = 0; i < depth; i++)
     if (g_trace[i] >= plateau_floor)
       plateau++;
 
-  u32 trough = 0xFFFF;
+  s32 trough = g_trace[peak_idx];
   for (u32 i = peak_idx; i < depth; i++)
     if (g_trace[i] < trough)
       trough = g_trace[i];
 
-  int amp = (int)peak - (int)mean;
-  int undershoot = (int)mean - (int)trough;
+  int amp = (int)(peak - mean);
+  int undershoot = (int)(mean - trough);
 
   xil_printf("  [DATA] peak=%d @%d  amp=%d  plateau=%d samples  undershoot=%d\r\n", peak, peak_idx,
              amp, plateau, undershoot);
@@ -669,14 +777,14 @@ static void test_vga_fine_bisect(void) {
     read_raw_trace(g_raw_ready_buf, depth);
 
     u32 stat_n = (depth > BASELINE_SAMPLES) ? BASELINE_SAMPLES : depth;
-    u32 sum = 0;
+    s32 sum = 0;
     for (u32 i = 0; i < stat_n; i++)
       sum += g_trace[i];
-    u32 mean = sum / stat_n;
+    s32 mean = sum / (s32)stat_n;
     u64 var_acc = 0;
     for (u32 i = 0; i < stat_n; i++) {
-      int d = (int)g_trace[i] - (int)mean;
-      var_acc += (u64)((s64)d * d);
+      s32 d = (s32)g_trace[i] - mean;
+      var_acc += (u64)((s64)d * (s64)d);
     }
     u32 sigma = isqrt_u32((u32)(var_acc / stat_n));
     if (sigma == 0)
@@ -850,6 +958,7 @@ static void test_live_event(void) {
  * consumers must be continuously serviced from the start: the broadcaster is lockstep, so whichever
  * one stops accepting stalls the other as well. See test_live_event() for the failure this
  * prevents. Requires Intc_Init() to have run already (start_raw_trace_pipeline does it). */
+#if !FCI_RESULT_VIA_FCI_SINK
 static void start_result_pipeline(void) {
   if (!Dma_ResetCore(AXI_DMA_BASEADDR)) {
     xil_printf("  [FAIL] Dma_ResetCore (axi_dma_0) timed out\r\n");
@@ -862,6 +971,7 @@ static void start_result_pipeline(void) {
 
   Intc_EnableAdditional(INTC_DMA_S2MM_BIT);
 }
+#endif /* !FCI_RESULT_VIA_FCI_SINK */
 
 /* Both DMA channels have been running interrupt-driven since start_result_pipeline(); all this does
  * is restore the operating threshold that the bisect perturbed and hand over to the print loop. */
@@ -880,14 +990,25 @@ void Bringup_Run(void) {
   xil_printf("\r\n=== FCI register bring-up test ===\r\n");
   test_trigger_core();
   test_fci_core();
+  test_blr_core();
+  test_psd_core();
+#if FCI_RESULT_VIA_FCI_SINK
+  test_fci_sink();
+#endif
   test_vga_dac();
 
   start_fci_core_realtime();
   start_raw_trace_pipeline(); /* must be armed+interrupt-driven before any real trigger can occur
                                 * -- see its comment for why */
+#if !FCI_RESULT_VIA_FCI_SINK
   start_result_pipeline();    /* same requirement for the other broadcaster consumer: a one-shot
                                 * axi_dma_0 here used to stall fci_core and, through the lockstep
                                 * broadcaster, the raw-trace tap with it */
+#else
+  /* fci_sink needs no arming: it is always ready, drains into its own FIFO, and cannot stall
+   * fci_core the way an unarmed axi_dma_0 could. That failure mode is designed out rather than
+   * scheduled around. */
+#endif
   calibrate_threshold();      /* measures the live baseline and derives the threshold from it;
                                 * everything below depends on it, so it runs first */
   test_live_event();          /* "prove it end-to-end" on the running interrupt pipeline */
@@ -906,21 +1027,155 @@ void Bringup_Run(void) {
 
   start_continuous_capture();
 
+#if FCI_RESULT_VIA_FCI_SINK
+  /* Both result FIFOs are drained here by polling rather than from an ISR. At 30 cps that is
+   * obviously sufficient, and at the 15 kcps design target a 32-deep FIFO still gives 2.1 ms of
+   * slack per drain pass -- far more than this loop's period. The watermark interrupts are
+   * configured by Acq_Configure() and left available for a future ISR-driven build; nothing here
+   * depends on them. */
+  {
+    AcqStats stats;
+    AcqEvent ev;
+    u32 printed = 0;
+
+    Acq_Configure(TRIGGER_DELAY, g_last_sigma);
+    Acq_ResetStats(&stats);
+    Acq_PrintCsvHeader();
+
+    while (1) {
+      if (Acq_PopPaired(&ev, &stats)) {
+        Acq_PrintEventCsv(&ev);
+        printed++;
+
+        /* Same reasoning as the raw-trace dump below: a handful of early traces for a visual
+         * sanity check against the reference pulse shape. */
+        if (printed <= 3)
+          print_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
+
+        /* Periodic health line. A nonzero dropped/overflow count is the signal that the two
+         * result streams are slipping and the FCI-vs-PSD comparison is being resynchronized
+         * rather than silently mispaired. */
+        if ((printed % 100u) == 0u)
+          Acq_PrintStats(&stats);
+      }
+    }
+  }
+#else
+  /* psd_core has been integrating since power-on with nothing draining it, so its FIFO is long
+   * since full and its overflow flag set. Clear it here so that what follows starts from a known
+   * empty state and the positional pairing below is anchored.
+   *
+   * Positional pairing, not timestamp pairing: the HLS fci_core does not forward TUSER, so FCI
+   * results carry no timestamp on this build. It is still sound, because axis_broadcaster_0 is
+   * lockstep and psd_core emits exactly one result per frame -- the Nth PSD result is by
+   * construction the Nth FCI result. What makes it fragile rather than structural is that a single
+   * dropped result on either side shifts the alignment permanently and silently, so the overflow
+   * flag is checked every event and reported loudly. Timestamp pairing (acquisition.c) replaces
+   * this once fci_core_rtl forwards the tag. */
+  /* Configure both new cores explicitly rather than leaning on their reset defaults. The defaults
+   * happen to be right today -- psd_core resets to pre_trigger=100, which matches TRIGGER_DELAY --
+   * but that is a coincidence between two constants in different files, and it would break
+   * silently the moment TRIGGER_DELAY moved. psd_core has no other way to learn where the trigger
+   * sits inside the frame.
+   *
+   * Gate geometry, in samples at 50 Msps, from the measured pulse (rise ~21 samples, decay
+   * tau ~1.4 us ~ 70 samples): 32 pre-trigger samples inside the gate so a residual pedestal shows
+   * up as a nonzero integral instead of hiding in the energy; 80 (~1.6 us, one decay constant) for
+   * the prompt component; 400 (~8 us, ~5.7 decay constants) for essentially the full charge.
+   * These are the discrimination knobs and are meant to be swept -- starting points matched to the
+   * pulse, not derived optima. */
+  /* Long gate cut from 400 to 250 after the first hardware run: at 400 the window reached into
+   * the AFE's post-pulse undershoot and 14% of events integrated a NEGATIVE tail, reporting
+   * El < Es. 250 ends at sample 318, comfortably before the undershoot seen in the captured
+   * traces. This is a provisional value -- read the [SCAN] output above and set it to the length
+   * at which cumulative charge peaks. */
+  Psd_Configure(PSD_CORE_BASEADDR, TRIGGER_DELAY, PSD_PRE_GATE_SAMPLES, 80, 250, 0);
+
+  /* blr_core's gate threshold derived from the sigma calibration just measured, rather than left
+   * at the reset default: the gate has to stay open on noise and shut on pulses, and the only
+   * honest source for "how much noise" is the same measurement the trigger threshold uses. */
+  if (g_last_sigma > 0)
+    Blr_Configure(BLR_CORE_BASEADDR, BLR_DEFAULT_SHIFT,
+                  Blr_GateThresholdForSigma(g_last_sigma), BLR_DEFAULT_HOLDOFF);
+
+  Psd_Clear(PSD_CORE_BASEADDR);
+
+  /* CSV header. Everything below this line is either a data row or a '#'-prefixed comment, so the
+   * capture can be pasted straight into a spreadsheet and the comment rows filtered or deleted in
+   * one pass. */
+  xil_printf("El,FCI,PSD\r\n");
+
   u32 last_printed_count = 0;
+  u32 psd_desync_reported = 0;
+  u32 skipped_total = 0;
   while (1) {
     u32 count = g_event_count; /* single volatile read, stable snapshot for this iteration */
     if (count != last_printed_count) {
       u32 psa_l = g_last_psa_l;
       u32 psa_w = g_last_psa_w;
+      /* How many events actually happened since the last print. This is NOT always 1: the UART
+       * takes ~3 ms per line at 115200, so at 30 cps two events can land between polls. The FCI
+       * side only ever exposes the LATEST result (g_last_psa_*), so the printed line is about the
+       * latest event -- which means the PSD side must be advanced by the same amount and the
+       * latest of those used, or the two streams drift apart by one event per skip, permanently
+       * and silently. An earlier version of this loop popped exactly one PSD result per print and
+       * did precisely that. */
+      u32 advanced = count - last_printed_count;
       last_printed_count = count;
+      if (advanced > 1)
+        skipped_total += advanced - 1;
 
-      xil_printf("  event #%d: ", count);
-      if (psa_w == 0) {
-        xil_printf("PSA_w = 0\r\n");
-      } else {
-        u64 fci_scaled = ((u64)psa_l * 10000ULL) / psa_w;
-        xil_printf("FCI = %d.%04d\r\n", (u32)(fci_scaled / 10000), (u32)(fci_scaled % 10000));
+      /* CSV row: El,FCI,PSD -- see the header printed above the loop. Fields are emitted in that
+       * order regardless of which are available, so every row has exactly two commas and the
+       * columns stay aligned even when a value is missing. A missing value is left EMPTY rather
+       * than filled with a sentinel like 0 or -1, which a spreadsheet would happily average. */
+      s32 fci_scaled = 0;
+      int have_fci = (psa_w != 0);
+      if (have_fci)
+        fci_scaled = (s32)(((u64)psa_l * 10000ULL) / psa_w);
+
+      /* PSD side of the same event: discard the results belonging to any events whose FCI value
+       * was overwritten before it could be printed, and keep the last, which is the one the
+       * printed FCI belongs to. */
+      PsdResult pr;
+      int have_psd = 0;
+      for (u32 k = 0; k < advanced; k++)
+        have_psd = Psd_Pop(PSD_CORE_BASEADDR, &pr);
+
+      /* Column 1: El */
+      if (have_psd)
+        xil_printf("%d", pr.energy_long);
+      xil_printf(",");
+
+      /* Column 2: FCI */
+      if (have_fci)
+        print_fixed4(fci_scaled);
+      xil_printf(",");
+
+      /* Column 3: PSD = (El - Es) / El, CAEN's tail fraction. A non-positive El means the event
+       * carried no net charge over the long gate -- noise, or the gate reaching into the AFE
+       * undershoot -- and the ratio would be meaningless, so the field is left empty. */
+      if (have_psd && pr.energy_long > 0) {
+        s64 num = ((s64)pr.energy_long - (s64)pr.energy_short) * 10000LL;
+        print_fixed4((s32)(num / (s64)pr.energy_long));
       }
+
+      /* A PSD overflow means results were dropped, so every pairing after it is off by however
+       * many were lost. Report once rather than every event, and keep going -- the FCI numbers
+       * stay valid, only the pairing is suspect. */
+      if (!psd_desync_reported && Psd_Overflowed(PSD_CORE_BASEADDR)) {
+        psd_desync_reported = 1;
+        xil_printf("\r\n# [WARN] psd FIFO overflowed -- PSD/FCI pairing is no longer aligned");
+      }
+      xil_printf("\r\n");
+
+      /* Report the skip count periodically: a nonzero value is not an error -- it just means the
+       * UART could not keep up and those events were dropped from BOTH streams together, which is
+       * what keeps the pairing valid. It is worth seeing, because it is also the live rate at
+       * which events are being lost to printing. */
+      if ((count % 200u) == 0u && skipped_total > 0u)
+        xil_printf("# %d event(s) skipped by the print loop so far (pairing still aligned)\r\n",
+                   skipped_total);
 
       /* Dump the raw trace behind the first few real events too, for a quick visual sanity check
        * against the reference dataset's pulse shape without a separate bring-up run. axi_dma_1's
@@ -932,5 +1187,6 @@ void Bringup_Run(void) {
         print_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
     }
   }
+#endif
   /* Unreachable: continuous capture runs until reset, no cleanup_platform()/return path. */
 }

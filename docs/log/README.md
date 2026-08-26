@@ -87,7 +87,7 @@ Large pulse, same setup — spike, flat plateau, then a cliff:
 ![The same artifact, step-down variant](images/ila-artifact-step-down.png)
 
 For reference, the analog pulse at the AFE output measured on a scope — negative-going, ~500 mV,
-fast fall and a few-µs exponential recovery. This is the shape the digitised trace must reproduce
+fast fall and a few-µs exponential recovery. This is the shape the digitized trace must reproduce
 (possibly inverted), with **no discontinuity, delta or spike**:
 
 ![Analog detector pulse on the oscilloscope](images/scope-analog-pulse.png)
@@ -342,7 +342,7 @@ At the normal operating point (fine gain 1.0 → code 819, coarse 6.0 → code 7
 | pulse decay τ | ~1.4 µs (~70 samples to 1/e) |
 | pulse amplitude | ~840–4100 counts, background dependent |
 | headroom to analog zero | ~6300 counts |
-| polarity (digitised) | **rising** — pulses go UP from baseline |
+| polarity (digitized) | **rising** — pulses go UP from baseline |
 
 ### Constants and what fixes them
 
@@ -367,8 +367,7 @@ wider than the noise band it was searching for). Each constant is therefore clas
 
 ### Known issue: FCI windows are mismatched to this pulse
 
-τ ≈ 1.4 µs — independently corroborated by the sibling project's τ_d = 1.21 µs for the same
-detector class (§8) — puts the spectral corner at 1/(2πτ) ≈ 114 kHz. With 1024 samples at 50 Msps the FFT bin
+τ ≈ 1.4 µs puts the spectral corner at 1/(2πτ) ≈ 114 kHz. With 1024 samples at 50 Msps the FFT bin
 spacing is 48.83 kHz, so the corner sits at **bin ~2.3** and essentially all pulse energy lands in
 the first few bins. The current windows are `psa_l` = bins 1–25 (to 1.22 MHz) and `psa_w` = bins
 1–90 (to 4.39 MHz) — both capture nearly the same energy, pinning FCI near 1.
@@ -575,31 +574,23 @@ set by channel count alone — counter width up to 36 bits is free:
 
 The 19 tiles freed by removing debug cover **16K channels with 3 to spare**, or 8K comfortably.
 
-#### Sizing the trapezoidal filter from the sibling project
+#### Sizing the trapezoidal filter
 
-The trapezoidal filter is the one block whose cost swings hard on a design choice — its two delay
-lines are *k* and *k+m* samples deep, and at 50 Msps a long shaping time gets expensive fast. That
-choice does not have to be guessed: the `NSIL-MCA-DPP4SiPM` sibling runs the same detector class on
-the same board and its settings are known good.
+The trapezoidal filter is the one block whose cost swings hard on a design choice: its two delay
+lines are *k* and *k+m* samples deep, so at 50 Msps the storage is set entirely by the peaking and
+flat-top times, and a long shaping time gets expensive fast.
 
-![Sibling project detector and MCA shaping settings](images/sibling-mca-shaping-settings.png)
+| peaking + flat top | *k*+*m* at 50 Msps | delay-line storage (14-bit) | as SRL32 |
+|---|---|---|---|
+| 2 µs + 1 µs | 150 | ~250 samples | ~120 LUTs |
+| 5 µs + 1 µs | 300 | ~550 samples | ~250 LUTs |
+| 10 µs + 2 µs | 600 | ~1100 samples | ~500 LUTs, or 1 ×RAMB18 |
 
-| sibling setting | value | at 50 Msps |
-|---|---|---|
-| shaper peaking time | 2.5 µs | *k* = **125 samples** |
-| shaper flat top | 1.0 µs | *m* = **50 samples** |
-| detector decay τ_d | 1.21 µs | Jordanov–Knoll *M* = τ/T ≈ **60.5** |
-| detector rise τ_r | 206 ns | rise *time constant* — not directly comparable to the 420 ns rise *duration* in §7 |
-| BLR threshold gain | 4.00 | baseline restorer gate |
-| coarse VGA gain | 6.00 | independently confirms the 6.0 → code 765 in §4.2 |
-
-τ_d = 1.21 µs also corroborates the ~1.4 µs measured here (§7) from a completely separate
-measurement on a separate design, which is worth more than either figure alone.
-
-That settles the delay-line question. Total storage is *k* + (*k*+*m*) = 300 samples × 14 bits,
-which as SRL32s is about **140 LUTs** — SRL territory with no argument, not the BRAM-versus-logic
-trade that a 10 µs shaping time would have forced. Revisit only if this detector turns out to need
-a much longer peaking time than the sibling's.
+**The shaping times for this detector have not been fixed yet, so this block cannot be costed
+further than the table above.** Anything up to a few µs of peaking time stays comfortably in SRL
+territory and needs no BRAM; past roughly 10 µs the BRAM-versus-logic trade becomes live. Settle
+the shaping time against the measured pulse (τ ≈ 1.4 µs, §7) before treating any row here as the
+budget.
 
 Logic estimates for the four blocks — estimates, not measurements, and to be replaced with
 synthesis numbers as each block is built:
@@ -607,10 +598,10 @@ synthesis numbers as each block is built:
 | block | LUTs | BRAM | DSP |
 |---|---|---|---|
 | baseline restorer (gated moving average or IIR) | ~300 | 0 | 0–1 |
-| trapezoidal filter (*k*=125, *m*=50, *M*≈60.5) | ~350 | 0 | 1 |
+| trapezoidal filter (few-µs shaping) | ~350–500 | 0 | 1–2 |
 | histogram read-modify-write control | ~200 | (see table above) | 0 |
 | PSD: `ENERGY` / `ENERGY_SHORT` | ~300 | 0 | 0 |
-| **total** | **~1150** | **0 beyond the histogram** | **~2** |
+| **total** | **~1150–1500** | **0 beyond the histogram** | **~2–3** |
 
 Against 6334 free LUTs and 74 free DSPs after the ILA is removed, the logic is not the constraint.
 The histogram's channel count is.
@@ -625,9 +616,622 @@ slave-port count, and it currently carries four (MM2S and S2MM for both DMA chan
 
 ---
 
+## 8a. Spectroscopy chain: blr_core and psd_core
+
+Two new hand-written VHDL cores, built to the requirement in issue #12 (configurable BLR feeding a
+configurable CAEN-style PSD).
+
+### Revised datapath
+
+The BLR runs **continuously on the raw ADC stream, ahead of the trigger**, rather than as another
+broadcaster consumer. That places baseline restoration before the threshold comparison, so the
+trigger works against a restored baseline — which also sets up the planned CFD trigger — and it
+means every downstream consumer sees restored data:
+
+```
+adc pins -> blr_core -> trigger_core -> axis_broadcaster -> M00 fci_core -> fci_sink
+              (continuous) (+timestamp)                     M01 psd_core
+                                                            M02 axi_dma_1 (raw restored trace)
+```
+
+As built, the broadcaster has three masters; the planned shaper becomes a fourth. §8b has the
+as-built version of this diagram with the clock-domain boundary marked.
+
+Every link is AXI4-Stream, so the block design connects these as interfaces rather than as
+hand-wired net bundles. On the two links carrying the continuous converter stream —
+`blr_core -> trigger_core` — **TREADY is deliberately ignored**: `blr_core`'s master never examines
+it and `trigger_core`'s slave ties it high. There is no buffer between those blocks and the ADC
+pins, so a beat not taken is a sample destroyed; honoring backpressure there would corrupt the
+time base rather than politely delay it. The interface is AXI4-Stream for connectivity, not for
+flow control. `blr_core`'s testbench holds TREADY low for its entire run to prove the core does
+not depend on it.
+
+Three things moved out of `trigger_core_top` into `blr_core_top`, because that core is now the
+first to touch the pins: the external ADC port itself, the IOB-packed capture register, and the
+ADC word-format handling. `trigger_core`'s input is now an AXI4-Stream slave (16-bit TDATA, sample
+in the low bits) rather than a plain vector wired to pads.
+
+**The datapath is signed and zero-centered end to end, and offset binary is gone from it entirely.**
+The LTC2248 is strapped for 2's complement, and 2's complement *is* signed — so in a signed
+datapath there is no conversion to perform at all, only sign extension. That is worth stating as a
+design property rather than a detail: the double-conversion hazard that would have re-created the
+bring-up fold of section 3 is now **designed out rather than guarded against**, because there is no
+MSB flip anywhere in the normal chain to apply twice. Both cores keep an `ADC_IS_2C` generic
+(default **false** in `trigger_core`, since `blr_core` upstream already emits signed) purely to
+cover a board strapped the other way.
+
+### blr_core
+
+Gated exponential moving average. `acc <- acc + sample - baseline` while the gate is open, with
+`baseline = acc >> k`, so the time constant is exactly `2^k` samples — at 50 Msps, k=12 is 82 µs,
+comfortably slower than the ~1.4 µs pulse decay it must not track.
+
+| offset | register | what fixes it |
+|---|---|---|
+| 0x00 | `shift` (k) | **Tuning knob.** Must be slow against the pulse decay and fast against real DC drift. Default 12 = 82 µs. |
+| 0x04 | `gate_thr` | **Set from the measured noise.** A few σ above baseline noise (σ ≈ 7 quiet, ≈ 55 at 30 cps, §7). Default 256. |
+| 0x08 | `ctrl` | bit0 bypass (for A/B against unrestored data), bit1 hold |
+| 0x0C | `baseline`/status | RO, live estimate + gate state |
+| 0x10 | `holdoff` | **Derived from the pulse duration** — see below. Default 384 samples = 7.7 µs, past 5 decay constants. |
+
+Output is **signed, restored to zero** — not offset binary re-centered on mid-scale, which is what
+the first version emitted. Zero is the natural origin for a bipolar pulse: `psd_core` integrates a
+zero-mean input with no pedestal to subtract, and `trigger_core` compares against a signed
+threshold. Nothing downstream carries a mid-scale constant, so nothing downstream can disagree
+about what the constant was.
+
+Three failure modes are handled in the RTL rather than left to firmware, and each was caught by the
+testbench rather than reasoned about in advance:
+
+- **Cold start.** `acc = 0` means the first real sample is thousands of counts from the estimate,
+  so a naive gated EMA shuts its gate on sample one and never reopens. Fixed by seeding `acc` from
+  the first sample. The first implementation seeded one cycle too early, from the capture register's
+  reset value, and recorded 8192 (all-zero pins, MSB-inverted) as the baseline — every other check
+  in the testbench failed downstream of that single wrong value.
+- **Pulse tails reopening the gate.** A threshold-only gate shuts on the peak but reopens part-way
+  down the decay while the signal is still tens of counts high, so every event drags the estimate
+  upward. Measured before the fix: **718 counts of drift across six 3000-count pulses.** Fixed with
+  a hold-off that keeps the gate shut for `holdoff` further samples after the signal returns in
+  range. After the fix: **0 counts of drift.**
+- **Genuine DC drift locking the gate out.** If the baseline walks further than `gate_thr`, the gate
+  shuts around a stale estimate forever. A watchdog forces one update after `2^(k+3)` closed cycles,
+  floored at 4× the hold-off so ordinary pulses can never trip it.
+
+**Overflow is structurally impossible, so there is no saturation logic.** The concern was real — a
+wrap at the top of range would fold a large pulse straight back to zero, the exact
+spike-plateau-undershoot signature of section 3 from a new cause. But `sample - baseline` on two
+14-bit signed quantities spans ±16383 and needs 15 bits; the output is 16-bit signed, so the result
+cannot overflow it. Widening the port was cheaper and stronger than the two comparators it
+replaced: it removes the failure mode instead of clamping it.
+
+**12/12 testbench scenarios pass.**
+
+### psd_core
+
+Dual-gate charge integrator producing the CAEN pair. Both gates open at
+`pre_trigger - pre_gate`; the short gate captures the prompt component, the long gate prompt plus
+delayed, and their ratio is the discrimination parameter — computed on MicroBlaze, the same
+division-on-the-host split `fci_core` already uses.
+
+| offset | register |
+|---|---|
+| 0x00–0x0C | `pre_trigger`, `pre_gate`, `short_gate`, `long_gate` |
+| 0x10 | `baseline_ref` — **signed** residual-pedestal trim, default **0** (`blr_core` already restores to zero) |
+| 0x14 | `ctrl` — bit0 pop, bit1 clear; self-clearing strobes |
+| 0x18 | `status` — empty, full, sticky overflow, FIFO level |
+| 0x1C–0x28 | `energy_short`, `energy_long`, `timestamp_lo/hi` |
+| 0x2C | `event_count` |
+| 0x30 | `watermark` — IRQ threshold, 0 disables |
+
+**`s_axis_tready` is tied high permanently.** `axis_broadcaster_0` is lockstep, so a core that
+stalled would take `fci_core` and the raw-trace DMA down with it — which is exactly how the
+pipeline deadlock of section 4.3 happened. The only place a result can be lost is a full FIFO, and
+that is counted and flagged rather than absorbed silently. The testbench asserts on TREADY for the
+whole run.
+
+**16/16 testbench scenarios pass**, including 36 undrained events to prove the overflow path.
+
+### fci_sink — a buffered AXI4-Lite result window for fci_core
+
+`fci_core`'s results used to reach MicroBlaze through `axi_dma_0`, which spends ~1200 LUTs and
+2 BRAM tiles to move 8 bytes per event. `fci_sink` replaces that path: it pairs `fci_core`'s
+two-beat AXI4-Stream result with its timestamp into the same 32-deep FIFO `psd_core` uses, and
+presents the head over AXI4-Lite. The design then keeps exactly one DMA channel — the raw restored
+trace.
+
+| offset | register |
+|---|---|
+| 0x00 | `ctrl` — bit0 pop, bit1 clear |
+| 0x04 | `status` — empty, full, sticky overflow, sticky framing error, level |
+| 0x08–0x14 | `psa_l`, `psa_w`, `timestamp_lo/hi` |
+| 0x18 | `event_count` |
+| 0x1C | `watermark` |
+
+**The buffering has to be RTL.** Vitis HLS can expose scalar outputs on an `s_axilite` bundle, but
+those are single registers valid at `ap_done` with no queue behind them — at 15 kcps that is a hard
+66.7 µs deadline per event, and one late interrupt loses a result silently. So `fci_core` keeps its
+stream output internally and this block is what makes it present as a buffered register interface.
+It is a separate IP only so that `fci_core`'s HLS output does not have to be unpacked and
+re-instantiated; the pair can be packaged as a single block-design cell later without changing any
+RTL.
+
+Framing is anchored on TLAST rather than a beat counter. `fci_core` emits PSA_l with TLAST low then
+PSA_w with TLAST high; a counter that ever slipped by one would swap the two for every subsequent
+event and invert the FCI ratio with nothing to indicate it. Anchoring on TLAST re-synchronizes at
+every event boundary, so a disturbance can corrupt at most one result — and a beat arriving where
+the other kind was expected sets a sticky framing-error bit instead of passing quietly.
+
+**11/11 testbench scenarios pass.** One real bug surfaced there: `clear` reached the FIFO and the
+event counter but not the pairing logic, so the framing-error flag latched for the lifetime of the
+bitstream and the status register would have gone on accusing after the fault was long gone.
+
+### Why a result FIFO instead of a DMA channel
+
+The design target is 15 kcps, not the 30 cps seen today. At 15 kcps the budget is 66.7 µs per event
+(3333 cycles at 50 MHz); a six-word read plus MicroBlaze ISR entry and exit is roughly 400 cycles,
+so the CPU keeps up **on average** — what it cannot guarantee is servicing every event before the
+next one lands. A bare register pair loses an event on any late interrupt, with nothing to show.
+
+| | LUTs | BRAM | slack at 15 kcps |
+|---|---|---|---|
+| bare result registers | ~100 | 0 | 66 µs (one event) |
+| **32-deep result FIFO** | **~250** | **0–0.5 tile** | **2.1 ms** |
+| AXI DMA channel | ~1200 | 2 tiles | buffer-sized |
+
+The FIFO buys DMA-class jitter tolerance for a fifth of the fabric, on a device already at 81.6%
+LUT (§8), and lets firmware drain in batches on the watermark instead of taking 15,000 interrupts
+a second. Two limits worth recording alongside it: `fci_core`'s own ceiling is **15.4 kevents/s**
+(Latency = Interval = 3249 cycles), so 15 kcps lands on the FCI core's maximum rather than the
+result path's; and list-mode output at that rate is ~360 kB/s against UART's ~11.5 kB/s, so
+sustained high rates require on-chip histogramming rather than streaming events off-board.
+
+### Event timestamp on TUSER
+
+`trigger_core` now carries a free-running 64-bit cycle counter, latched the moment the trigger
+fires and held on **TUSER** for every beat of the resulting frame. `psd_core`, `fci_core` and the
+future shaper each tag their own result with it, so results from the same pulse can be paired on
+MicroBlaze.
+
+This has to be in-band rather than a counter register the CPU reads. With a lockstep broadcaster
+and no buffering, position in the output sequence would itself imply a common event — but once each
+consumer has its own result FIFO they drain independently, and only a tag carried with the data
+still pairs them. The counter is never gated: it is the time reference, so a stall would distort
+every interval derived from it. At 50 MHz, 64 bits wraps in ~11,700 years, so firmware carries no
+wrap handling.
+
+`trigger_core`'s TUSER widened from 1 bit to 64; its testbench still passes **8/8**.
+
+---
+
+## 8b. The chain on hardware: two clock domains and the CDC
+
+The spectroscopy chain of §8a is now wired in the block design, synthesized, and running on the
+board. The stream path is:
+
+```
+       |------------- 50 MHz (converter rate) -------------|  |------- 75 MHz (CPU) -------|
+adc -> blr_core -------------> trigger_core -> CDC_FIFO ------> axis_broadcaster -> M00 fci_core -> fci_sink
+       (continuous)            (+timestamp)    (depth 32)                           M01 psd_core
+                                                                                    M02 axi_dma_1 (raw trace)
+```
+
+The design now runs **two clock domains**: 50 MHz for the sample-rate front end and **75 MHz** for
+MicroBlaze and every event-rate consumer. The AXI4-Lite side follows the CPU at 75 MHz;
+`microblaze_0_axi_periph` inserts an `axi_clock_converter` automatically for any MI port on a
+different clock (`auto_cc` in `axi_resolve.tcl`), so the 50 MHz slaves needed no manual bridge.
+
+### Why 75 MHz, and why the UART chose it
+
+The CPU clock was not picked for throughput — it was picked by the UART. `axi_uartlite` enumerates
+baud rates up to **921600 and no further**, and the IP enforces **|error| ≤ 3%**, filtering the
+dropdown to the rates a given `C_S_AXI_ACLK_FREQ_HZ` can actually hit. This is a documented Xilinx
+constraint on the core, not the general ~2–3% tolerance of an asynchronous UART receiver; the IP
+will simply refuse the combination.
+
+An exact 921600 needs a clock that is an integer multiple of 14.7456 MHz. 75 MHz is not, but lands
+at **−1.73%**, inside the ±3% window — so 75 MHz is the lowest convenient clock that both keeps the
+error legal and leaves headroom on a device already at 81.6% LUT. Raising the CPU clock was
+worthwhile independently: at 921600 baud the list-mode output is no longer the thing limiting how
+fast events can be reported.
+
+### Where the CDC goes, and why it is after the trigger
+
+The crossing is an `axis_data_fifo` (depth 32) on **`trigger_core`'s output**, so `blr_core` and
+`trigger_core` both stay at 50 MHz and the broadcaster and its consumers all run at 75 MHz.
+
+The tempting placement is earlier — right after `blr_core`, so the trigger benefits from the faster
+clock too. That does not work, for two reasons:
+
+- **`trigger_core` is a sample-rate block, not an event-rate one.** Its pre-trigger delay line and
+  its capture counter advance every cycle and are **not TVALID-gated**. Feeding it from a FIFO in a
+  faster domain would advance those counters on cycles where no new sample arrived, stretching the
+  pre-trigger window and the capture length by whatever the clock ratio happened to be.
+- **Capture is bound by the sample rate anyway.** Writing `depth` samples takes `depth` sample
+  periods no matter how fast the fabric runs, so a faster clock buys the capture engine nothing.
+  What the 75 MHz domain does buy is faster *consumers* — and those are all downstream of the
+  crossing.
+
+So the boundary belongs exactly where the work stops being per-sample and starts being per-event,
+which is the trigger's output. The depth of 32 absorbs bursts across the crossing rather than
+buffering the stream: a 50 Msps feed into a faster domain drains faster than it fills and never
+approaches full in steady state.
+
+**A note that costs an afternoon if you don't know it:** `axis_data_fifo_v2_0` declares only
+`s_axis_aresetn`. There is no `m_axis_aresetn` port to connect, on either side of the crossing —
+the core derives the master-side reset internally. Looking for that port and concluding the BD is
+incomplete is a dead end.
+
+### Bugs found bringing this up
+
+- **`package_ip.tcl` associated only `s_axi` with the clock**, so `blr_core_0/m_axis` came into the
+  BD with no clock association and Vivado raised `[BD 41-967]`. The fix was in the packaging
+  script, not the RTL: `foreach axi_if {s_axi m_axis}` (and `{s_axi s_axis m_axis}` where a slave
+  stream exists). Worth recording because the RTL was correct throughout and the error message
+  points at the block design.
+- **A 14-bit truncation between `blr_core` and `trigger_core`.** `blr_core`'s restored output spans
+  ±16383 and needs 15 bits (§8a); `trigger_core` was still taking 14. Widening the datapath to
+  16-bit signed fixed it.
+- **`ADC_WIDTH = 15` in the exported XSA.** With an odd width, `trigger_core`'s zero-padding
+  generate would have driven `m_axis_tdata_o(15) <= '0'` — destroying the sign bit of every
+  negative sample, i.e. of every pulse. Caught before it reached hardware; the generic is 16.
+- **`[BD 41-237]` FREQ_HZ mismatch**, from AXI4-Lite interfaces that must follow the 75 MHz CPU
+  while the stream interfaces follow the 50 MHz ADC clock.
+
+---
+
+## 8c. Double-buffered capture (issue #13)
+
+`trigger_core` was deliberately **single**-buffered, and §"Architecture" of the original plan
+argued that at some length: `fci_core`'s interval equals its latency (3249 cycles, no overlap), so
+its ceiling is ~15.4k events/s, while a single-buffered `trigger_core` sustains
+`50e6/(2*depth)` = **24.4k events/s** at depth 1024. Capturing faster than the consumer could drain
+would have bought nothing, and the reasoning was correct *for that configuration*.
+
+It stopped being correct. With `fci_core` moving to a pipelined VHDL implementation and the fabric
+clock raised, `trigger_core` became the binding constraint instead. Overlapping capture with
+streaming removes the factor of two — the core is busy for `depth` cycles rather than for
+`capture + stream` — giving `50e6/depth` = **48.8k events/s**.
+
+**Dead time is what this actually buys**, and that is the better way to state it than a rate
+ceiling. Single-buffered, *every* event arriving during the stream phase was lost: half the live
+time at full rate. Two buffers mean an event is lost only if both are occupied — a third event
+arriving before the first has drained.
+
+Two independent state machines share one dual-port RAM, with the top address bit as buffer select,
+so no second memory instance is needed:
+
+```
+capture FSM:  wait for trigger while buf_free  ->  write depth samples  ->  set full(wr_sel)
+stream  FSM:  wait for full(rd_sel)            ->  stream it out        ->  clear full(rd_sel)
+```
+
+**Each buffer latches its own depth.** `depth_i` is a live register that firmware may change
+between two captures in flight at once; latching per buffer rather than once globally is what keeps
+a depth change from corrupting a trace already being streamed.
+
+The claim was verified by a **negative control**, not just by a passing test: with double-buffering
+disabled the same stimulus reports `expected 2 traces, got 1`. A test that passes both before and
+after a change proves nothing about the change.
+
+**BRAM cost is the one open detail.** The address space doubles: at `MAX_DEPTH = 4096` and 16-bit
+samples that is 4 RAMB36 rather than 2. Setting `MAX_DEPTH` to **2048** — still twice the 1024
+actually used — makes double-buffering BRAM-neutral. The block design still instantiates the core
+at 4096, so this saving has not been taken yet (§9).
+
+---
+
+## 8d. First on-hardware comparison: FCI vs PSD
+
+Both discriminators now run on the same events, paired by the in-band timestamp of §8a, with
+firmware printing `El,FCI,PSD` as CSV so a run drops straight into a spreadsheet.
+
+### Configuring the long gate against the AFE, not against theory
+
+The first runs showed **14% of events with `El < Es`** — an impossible result, since the long gate
+contains the short one. The cause was the long gate extending into the AFE's undershoot: the tail
+goes *negative*, so integrating further subtracts charge. A `[SCAN]` diagnostic that integrates a
+captured trace at increasing gate lengths made this visible directly, and the long gate came down
+from **400 to 250 samples**. The gate is now sized from the measured pulse rather than from the
+nominal decay constant.
+
+### Results, with the caveat that matters more than the numbers
+
+With a low-level discriminator at `El >= 18000`:
+
+| | FWHM of the separation | as % of usable span | residual energy dependence above the cut |
+|---|---|---|---|
+| **FCI** | **0.0814** | **11.3%** | **2%** of variance |
+| PSD | 0.2627 | 26.3% | 22% of variance |
+
+**This is FCI against a mis-configured PSD, and should not be read as FCI beating PSD.** What is
+wrong with the PSD is now better understood than when those numbers were taken — and it is not what
+was recorded here previously.
+
+### The low-energy PSD pathology is not a baseline offset
+
+An earlier revision of this section attributed it to a residual pedestal of about **−12 counts** and
+named `psd_core`'s `baseline_ref` as the fix, calling that the highest-value outstanding experiment.
+**That was wrong, and the arithmetic refutes it without needing any new data.**
+
+With a constant pedestal `p`, a long gate `L_l` and short gate `L_s`, and a true ratio `c`:
+
+```
+PSD_meas = (c*El_true + (L_l - L_s)*p) / (El_true + L_l*p)
+```
+
+As `El_true -> 0` this tends to `(L_l - L_s)/L_l` = 170/250 = **+0.68**, *for any value of p at all*,
+sign included. A constant offset simply cannot drive PSD negative at low energy. The measured
+low-energy median is **−1.28**.
+
+Checked against 1111 events of real hardware output (`Energy,FCI,PSD`), the charge collected in the
+gate region between samples 80 and 250 behaves like this:
+
+| `El` bin | fraction with `Es > El` | tail charge per sample |
+|---|---|---|
+| 243 – 6,013 | 100.0% | **−27.0** |
+| 6,013 – 8,971 | 99.1% | −14.0 |
+| 8,971 – 12,187 | 94.6% | −6.7 |
+| 12,187 – 20,224 | 28.8% | +12.1 |
+| 20,224 – 28,090 | 0.0% | +48.0 |
+| 200,953 – 3,161,186 | 0.0% | **+1354.1** |
+
+A fixed offset would put the *same* number in every row of that last column. It swings by two orders
+of magnitude and changes sign. Whatever is happening scales with pulse amplitude.
+
+### The leading hypothesis: the BLR gate never closes for small pulses
+
+`blr_core` shuts its gate when the input deviates from the estimate by more than `gate_thr`, which
+firmware sets to **4σ** (`Blr_GateThresholdForSigma`, floored at 32, capped at 1024) — roughly
+**168–256 counts** on this detector. A pulse whose peak never reaches that threshold never closes the
+gate, so the BLR treats it as baseline drift and subtracts it: the pulse is partially cancelled and
+its tail is driven **negative**. That produces exactly the observed signature — negative tail charge
+for small pulses, clean integration for large ones.
+
+The crossover supports it numerically. Median PSD changes sign at `El` ≈ 12,000–14,000; the captured
+raw trace gives `El`/peak ≈ 137, so that crossover is a peak amplitude of **~95 counts**, the same
+order as `gate_thr`. Same order, not the same number — so this is a hypothesis with quantitative
+support, not a settled cause.
+
+**Two tests, both already built in and neither needing new RTL:**
+
+1. **`blr_core` bypass** (`ctrl` bit 0, §8a — it exists for exactly this A/B). If the low-energy
+   pathology survives with the BLR bypassed, the BLR is not the cause and the hypothesis dies in one
+   run.
+2. **Sweep `gate_thr`.** If the crossover energy moves with it, the mechanism is confirmed and the
+   threshold can be set from the pulse population rather than from noise alone.
+
+### The undershoot is the detector's, and it does not reach the PSD gates
+
+The undershoot is **intrinsic to the detector's built-in preamplifier** — observed directly on an
+oscilloscope with the detector plugged straight in, no AFE, no FPGA, nothing of ours in the loop.
+That is worth recording as a property of the signal rather than a suspicion about our own chain.
+
+Measured on the captured trace (peak 710 counts at sample 133):
+
+| | |
+|---|---|
+| zero crossing after the peak | sample 857 — **14.5 µs** after the peak |
+| undershoot minimum | sample 1004, −90 counts = **−12.7% of peak** |
+| still negative at | the end of the 1024-sample record |
+
+**It cannot be the cause of the low-energy PSD pathology.** The long gate closes ~3.7 µs after the
+peak; the undershoot begins ~14.5 µs after it, four times later. A linear preamplifier scales its
+shape with amplitude, so that separation holds for small pulses as much as large ones — the gate
+never sees the undershoot at any energy. The amplitude-dependent *sign reversal* of §8d therefore
+still requires a non-linear element, and the gated BLR remains the only one in the chain. The
+bypass test is unaffected and still discriminates.
+
+The earlier 400 → 250 gate reduction did its job and should stay.
+
+### But it does reach the BLR gate — a rate-dependent risk
+
+```
+signal falls back inside +/- gate_thr   sample 411
+hold-off 384 samples -> gate reopens    sample 795
+undershoot spans                        sample 857 onward
+```
+
+The gate reopens **before** the undershoot arrives, so `blr_core` tracks a genuinely negative
+excursion and pulls its estimate down — which biases every subsequent restored sample *up*.
+
+Whether that matters is purely a question of event rate, against the BLR's `2^12` = 4096-sample
+(82 µs) time constant:
+
+- **~30 cps today:** 33 ms between events, 1.65 M samples. Fully recovered, no effect. This is why
+  it has never shown up.
+- **15 kcps design target:** 66.7 µs between events, 3333 samples — *shorter* than the time
+  constant. Each event would begin on a baseline still biased by its predecessor.
+
+So this is an error that no bench measurement at present rates can reveal, and that appears only as
+the rate rises. Two candidate fixes, neither tested: extend `holdoff` past the undershoot (~1200
+samples rather than 384), or gate on signed deviation so the undershoot closes the gate the same way
+the pulse does. The second is the more principled — the undershoot is signal, and the gate exists to
+keep signal out of the estimate.
+
+### A pairing bug, and why it was invisible
+
+Firmware drained one PSD result per printed FCI result, but advanced its FCI position by
+`count - last_printed_count`, which can jump by more than one when the drain loop falls behind. The
+two streams then slid apart permanently. The symptom was not corrupted data — it was
+**missing event numbers** in the log (4700, 4827, 4845, 4912), which is easy to read as dropped
+events rather than as misalignment. Fixed by advancing the PSD side by the same `advanced` count.
+
+A second, cosmetic-looking bug in the same output was worse than it appeared: fixed-point printing
+computed `scaled/10000` and `scaled%10000` separately, and C truncation toward zero means
+`-5000/10000` is `0` — so **−0.5 printed as `0.5000`**, silently flipping the sign of every
+fractional-only PSD value. Now handled by taking the magnitude and emitting the sign separately.
+
+---
+
+## 8e. The reference dataset, and what the digitizer was actually sampling at
+
+`data/prepare_dataset.py` builds the committable verification set for the HLS testbench. It now
+handles **two sources in one identical schema**: the labeled Zenodo set published with the paper
+(the verification reference, carrying the paper's own FCI), and **CoMPASS ROOT files** measured on
+this setup (unlabeled, for characterizing the real detector through the same datapath). ROOT is
+read with `uproot` — pure Python, no ROOT installation, and the TTree is self-describing, unlike
+the `.BIN` format where the byte layout has to be assumed.
+
+The CLI **refuses to overwrite the tagged reference set**, because measured data carries no
+reference FCI: writing it to `fci_verification_set.csv` would not fail, it would quietly disable
+the testbench's figure of merit.
+
+### Every sample was duplicated — in every format and on both operating systems
+
+Across four acquisitions and all three CoMPASS formats, every sample appeared exactly twice:
+
+| check | result |
+|---|---|
+| aligned grid `s[2k] == s[2k+1]` | **100.00%**, every event, every file |
+| offset grid `s[2k+1] == s[2k+2]` | 20–43%, **no** event at 100% |
+| run lengths of identical consecutive samples | **all even** — 0 odd out of 1,573,672 |
+
+The run-length test is the sharpest of the three: a genuinely slow or oversampled signal produces
+odd run lengths constantly, so a strictly even distribution is very hard to get any other way.
+Worth stating as evidence rather than proof, though — it constrains the *pattern*, not the
+mechanism, and says nothing about whether the doubling originates in the firmware, in CoMPASS, or
+in the acquisition settings requested. Decimating by 2 is provably lossless either way. Recording the same setup **on a Windows machine
+changed nothing**, which — together with its appearance in CSV, BIN and ROOT — rules out the host,
+the OS and CoMPASS's file writers.
+
+### Confirmed on a second family — each board at exactly half its nominal rate
+
+The same tests were run on the earlier organic-scintillator campaign (`FFT-organic`, archived on
+the external drive), recorded with a **DT5725SB s/n 30364** — a different family, 250 Msps, 14-bit,
+ROC 4.31 / AMC 136.140, also DPP-PSD. It behaves identically: **100.00% aligned identity in all
+2400 events tested across four runs and both channels, and 0 odd runs out of 600,298.**
+
+| board | declared `sampleTime` | samples/record | distinct | `RECLEN` | implied interval | true rate |
+|---|---|---|---|---|---|---|
+| DT5751 | 1000 ps | 39,996 | 19,998 | 39,996 ns | **2.0 ns** | 500 Msps |
+| DT5725SB | 4000 ps | 560 | 280 | 2,240 ns | **8.0 ns** | 125 Msps |
+
+Two different families, each storing waveforms at **exactly half** the nominal ADC rate, both
+running DPP-PSD firmware — and with **different detectors** on each (CLYC + SiPM on the DT5751,
+organic scintillators on the DT5725SB), so the effect is not a property of the signal either. That points at the DPP firmware rather than at one product — which is
+what makes it worth asking CAEN about rather than working around silently.
+
+Worth keeping the epistemics straight: the duplication is *measured* on both boards; the 2.0 ns
+figure for the DT5751 is *independently confirmed* by the pulser; the 8.0 ns figure for the
+DT5725SB is *inferred* from the same record-length arithmetic the pulser validated, since no
+pulser run exists for that unit.
+
+### A 100 kHz pulser settled it: the ADC runs at 500 MS/s
+
+A waveform generator at 100 kHz, 80% duty cycle, gives an absolute time reference. Three
+independent measurements agree:
+
+| measurement | result | implies |
+|---|---|---|
+| Pulse period, 50% crossings, 2000 records | 5000.249 ± 0.004 distinct samples per 10.000 µs (sd 0.18) | **1.99990 ns** per distinct sample |
+| Duty cycle: HIGH 1003 + LOW 3997 samples | 2.006 µs / 7.994 µs = 20.1% / **79.9%** | **2.000 ns** per distinct sample |
+| Board `Timestamp` (an independent clock) | dominant inter-event multiple 5×, implied period 10.0015 µs | pulser is **99.985 kHz** — genuinely 100 kHz |
+
+The duty cycle lands on 79.9% against the generator's 80%, measured purely in sample counts, so the
+2 ns figure does not rest on a single estimator. And it closes exactly against the settings file:
+`SRV_PARAM_RECLEN = 39996.0` ns, with 19,998 distinct samples in the record — 19,998 × 2.000 ns =
+**39,996 ns**. CoMPASS states record length in nanoseconds, and it only reconciles at 2 ns per
+distinct sample.
+
+**So the duplication was never a defect: it is CoMPASS upsampling ×2 to present the advertised
+1 GS/s.** The digitizer records 500 MS/s. That explains every observation at once — two digitizers,
+three formats, two operating systems, strictly even run lengths, and decimation by 2 being exactly
+lossless. There was never any information to recover.
+
+### The detector's own pulse confirms it, independently of the pulser
+
+The decay-time puzzle is now closed, and it closed by measuring rather than by assuming. The Zenodo
+dataset published with the paper was recorded with **the same CLYC + SiPM detector**, at a *known*
+100 Msps — so it is an absolute time reference that needs no pulser at all.
+
+Fitting its scintillation decay gives **τ = 462 samples = 4.62 µs for gamma events** by log fit
+(5.01 µs neutron), or **4.89 µs** taking the 1/e crossing directly — the definition matters at the
+5% level here, and is worth stating whenever this number is quoted. Matching the averaged DT5751 pulse against that reference with the
+time scale as the only free parameter gives:
+
+```
+best match = 4.84 DT5751 distinct samples per reference sample
+             10 ns / 4.84 = 2.07 ns per distinct sample
+```
+
+That agrees with the pulser's 2.000 ns to **3%**, and it excludes the declared 1 ns outright — 1 ns
+would require a factor of 10, not 4.84.
+
+**Two methods, two precisions — worth keeping distinct.** Matching the whole pulse *shape* is the
+more precise of the two (2.07 ns) because it compares like with like: both averages are processed
+identically, so the window sensitivity cancels. Comparing a single fitted **τ** instead — fitting
+the DT5751 decay independently and asking what interval reproduces 4.62 µs — gives τ = 1900–2160
+distinct samples and a looser **2.1–2.4 ns**, because a single-exponential fit to a low-amplitude,
+multi-component decay moves with the fit window. Both exclude 1 ns by more than a factor of two.
+The CAEN support email uses only the τ comparison, since that needs nothing from the reference
+dataset but a single scalar. The factor is stable across gamma-only, neutron-only and
+combined averages and across every fit window tried. The recent DT5751 runs were **background
+measurements**, so they are gamma-dominated and the gamma subset is the right reference; it happens
+not to matter, since all three subsets give the same factor.
+
+**The detector's decay constant, from three references.** The detector is a Scionix
+**V12.7B30/SIP-E3-CLYC-X** (CLYC:Ce, SiPM readout, built-in preamplifier). Its data sheet specifies,
+for gammas, **rise time 1.5 µs and fall time 5 µs** — and gammas is the right column, since the
+recent runs are background.
+
+| source | fall time (max → 1/e) |
+|---|---|
+| Scionix data sheet, gammas | **5 µs** |
+| Zenodo recording, same detector, known 100 Msps | **4.89 µs** |
+| Direct oscilloscope measurement | **~6 µs** |
+| DT5751 read at the pulser-verified 2.000 ns | **4.13 µs** (2064 distinct samples) |
+
+The data sheet and the Zenodo recording agree to **2%**, which settles the reference: ~5 µs. The
+oscilloscope's ~6 µs is the outlier, about 20% high, and the DT5751's 4.13 µs is about 17% low.
+The latter is expected from the data itself — these background pulses are only **6–16 ADC codes**
+tall on a 10-bit board, so the baseline estimate, not the sampling, limits where the 1/e point
+lands.
+
+An earlier revision of this section claimed the ~6 µs figure was simply wrong, then later gave it
+equal weight to Zenodo. Neither was right: with the data sheet in hand the correct reading is that
+~5 µs is the reference value, the oscilloscope sits ~20% above it, and the discrepancy is worth
+a second look but changes nothing here.
+
+**The rise time does not corroborate, and is not used.** The same data sheet specifies 1.5 µs, but
+the Zenodo recording of this detector gives a 10–90% rise of **0.13 µs** — a factor of ten away,
+at a known sample rate, so the disagreement is real and not a sampling artifact. Separately, the
+rise measured on the DT5751 average is dominated by alignment jitter: aligning 6-count pulses on
+their minimum smears a sub-µs edge far more than it smears a 4 µs tail. Two independent reasons to
+leave the rise-time check out rather than let it muddy the fall-time one.
+
+The sampling conclusion is insensitive to all of this: at 2 ns the DT5751 gives 4.13 µs, within 20%
+of every reference; at the declared 1 ns it gives 2.06 µs, less than half of all of them.
+
+(This is unrelated to the ~1.4 µs figure in §8a: that is the AFE-shaped pulse on the Cmod board,
+a different signal chain from the CAEN measurement of the raw SiPM + preamp output.)
+
+### The consequence: the ROOT path is currently 5× too fast
+
+`prepare_dataset.py` decimates ROOT data by the duplication factor only, so it emits **500 Msps**
+traces. The Zenodo reference is **100 Msps**. The same 2048-sample window therefore spans 4.10 µs
+for measured data and 20.48 µs for the reference — the two sources land in entirely different FFT
+bins, and an FCI comparison between them would be meaningless **while looking perfectly
+well-formed**. This is exactly the class of error the shared schema was supposed to prevent and
+does not.
+
+The fix is a further ÷5 on the ROOT path (÷10 from raw), landing measured data at 100 Msps so the
+testbench's existing ÷2 takes both to the board's 50 Msps. One judgment call goes with it:
+**10.6% of trace power sits above 50 MHz and is flat with frequency** — broadband noise, not
+signal. Plain subsampling folds all of it into the FCI band, biasing precisely the band-energy
+ratio the FCI is built from, so each group of 5 samples should be averaged rather than picked.
+**Not yet applied** (§9).
+
+---
+
 ## 9. Current state
 
-- `fci_core` and `trigger_core` built, verified, packaged; testbench **8/8**
+- `fci_core` and `trigger_core` built, verified, packaged; `trigger_core` testbench **8/8**
+- `blr_core` (**12/12**), `psd_core` (**16/16**) and `fci_sink` (**11/11**) built, verified,
+  packaged into `fpga/ip/` — and **integrated in the block design and running on hardware** (§8b)
+- **The spectroscopy chain works end to end**: BLR → trigger → broadcaster → {FCI, PSD, raw DMA},
+  with both discriminators computed on the same events and paired by the in-band timestamp
+- Two clock domains: 50 MHz sample rate, 75 MHz CPU and consumers; UART at **921600 baud** (§8b)
+- `trigger_core` **double-buffered** (§8c): 24.4k → **48.8k events/s**, and half the dead time
 - Full chain running: trigger → capture → FCI → BRAM → UART, interrupt-driven, both DMA channels
   continuously serviced
 - `trigger_core` streams at the full 50 Msps (§7a) and `axi_dma_1` keeps up with it (§7b) — TVALID
@@ -653,12 +1257,41 @@ batch had to be reverted):
   to `fci_core`'s `N_SAMPLES` recorded only in a comment)
 - **Not** the unbounded DMA recovery — see §7c
 
-**Next features:**
+**Issue #12 / #13 — remaining:**
 
-- Spectroscopy chain: baseline restoration → trapezoidal filter → histogram builder (§8 for sizing)
-- CAEN-style PSD block: `ENERGY` and `ENERGY_SHORT` from two integration windows after baseline
-  restoration
+- **Find out why small pulses integrate to negative tail charge** (§8d). Until this is settled the
+  FCI-vs-PSD numbers are FCI against a mis-configured PSD, not a fair comparison. Two ready tests,
+  in order: run with `blr_core` bypassed (`ctrl` bit 0) to confirm or kill the BLR-gate hypothesis in
+  a single acquisition, then sweep `gate_thr` to see whether the crossover energy tracks it.
+  **Not** `baseline_ref` — a constant offset is arithmetically incapable of producing this.
+- **`fci_core_rtl`** — the VHDL replacement for the HLS core is partly built: `fci_core_pkg.vhd`
+  and `bin_accumulator.vhd` (**9/9**, `FFT_LENGTH` generic, default 1024, bit-reversed indexing)
+  and `fci_axi4lite_regs.vhd` (configurable windows at 0x00–0x0C) exist. **Still to do:** the top
+  level instantiating `xfft`, the IP-generation script, and a testbench against
+  `data/fci_verification_set.csv`.
+- **`prepare_dataset.py`: apply the ÷5 to the ROOT path** so measured data lands at 100 Msps
+  (§8e), averaging each group of 5 samples rather than subsampling. Until then, measured ROOT
+  events are 5× too fast to compare against the reference set — and nothing about the output looks
+  wrong.
+- Firmware timing constants are still calibrated in loop iterations at 50 MHz; at 75 MHz every
+  dwell is 1.5× shorter than intended. Deriving them from a single `CPU_CLK_HZ` is the fix.
+- **BD tidy-ups:** `microblaze_0_axi_periph` still has `NUM_MI = 11` with `M10` unconnected, and
+  `trigger_core`'s `MAX_DEPTH` is still 4096 where 2048 would make double-buffering BRAM-neutral
+  (§8c) on a device at 81% BRAM.
+- `acquisition.c` still carries `PSD_LONG_GATE 400`, superseded by the 250 found in §8d.
+
+**Later:**
+
+- **`blr_core` hold-off vs the preamp undershoot** (§8d): the gate reopens ~60 samples before the
+  undershoot starts, so the BLR tracks it. Harmless at 30 cps, a real bias at the 15 kcps target.
+  Fix by extending `holdoff` past it or by gating on signed deviation
+- Trapezoidal filter and histogram builder (§8 for sizing)
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
+- CFD trigger, the original motivation for the BLR in issue #12 — cross-level triggering biases
+  low-energy events, which is visible in the §8d energy dependence
+- Size the planned shaper from the **Scionix data sheet's 5 µs** fall time (§8e), corroborated to 2%
+  by the Zenodo recording of this detector. Worth a second look at why the oscilloscope reads ~20%
+  high, but not a blocker
 - PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
 

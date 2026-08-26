@@ -70,7 +70,7 @@ if {[llength [ipx::get_bus_interfaces -of_objects $core rstn_i]] == 0} {
 
 # Associate clk_i/rstn_i with the AXI interfaces so downstream tools (block automation) know
 # which clock/reset domain they belong to.
-foreach axi_if {s_axi m_axis} {
+foreach axi_if {s_axi s_axis m_axis} {
   if {[llength [ipx::get_bus_interfaces $axi_if -of_objects $core]] > 0} {
     ipx::associate_bus_interfaces -busif $axi_if -clock clk_i $core
   }

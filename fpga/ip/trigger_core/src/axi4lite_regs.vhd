@@ -1,4 +1,5 @@
--- 4-register AXI4-Lite slave: threshold (0x00), polarity (0x04), delay (0x08), depth (0x0C).
+-- 4-register AXI4-Lite slave: threshold (0x00, SIGNED), polarity (0x04), delay (0x08),
+-- depth (0x0C).
 -- Standard single-outstanding-transaction AXI4-Lite slave pattern. Registers are stored full
 -- width (32 bits) with byte-granular write-strobe handling; only the low bits relevant to each
 -- field are driven out on the *_o ports; the rest is simply unused, never read back specially.
@@ -11,7 +12,10 @@ use ieee.numeric_std.all;
 
 entity axi4lite_regs is
   generic (
-    C_ADDR_WIDTH : integer := 5
+    C_ADDR_WIDTH : integer := 5;
+    -- Threshold is a SIGNED level on the restored, zero-centred sample stream, so its width must
+    -- track the sample datapath rather than the ADC's own resolution.
+    DATA_WIDTH   : integer := 16
   );
   port (
     clk_i          : in  std_logic;
@@ -35,7 +39,7 @@ entity axi4lite_regs is
     s_axi_rvalid   : out std_logic;
     s_axi_rready   : in  std_logic;
 
-    threshold_o    : out std_logic_vector(13 downto 0);
+    threshold_o    : out std_logic_vector(DATA_WIDTH - 1 downto 0);
     polarity_o     : out std_logic;
     delay_o        : out std_logic_vector(8 downto 0);
     depth_o        : out std_logic_vector(12 downto 0)
@@ -74,7 +78,7 @@ begin
 
   wren <= axi_awready and s_axi_awvalid and axi_wready and s_axi_wvalid;
 
-  threshold_o <= threshold_reg(13 downto 0);
+  threshold_o <= threshold_reg(DATA_WIDTH - 1 downto 0);
   polarity_o  <= polarity_reg(0);
   delay_o     <= delay_reg(8 downto 0);
   depth_o     <= depth_reg(12 downto 0);

@@ -21,15 +21,22 @@ end entity trigger_core_tb;
 
 architecture sim of trigger_core_tb is
 
-  constant ADC_WIDTH  : integer := 14;
+  -- 16-bit signed sample datapath, matching blr_core's output. The ADC itself is 14-bit; the two
+  -- extra bits are headroom for blr_core's baseline subtraction.
+  constant ADC_WIDTH  : integer := 16;
   constant MAX_DELAY  : integer := 256;
   constant MAX_DEPTH  : integer := 4096;
   constant CLK_PERIOD : time    := 20 ns;
-  constant MOD_VAL     : integer := 16384; -- 2**ADC_WIDTH
+  constant MOD_VAL     : integer := 65536; -- 2**ADC_WIDTH, for the consecutive-value wrap check
 
   signal clk_i      : std_logic := '0';
   signal rstn_i     : std_logic := '0';
-  signal adc_data_i : std_logic_vector(ADC_WIDTH - 1 downto 0) := (others => '0');
+  -- Kept as a 14-bit stimulus signal and widened to the core's 16-bit TDATA below, so every
+  -- existing `adc_data_i <= ob_to_2c(...)` line in the scenarios stays as it was.
+  signal adc_data_i    : std_logic_vector(ADC_WIDTH - 1 downto 0) := (others => '0');
+  signal s_axis_tdata  : std_logic_vector(ADC_WIDTH - 1 downto 0);
+  signal s_axis_tvalid : std_logic := '1';
+  signal s_axis_tready : std_logic;
 
   signal s_axi_awaddr  : std_logic_vector(4 downto 0)  := (others => '0');
   signal s_axi_awvalid : std_logic := '0';
@@ -52,7 +59,7 @@ architecture sim of trigger_core_tb is
   signal m_axis_tdata  : std_logic_vector(15 downto 0);
   signal m_axis_tkeep  : std_logic_vector(1 downto 0);
   signal m_axis_tstrb  : std_logic_vector(1 downto 0);
-  signal m_axis_tuser  : std_logic_vector(0 downto 0);
+  signal m_axis_tuser  : std_logic_vector(63 downto 0);
   signal m_axis_tlast  : std_logic;
   signal m_axis_tid    : std_logic_vector(0 downto 0);
   signal m_axis_tdest  : std_logic_vector(0 downto 0);
@@ -76,21 +83,19 @@ architecture sim of trigger_core_tb is
   signal expect_no_capture : boolean := false;
   signal reconfig_fail     : boolean := false;
 
-  -- Stimulus helper: encodes an intended offset-binary sample value as the raw 2's-complement
-  -- bit pattern a real LTC2248 (MODE strapped to 2/3 VDD on this board) actually outputs for it
-  -- -- mirrors trigger_core_top's own (self-inverse, MSB-flip) conversion. Driving adc_data_i
-  -- through this function means every assertion below, expressed in offset-binary terms exactly
-  -- as before this conversion existed, continues to hold unchanged if and only if that
-  -- conversion is implemented correctly.
+  -- Stimulus helper: the stream carries signed samples now, so driving a level is a plain signed cast -- no format
+  -- conversion anywhere in the chain. Kept as a function so the scenarios read unchanged.
   function ob_to_2c(v : integer) return std_logic_vector is
     variable result : std_logic_vector(ADC_WIDTH - 1 downto 0);
   begin
-    result := std_logic_vector(to_unsigned(v mod MOD_VAL, ADC_WIDTH));
-    result(ADC_WIDTH - 1) := not result(ADC_WIDTH - 1);
+    result := std_logic_vector(to_signed(v, ADC_WIDTH));
     return result;
   end function;
 
 begin
+
+  -- The datapath is 16-bit signed end to end now, so the stimulus vector is the TDATA vector.
+  s_axis_tdata <= adc_data_i;
 
   clk_i <= not clk_i after CLK_PERIOD / 2;
 
@@ -123,7 +128,9 @@ begin
     port map (
       clk_i         => clk_i,
       rstn_i        => rstn_i,
-      adc_data_i    => adc_data_i,
+      s_axis_tdata  => s_axis_tdata,
+      s_axis_tvalid => s_axis_tvalid,
+      s_axis_tready => s_axis_tready,
       s_axi_awaddr  => s_axi_awaddr,
       s_axi_awvalid => s_axi_awvalid,
       s_axi_awready => s_axi_awready,
@@ -255,7 +262,7 @@ begin
           bubbles := bubbles + 1;
         end if;
         if m_axis_tvalid = '1' and m_axis_tready = '1' then
-          this_val := to_integer(unsigned(m_axis_tdata(ADC_WIDTH - 1 downto 0)));
+          this_val := to_integer(unsigned(m_axis_tdata));
           if beats = 0 then
             first_val := this_val;
           else
@@ -330,6 +337,13 @@ begin
       end loop;
     end procedure;
 
+    -- Double-buffering scenario state (see the scenario below for what it proves).
+    constant DEPTH_D : integer := 16;
+    variable beats_d : integer;
+    variable lasts_d : integer;
+    variable guard_d : integer;
+    variable ok_d    : boolean;
+
   begin
     rstn_i <= '0';
     for i in 0 to 4 loop
@@ -353,6 +367,75 @@ begin
     -- which can look exactly like a genuine crossing. Reproduces the same sequence here: hold
     -- adc_data_i fixed and drive threshold/polarity through transitions that would have crossed
     -- the old (leftover) comparator state, with monitor_no_spurious watching for any capture.
+    ---------------------------------------------------------------------------
+    -- The point of double-buffering: a second trigger arriving while the first trace is still
+    -- draining must be ACCEPTED, not dropped. Single-buffered, armed_o was high only in IDLE, so
+    -- every event during a stream was lost -- half the live time at full rate.
+    --
+    -- armed_o is internal to trigger_core_top, so this is checked behaviourally: hold tready low
+    -- so nothing drains, fire two triggers, then release tready and require TWO complete traces
+    -- (2 x depth beats, exactly 2 TLASTs). A single-buffered core yields one.
+    report "=== Test: second trigger during stream is captured (double buffering) ===";
+    test_count <= test_count + 1;
+    beats_d := 0; lasts_d := 0; guard_d := 0; ok_d := true;
+
+    m_axis_tready <= '0';
+    axi_write(0, 150);
+    axi_write(4, 1);
+    axi_write(8, 4);
+    axi_write(12, DEPTH_D);
+
+    adc_data_i <= ob_to_2c(100);
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(200);            -- first crossing
+    for i in 0 to DEPTH_D + 20 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    adc_data_i <= ob_to_2c(100);
+    for i in 0 to 9 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(200);            -- second crossing, first trace still undrained
+    for i in 0 to DEPTH_D + 20 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    adc_data_i <= ob_to_2c(100);
+
+    m_axis_tready <= '1';
+    while lasts_d < 2 and guard_d < 20 * DEPTH_D loop
+      wait until rising_edge(clk_i);
+      guard_d := guard_d + 1;
+      if m_axis_tvalid = '1' and m_axis_tready = '1' then
+        beats_d := beats_d + 1;
+        if m_axis_tlast = '1' then
+          lasts_d := lasts_d + 1;
+        end if;
+      end if;
+    end loop;
+
+    if lasts_d /= 2 then
+      ok_d := false;
+      report "  FAIL: expected 2 traces, got " & integer'image(lasts_d)
+             & " (a single-buffered core drops the second trigger)";
+    end if;
+    if beats_d /= 2 * DEPTH_D then
+      ok_d := false;
+      report "  FAIL: expected " & integer'image(2 * DEPTH_D) & " beats, got "
+             & integer'image(beats_d);
+    end if;
+    if ok_d then
+      report "  PASS (2 traces, " & integer'image(beats_d)
+             & " beats -- second trigger accepted during stream)";
+    else
+      fail_count <= fail_count + 1;
+      report "  Test 'double buffering' FAILED" severity error;
+    end if;
+    wait until rising_edge(clk_i);
+
+    ---------------------------------------------------------------------------
     report "=== Test: reconfiguration hazard (no spurious capture) ===";
     test_count    <= test_count + 1;
     m_axis_tready <= '1';
