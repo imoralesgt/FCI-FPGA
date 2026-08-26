@@ -28,16 +28,16 @@ port (
     xk_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
     xk_s_full_n : IN STD_LOGIC;
     xk_s_write : OUT STD_LOGIC;
-    status_s16_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-    status_s16_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s16_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s16_full_n : IN STD_LOGIC;
-    status_s16_write : OUT STD_LOGIC;
-    config_s17_dout : IN STD_LOGIC_VECTOR (7 downto 0);
-    config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s17_empty_n : IN STD_LOGIC;
-    config_s17_read : OUT STD_LOGIC );
+    status_s17_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+    status_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s17_full_n : IN STD_LOGIC;
+    status_s17_write : OUT STD_LOGIC;
+    config_s18_dout : IN STD_LOGIC_VECTOR (7 downto 0);
+    config_s18_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s18_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s18_empty_n : IN STD_LOGIC;
+    config_s18_read : OUT STD_LOGIC );
 end;
 
 
@@ -120,10 +120,10 @@ begin
         xk_full_n => xk_s_full_n,
         xk_write => grp_fft_syn_fci_fft_config_s_fu_20_xk_write,
         status_data_V_din => grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din,
-        status_data_V_full_n => status_s16_full_n,
+        status_data_V_full_n => status_s17_full_n,
         status_data_V_write => grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write,
-        config_ch_data_V_dout => config_s17_dout,
-        config_ch_data_V_empty_n => config_s17_empty_n,
+        config_ch_data_V_dout => config_s18_dout,
+        config_ch_data_V_empty_n => config_s18_empty_n,
         config_ch_data_V_read => grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read);
 
 
@@ -258,12 +258,12 @@ begin
     end process;
 
 
-    config_s17_read_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read, ap_CS_fsm_state2)
+    config_s18_read_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read, ap_CS_fsm_state2)
     begin
         if (((ap_const_logic_1 = ap_CS_fsm_state2) or (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s17_read <= grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+            config_s18_read <= grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
         else 
-            config_s17_read <= ap_const_logic_0;
+            config_s18_read <= ap_const_logic_0;
         end if; 
     end process;
 
@@ -278,14 +278,14 @@ begin
     end process;
 
     grp_fft_syn_fci_fft_config_s_fu_20_ap_start <= grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg;
-    status_s16_din <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
+    status_s17_din <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
 
-    status_s16_write_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write, ap_CS_fsm_state2)
+    status_s17_write_assign_proc : process(ap_CS_fsm_state1, grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write, ap_CS_fsm_state2)
     begin
         if (((ap_const_logic_1 = ap_CS_fsm_state2) or (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            status_s16_write <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
+            status_s17_write <= grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
         else 
-            status_s16_write <= ap_const_logic_0;
+            status_s17_write <= ap_const_logic_0;
         end if; 
     end process;
 

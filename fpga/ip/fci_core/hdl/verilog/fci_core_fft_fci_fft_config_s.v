@@ -25,16 +25,16 @@ module fci_core_fft_fci_fft_config_s (
         xk_s_fifo_cap,
         xk_s_full_n,
         xk_s_write,
-        status_s16_din,
-        status_s16_num_data_valid,
-        status_s16_fifo_cap,
-        status_s16_full_n,
-        status_s16_write,
-        config_s17_dout,
-        config_s17_num_data_valid,
-        config_s17_fifo_cap,
-        config_s17_empty_n,
-        config_s17_read
+        status_s17_din,
+        status_s17_num_data_valid,
+        status_s17_fifo_cap,
+        status_s17_full_n,
+        status_s17_write,
+        config_s18_dout,
+        config_s18_num_data_valid,
+        config_s18_fifo_cap,
+        config_s18_empty_n,
+        config_s18_read
 );
 
 parameter    ap_ST_fsm_state1 = 2'd1;
@@ -57,24 +57,24 @@ input  [1:0] xk_s_num_data_valid;
 input  [1:0] xk_s_fifo_cap;
 input   xk_s_full_n;
 output   xk_s_write;
-output  [7:0] status_s16_din;
-input  [1:0] status_s16_num_data_valid;
-input  [1:0] status_s16_fifo_cap;
-input   status_s16_full_n;
-output   status_s16_write;
-input  [7:0] config_s17_dout;
-input  [1:0] config_s17_num_data_valid;
-input  [1:0] config_s17_fifo_cap;
-input   config_s17_empty_n;
-output   config_s17_read;
+output  [7:0] status_s17_din;
+input  [1:0] status_s17_num_data_valid;
+input  [1:0] status_s17_fifo_cap;
+input   status_s17_full_n;
+output   status_s17_write;
+input  [7:0] config_s18_dout;
+input  [1:0] config_s18_num_data_valid;
+input  [1:0] config_s18_fifo_cap;
+input   config_s18_empty_n;
+output   config_s18_read;
 
 reg ap_done;
 reg ap_idle;
 reg ap_ready;
 reg xn_s_read;
 reg xk_s_write;
-reg status_s16_write;
-reg config_s17_read;
+reg status_s17_write;
+reg config_s18_read;
 
 reg    ap_done_reg;
 (* fsm_encoding = "none" *) reg   [1:0] ap_CS_fsm;
@@ -121,10 +121,10 @@ fci_core_fft_syn_fci_fft_config_s grp_fft_syn_fci_fft_config_s_fu_20(
     .xk_full_n(xk_s_full_n),
     .xk_write(grp_fft_syn_fci_fft_config_s_fu_20_xk_write),
     .status_data_V_din(grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din),
-    .status_data_V_full_n(status_s16_full_n),
+    .status_data_V_full_n(status_s17_full_n),
     .status_data_V_write(grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write),
-    .config_ch_data_V_dout(config_s17_dout),
-    .config_ch_data_V_empty_n(config_s17_empty_n),
+    .config_ch_data_V_dout(config_s18_dout),
+    .config_ch_data_V_empty_n(config_s18_empty_n),
     .config_ch_data_V_read(grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read)
 );
 
@@ -202,9 +202,9 @@ end
 
 always @ (*) begin
     if (((1'b1 == ap_CS_fsm_state2) | (1'b1 == ap_CS_fsm_state1))) begin
-        config_s17_read = grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
+        config_s18_read = grp_fft_syn_fci_fft_config_s_fu_20_config_ch_data_V_read;
     end else begin
-        config_s17_read = 1'b0;
+        config_s18_read = 1'b0;
     end
 end
 
@@ -218,9 +218,9 @@ end
 
 always @ (*) begin
     if (((1'b1 == ap_CS_fsm_state2) | (1'b1 == ap_CS_fsm_state1))) begin
-        status_s16_write = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
+        status_s17_write = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_write;
     end else begin
-        status_s16_write = 1'b0;
+        status_s17_write = 1'b0;
     end
 end
 
@@ -276,7 +276,7 @@ end
 
 assign grp_fft_syn_fci_fft_config_s_fu_20_ap_start = grp_fft_syn_fci_fft_config_s_fu_20_ap_start_reg;
 
-assign status_s16_din = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
+assign status_s17_din = grp_fft_syn_fci_fft_config_s_fu_20_status_data_V_din;
 
 assign xk_s_din = grp_fft_syn_fci_fft_config_s_fu_20_xk_din;
 

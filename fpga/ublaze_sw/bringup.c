@@ -87,11 +87,16 @@ static void test_trigger_core(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, 16383);
 }
 
-/* fci_sink replaces axi_dma_0 on fci_core's result path. Kept as a switch rather than a deletion
- * because the block design is what decides which of the two exists: set this to 0 to build against
- * a BD that still carries axi_dma_0, 1 for one that carries fci_sink. Nothing else in this file
- * needs touching to move between them. */
+/* fci_sink replaces axi_dma_0 on fci_core's result path. Auto-derived from the block design's own
+ * XPAR symbol rather than hand-set: a hand-set switch is exactly the kind of thing that silently
+ * stops matching the hardware the moment the BD changes and nobody remembers to flip it back --
+ * which is precisely what happened here once already (see docs/log/README.md, the Bringup_Init
+ * split). Deriving it removes that failure mode instead of trusting nobody forgets again. */
+#ifdef XPAR_FCI_SINK_0_BASEADDR
+#define FCI_RESULT_VIA_FCI_SINK 1
+#else
 #define FCI_RESULT_VIA_FCI_SINK 0
+#endif
 
 static void test_blr_core(void) {
   xil_printf("-- blr_core registers --\r\n");
@@ -263,6 +268,13 @@ static void set_trigger_threshold(s32 threshold) {
  * axi_dma_0 directly (polled, one-shot) until start_continuous_capture() hands it over to
  * service_dma0_event() -- its interrupt is intentionally NOT enabled until then, so the two never
  * fight over the same DMA channel. --------------------------------------------------------- */
+/* Guarded together: g_event_count/g_last_psa_l/g_last_psa_w only ever change here, and this
+ * function only exists where axi_dma_0 does. Once fci_sink replaces it (XPAR_FCI_SINK_0_BASEADDR
+ * defined), the FCI-side event count and latest result live in fci_sink's own FIFO/registers
+ * instead -- see FciSink_EventCount()/FciSink_Peek() -- so nothing outside this guard should read
+ * these three globals either; test_live_event() and Bringup_Run()'s CSV loop both already branch
+ * on FCI_RESULT_VIA_FCI_SINK for exactly this reason. */
+#ifdef XPAR_AXI_DMA_0_BASEADDR
 #define RESULT_BUF_A (FCI_RESULT_BRAM_BASEADDR)
 #define RESULT_BUF_B (FCI_RESULT_BRAM_BASEADDR + 8)
 
@@ -286,6 +298,7 @@ static void service_dma0_event(void) {
   g_last_psa_w = raw_w & 0x0FFFFFFF;
   g_event_count++;
 }
+#endif /* XPAR_AXI_DMA_0_BASEADDR */
 
 /* Single registered handler for MicroBlaze's one external interrupt line -- axi_intc funnels
  * every enabled source into it, so the handler must check IPR to see which is actually pending
@@ -298,10 +311,12 @@ static void intc_isr(void *callback_ref) {
     service_dma1_event();
     Xil_Out32(AXI_INTC_BASEADDR + AXI_INTC_IAR_OFFSET, INTC_DMA_1_S2MM_BIT);
   }
+#ifdef XPAR_AXI_DMA_0_BASEADDR
   if (ipr & INTC_DMA_S2MM_BIT) {
     service_dma0_event();
     Xil_Out32(AXI_INTC_BASEADDR + AXI_INTC_IAR_OFFSET, INTC_DMA_S2MM_BIT);
   }
+#endif
 }
 
 /* Arms axi_dma_1's first raw-trace buffer and brings up interrupts with only its bit enabled.
@@ -936,6 +951,53 @@ static void test_encoding_fold_demo(void) {
  *
  * Both consumers are now serviced continuously by start_result_pipeline()/start_raw_trace_pipeline()
  * from before the first trigger, so neither can starve the other. */
+/* Two independent bodies for the same proof ("fci_core produced a live, triggered event"), kept
+ * deliberately narrow to fci_core's own output either way -- neither touches psd_core, so this can
+ * run this early in Bringup_Init(), before the Psd_Configure/Acq_Configure block near the end,
+ * without depending on it. Reading via Acq_PopPaired here instead would silently start requiring
+ * that ordering, for no benefit: this test was never about psd_core. */
+#if FCI_RESULT_VIA_FCI_SINK
+static void test_live_event(void) {
+  xil_printf("-- live event: trigger_core -> fci_core -> fci_sink (interrupt-free polling) --\r\n");
+
+  xil_printf("  [INFO] waiting for a live trigger (up to ~10s)...\r\n");
+  u32 count_before = FciSink_EventCount(FCI_SINK_BASEADDR);
+  u32 waited;
+  for (waited = 0; FciSink_EventCount(FCI_SINK_BASEADDR) == count_before &&
+                   waited < DMA_POLL_ITERS_10S;
+       waited++) {
+  }
+  if (FciSink_EventCount(FCI_SINK_BASEADDR) == count_before) {
+    xil_printf("  [FAIL] timed out waiting for a triggered event (check threshold/detector)\r\n");
+    report_raw_path_state();
+    g_fail_count++;
+    return;
+  }
+
+  FciResult r;
+  if (!FciSink_Peek(FCI_SINK_BASEADDR, &r)) {
+    /* Event count moved but the FIFO reads empty: possible only if something else drained it
+     * between the two reads above -- nothing does yet at this point in bring-up, so this would
+     * indicate the count and the FIFO have gone out of sync rather than a normal race. */
+    xil_printf("  [FAIL] event counted but fci_sink FIFO is empty\r\n");
+    g_fail_count++;
+    return;
+  }
+
+  xil_printf("  [PASS] captured a live event:\r\n");
+  print_psa("PSA_l", r.psa_l);
+  print_psa("PSA_w", r.psa_w);
+
+  if (r.psa_w == 0) {
+    xil_printf("  [FAIL] PSA_w = 0, cannot compute FCI\r\n");
+    g_fail_count++;
+    return;
+  }
+  u64 fci_scaled = ((u64)r.psa_l * 10000ULL) / r.psa_w;
+  xil_printf("  [INFO] FCI = PSA_l/PSA_w = %d.%04d\r\n", (u32)(fci_scaled / 10000),
+             (u32)(fci_scaled % 10000));
+}
+#else
 static void test_live_event(void) {
   xil_printf("-- live event: trigger_core -> fci_core -> BRAM (interrupt-driven) --\r\n");
 
@@ -969,6 +1031,7 @@ static void test_live_event(void) {
   xil_printf("  [INFO] FCI = PSA_l/PSA_w = %d.%04d\r\n", (u32)(fci_scaled / 10000),
              (u32)(fci_scaled % 10000));
 }
+#endif /* FCI_RESULT_VIA_FCI_SINK */
 
 /* Arms axi_dma_0's pipeline and hands it over to service_dma0_event() (defined earlier alongside
  * axi_dma_1's pipeline) -- from here on main()'s loop is free to do anything else (print, service
@@ -982,7 +1045,7 @@ static void test_live_event(void) {
  * consumers must be continuously serviced from the start: the broadcaster is lockstep, so whichever
  * one stops accepting stalls the other as well. See test_live_event() for the failure this
  * prevents. Requires Intc_Init() to have run already (start_raw_trace_pipeline does it). */
-#if !FCI_RESULT_VIA_FCI_SINK
+#ifdef XPAR_AXI_DMA_0_BASEADDR
 static void start_result_pipeline(void) {
   if (!Dma_ResetCore(AXI_DMA_BASEADDR)) {
     xil_printf("  [FAIL] Dma_ResetCore (axi_dma_0) timed out\r\n");
@@ -995,7 +1058,7 @@ static void start_result_pipeline(void) {
 
   Intc_EnableAdditional(INTC_DMA_S2MM_BIT);
 }
-#endif /* !FCI_RESULT_VIA_FCI_SINK */
+#endif /* XPAR_AXI_DMA_0_BASEADDR */
 
 /* Both DMA channels have been running interrupt-driven since start_result_pipeline(); all this does
  * is restore the operating threshold that the bisect perturbed and hand over to the print loop. */
@@ -1024,7 +1087,7 @@ void Bringup_Init(void) {
   start_fci_core_realtime();
   start_raw_trace_pipeline(); /* must be armed+interrupt-driven before any real trigger can occur
                                 * -- see its comment for why */
-#if !FCI_RESULT_VIA_FCI_SINK
+#ifdef XPAR_AXI_DMA_0_BASEADDR
   start_result_pipeline();    /* same requirement for the other broadcaster consumer: a one-shot
                                 * axi_dma_0 here used to stall fci_core and, through the lockstep
                                 * broadcaster, the raw-trace tap with it */

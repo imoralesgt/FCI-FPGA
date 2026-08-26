@@ -23,11 +23,11 @@ port (
     xk_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
     xk_s_empty_n : IN STD_LOGIC;
     xk_s_read : OUT STD_LOGIC;
-    status_s16_dout : IN STD_LOGIC_VECTOR (7 downto 0);
-    status_s16_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s16_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    status_s16_empty_n : IN STD_LOGIC;
-    status_s16_read : OUT STD_LOGIC;
+    status_s17_dout : IN STD_LOGIC_VECTOR (7 downto 0);
+    status_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    status_s17_empty_n : IN STD_LOGIC;
+    status_s17_read : OUT STD_LOGIC;
     psa_l_lo_dout : IN STD_LOGIC_VECTOR (9 downto 0);
     psa_l_lo_num_data_valid : IN STD_LOGIC_VECTOR (2 downto 0);
     psa_l_lo_fifo_cap : IN STD_LOGIC_VECTOR (2 downto 0);
@@ -53,10 +53,15 @@ port (
     m_axis_result_TREADY : IN STD_LOGIC;
     m_axis_result_TKEEP : OUT STD_LOGIC_VECTOR (3 downto 0);
     m_axis_result_TSTRB : OUT STD_LOGIC_VECTOR (3 downto 0);
-    m_axis_result_TUSER : OUT STD_LOGIC_VECTOR (0 downto 0);
+    m_axis_result_TUSER : OUT STD_LOGIC_VECTOR (63 downto 0);
     m_axis_result_TLAST : OUT STD_LOGIC_VECTOR (0 downto 0);
     m_axis_result_TID : OUT STD_LOGIC_VECTOR (0 downto 0);
-    m_axis_result_TDEST : OUT STD_LOGIC_VECTOR (0 downto 0) );
+    m_axis_result_TDEST : OUT STD_LOGIC_VECTOR (0 downto 0);
+    tag_s19_dout : IN STD_LOGIC_VECTOR (63 downto 0);
+    tag_s19_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    tag_s19_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    tag_s19_empty_n : IN STD_LOGIC;
+    tag_s19_read : OUT STD_LOGIC );
 end;
 
 
@@ -71,9 +76,9 @@ architecture behav of fci_core_fft_to_psa is
     constant ap_ST_fsm_state6 : STD_LOGIC_VECTOR (5 downto 0) := "100000";
     constant ap_const_lv32_0 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000000";
     constant ap_const_boolean_1 : BOOLEAN := true;
-    constant ap_const_lv32_5 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000101";
     constant ap_const_lv32_3 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000011";
     constant ap_const_lv32_4 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000100";
+    constant ap_const_lv32_5 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000101";
     constant ap_const_lv32_1 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000001";
     constant ap_const_lv32_2 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000010";
     constant ap_const_lv4_F : STD_LOGIC_VECTOR (3 downto 0) := "1111";
@@ -88,39 +93,42 @@ attribute shreg_extract : string;
     attribute fsm_encoding of ap_CS_fsm : signal is "none";
     signal ap_CS_fsm_state1 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state1 : signal is "none";
-    signal status_s16_blk_n : STD_LOGIC;
-    signal ap_CS_fsm_state6 : STD_LOGIC;
-    attribute fsm_encoding of ap_CS_fsm_state6 : signal is "none";
+    signal status_s17_blk_n : STD_LOGIC;
+    signal ap_CS_fsm_state4 : STD_LOGIC;
+    attribute fsm_encoding of ap_CS_fsm_state4 : signal is "none";
     signal psa_l_lo_blk_n : STD_LOGIC;
     signal psa_l_hi_blk_n : STD_LOGIC;
     signal psa_w_lo_blk_n : STD_LOGIC;
     signal psa_w_hi_blk_n : STD_LOGIC;
     signal m_axis_result_TDATA_blk_n : STD_LOGIC;
-    signal ap_CS_fsm_state4 : STD_LOGIC;
-    attribute fsm_encoding of ap_CS_fsm_state4 : signal is "none";
     signal ap_CS_fsm_state5 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state5 : signal is "none";
-    signal psa_w_hi_read_reg_224 : STD_LOGIC_VECTOR (9 downto 0);
-    signal psa_w_lo_read_reg_229 : STD_LOGIC_VECTOR (9 downto 0);
-    signal psa_l_hi_read_reg_234 : STD_LOGIC_VECTOR (9 downto 0);
-    signal psa_l_lo_read_reg_239 : STD_LOGIC_VECTOR (9 downto 0);
-    signal zext_ln368_fu_199_p1 : STD_LOGIC_VECTOR (31 downto 0);
-    signal zext_ln368_1_fu_207_p1 : STD_LOGIC_VECTOR (31 downto 0);
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_idle : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out : STD_LOGIC_VECTOR (27 downto 0);
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out_ap_vld : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out : STD_LOGIC_VECTOR (27 downto 0);
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out_ap_vld : STD_LOGIC;
-    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg : STD_LOGIC := '0';
+    signal ap_CS_fsm_state6 : STD_LOGIC;
+    attribute fsm_encoding of ap_CS_fsm_state6 : signal is "none";
+    signal tag_s19_blk_n : STD_LOGIC;
+    signal psa_w_hi_read_reg_234 : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_w_lo_read_reg_239 : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_l_hi_read_reg_244 : STD_LOGIC_VECTOR (9 downto 0);
+    signal psa_l_lo_read_reg_249 : STD_LOGIC_VECTOR (9 downto 0);
+    signal tag_reg_254 : STD_LOGIC_VECTOR (63 downto 0);
+    signal zext_ln368_fu_209_p1 : STD_LOGIC_VECTOR (31 downto 0);
+    signal zext_ln368_1_fu_217_p1 : STD_LOGIC_VECTOR (31 downto 0);
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_idle : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_ready : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_xk_s_read : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_w_V_out : STD_LOGIC_VECTOR (27 downto 0);
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_w_V_out_ap_vld : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_l_V_out : STD_LOGIC_VECTOR (27 downto 0);
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_l_V_out_ap_vld : STD_LOGIC;
+    signal grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg : STD_LOGIC := '0';
     signal ap_CS_fsm_state2 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state2 : signal is "none";
     signal ap_CS_fsm_state3 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state3 : signal is "none";
     signal ap_block_state1 : BOOLEAN;
+    signal ap_block_state4 : BOOLEAN;
     signal regslice_both_m_axis_result_V_data_V_U_apdone_blk : STD_LOGIC;
     signal ap_block_state6 : BOOLEAN;
     signal ap_NS_fsm : STD_LOGIC_VECTOR (5 downto 0);
@@ -141,6 +149,7 @@ attribute shreg_extract : string;
     signal regslice_both_m_axis_result_V_strb_V_U_ack_in_dummy : STD_LOGIC;
     signal regslice_both_m_axis_result_V_strb_V_U_vld_out : STD_LOGIC;
     signal regslice_both_m_axis_result_V_user_V_U_apdone_blk : STD_LOGIC;
+    signal m_axis_result_TUSER_int_regslice : STD_LOGIC_VECTOR (63 downto 0);
     signal regslice_both_m_axis_result_V_user_V_U_ack_in_dummy : STD_LOGIC;
     signal regslice_both_m_axis_result_V_user_V_U_vld_out : STD_LOGIC;
     signal regslice_both_m_axis_result_V_last_V_U_apdone_blk : STD_LOGIC;
@@ -171,7 +180,7 @@ attribute shreg_extract : string;
         psa_l_lo_cast : IN STD_LOGIC_VECTOR (9 downto 0);
         psa_l_hi_cast : IN STD_LOGIC_VECTOR (9 downto 0);
         psa_w_lo_cast : IN STD_LOGIC_VECTOR (9 downto 0);
-        zext_ln44 : IN STD_LOGIC_VECTOR (9 downto 0);
+        zext_ln55 : IN STD_LOGIC_VECTOR (9 downto 0);
         psa_w_V_out : OUT STD_LOGIC_VECTOR (27 downto 0);
         psa_w_V_out_ap_vld : OUT STD_LOGIC;
         psa_l_V_out : OUT STD_LOGIC_VECTOR (27 downto 0);
@@ -197,27 +206,27 @@ attribute shreg_extract : string;
 
 
 begin
-    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184 : component fci_core_fft_to_psa_Pipeline_BIN_LOOP
+    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194 : component fci_core_fft_to_psa_Pipeline_BIN_LOOP
     port map (
         ap_clk => ap_clk,
         ap_rst => ap_rst,
-        ap_start => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start,
-        ap_done => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done,
-        ap_idle => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_idle,
-        ap_ready => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready,
+        ap_start => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start,
+        ap_done => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done,
+        ap_idle => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_idle,
+        ap_ready => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_ready,
         xk_s_dout => xk_s_dout,
         xk_s_num_data_valid => ap_const_lv2_0,
         xk_s_fifo_cap => ap_const_lv2_0,
         xk_s_empty_n => xk_s_empty_n,
-        xk_s_read => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read,
-        psa_l_lo_cast => psa_l_lo_read_reg_239,
-        psa_l_hi_cast => psa_l_hi_read_reg_234,
-        psa_w_lo_cast => psa_w_lo_read_reg_229,
-        zext_ln44 => psa_w_hi_read_reg_224,
-        psa_w_V_out => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out,
-        psa_w_V_out_ap_vld => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out_ap_vld,
-        psa_l_V_out => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out,
-        psa_l_V_out_ap_vld => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out_ap_vld);
+        xk_s_read => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_xk_s_read,
+        psa_l_lo_cast => psa_l_lo_read_reg_249,
+        psa_l_hi_cast => psa_l_hi_read_reg_244,
+        psa_w_lo_cast => psa_w_lo_read_reg_239,
+        zext_ln55 => psa_w_hi_read_reg_234,
+        psa_w_V_out => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_w_V_out,
+        psa_w_V_out_ap_vld => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_w_V_out_ap_vld,
+        psa_l_V_out => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_l_V_out,
+        psa_l_V_out_ap_vld => grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_l_V_out_ap_vld);
 
     regslice_both_m_axis_result_V_data_V_U : component fci_core_regslice_both
     generic map (
@@ -263,11 +272,11 @@ begin
 
     regslice_both_m_axis_result_V_user_V_U : component fci_core_regslice_both
     generic map (
-        DataWidth => 1)
+        DataWidth => 64)
     port map (
         ap_clk => ap_clk,
         ap_rst => ap_rst,
-        data_in => ap_const_lv1_0,
+        data_in => m_axis_result_TUSER_int_regslice,
         vld_in => m_axis_result_TVALID_int_regslice,
         ack_in => regslice_both_m_axis_result_V_user_V_U_ack_in_dummy,
         data_out => m_axis_result_TUSER,
@@ -341,7 +350,7 @@ begin
             else
                 if ((ap_continue = ap_const_logic_1)) then 
                     ap_done_reg <= ap_const_logic_0;
-                elsif ((not(((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
+                elsif ((not(((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
                     ap_done_reg <= ap_const_logic_1;
                 end if; 
             end if;
@@ -349,16 +358,16 @@ begin
     end process;
 
 
-    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg_assign_proc : process(ap_clk)
+    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg_assign_proc : process(ap_clk)
     begin
         if (ap_clk'event and ap_clk =  '1') then
             if (ap_rst = '1') then
-                grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= ap_const_logic_0;
+                grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg <= ap_const_logic_0;
             else
                 if ((ap_const_logic_1 = ap_CS_fsm_state2)) then 
-                    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= ap_const_logic_1;
-                elsif ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_ready = ap_const_logic_1)) then 
-                    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg <= ap_const_logic_0;
+                    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg <= ap_const_logic_1;
+                elsif ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_ready = ap_const_logic_1)) then 
+                    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg <= ap_const_logic_0;
                 end if; 
             end if;
         end if;
@@ -368,15 +377,23 @@ begin
     begin
         if (ap_clk'event and ap_clk = '1') then
             if ((ap_const_logic_1 = ap_CS_fsm_state1)) then
-                psa_l_hi_read_reg_234 <= psa_l_hi_dout;
-                psa_l_lo_read_reg_239 <= psa_l_lo_dout;
-                psa_w_hi_read_reg_224 <= psa_w_hi_dout;
-                psa_w_lo_read_reg_229 <= psa_w_lo_dout;
+                psa_l_hi_read_reg_244 <= psa_l_hi_dout;
+                psa_l_lo_read_reg_249 <= psa_l_lo_dout;
+                psa_w_hi_read_reg_234 <= psa_w_hi_dout;
+                psa_w_lo_read_reg_239 <= psa_w_lo_dout;
+            end if;
+        end if;
+    end process;
+    process (ap_clk)
+    begin
+        if (ap_clk'event and ap_clk = '1') then
+            if ((ap_const_logic_1 = ap_CS_fsm_state4)) then
+                tag_reg_254 <= tag_s19_dout;
             end if;
         end if;
     end process;
 
-    ap_NS_fsm_assign_proc : process (ap_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, status_s16_empty_n, psa_l_lo_empty_n, psa_l_hi_empty_n, psa_w_lo_empty_n, psa_w_hi_empty_n, ap_CS_fsm_state6, ap_CS_fsm_state4, ap_CS_fsm_state5, grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done, ap_CS_fsm_state3, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    ap_NS_fsm_assign_proc : process (ap_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, status_s17_empty_n, psa_l_lo_empty_n, psa_l_hi_empty_n, psa_w_lo_empty_n, psa_w_hi_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, ap_CS_fsm_state5, ap_CS_fsm_state6, grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done, ap_CS_fsm_state3, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
     begin
         case ap_CS_fsm is
             when ap_ST_fsm_state1 => 
@@ -388,13 +405,13 @@ begin
             when ap_ST_fsm_state2 => 
                 ap_NS_fsm <= ap_ST_fsm_state3;
             when ap_ST_fsm_state3 => 
-                if (((ap_const_logic_1 = ap_CS_fsm_state3) and (grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done = ap_const_logic_1))) then
+                if (((ap_const_logic_1 = ap_CS_fsm_state3) and (grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done = ap_const_logic_1))) then
                     ap_NS_fsm <= ap_ST_fsm_state4;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state3;
                 end if;
             when ap_ST_fsm_state4 => 
-                if (((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then
+                if ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then
                     ap_NS_fsm <= ap_ST_fsm_state5;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state4;
@@ -406,7 +423,7 @@ begin
                     ap_NS_fsm <= ap_ST_fsm_state5;
                 end if;
             when ap_ST_fsm_state6 => 
-                if ((not(((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then
+                if ((not(((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then
                     ap_NS_fsm <= ap_ST_fsm_state1;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state6;
@@ -433,9 +450,9 @@ begin
 
     ap_ST_fsm_state2_blk <= ap_const_logic_0;
 
-    ap_ST_fsm_state3_blk_assign_proc : process(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done)
+    ap_ST_fsm_state3_blk_assign_proc : process(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done)
     begin
-        if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_done = ap_const_logic_0)) then 
+        if ((grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_done = ap_const_logic_0)) then 
             ap_ST_fsm_state3_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state3_blk <= ap_const_logic_0;
@@ -443,9 +460,9 @@ begin
     end process;
 
 
-    ap_ST_fsm_state4_blk_assign_proc : process(m_axis_result_TREADY_int_regslice)
+    ap_ST_fsm_state4_blk_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, m_axis_result_TREADY_int_regslice)
     begin
-        if ((m_axis_result_TREADY_int_regslice = ap_const_logic_0)) then 
+        if (((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) then 
             ap_ST_fsm_state4_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state4_blk <= ap_const_logic_0;
@@ -463,9 +480,9 @@ begin
     end process;
 
 
-    ap_ST_fsm_state6_blk_assign_proc : process(status_s16_empty_n, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    ap_ST_fsm_state6_blk_assign_proc : process(regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
     begin
-        if (((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) then 
+        if (((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) then 
             ap_ST_fsm_state6_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state6_blk <= ap_const_logic_0;
@@ -479,15 +496,21 @@ begin
     end process;
 
 
-    ap_block_state6_assign_proc : process(status_s16_empty_n, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    ap_block_state4_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, m_axis_result_TREADY_int_regslice)
     begin
-                ap_block_state6 <= ((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1));
+                ap_block_state4 <= ((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0));
     end process;
 
 
-    ap_done_assign_proc : process(ap_done_reg, status_s16_empty_n, ap_CS_fsm_state6, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    ap_block_state6_assign_proc : process(regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
     begin
-        if ((not(((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
+                ap_block_state6 <= ((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1));
+    end process;
+
+
+    ap_done_assign_proc : process(ap_done_reg, ap_CS_fsm_state6, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    begin
+        if ((not(((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
             ap_done <= ap_const_logic_1;
         else 
             ap_done <= ap_done_reg;
@@ -505,18 +528,18 @@ begin
     end process;
 
 
-    ap_ready_assign_proc : process(status_s16_empty_n, ap_CS_fsm_state6, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    ap_ready_assign_proc : process(ap_CS_fsm_state6, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
     begin
-        if ((not(((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
+        if ((not(((m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
             ap_ready <= ap_const_logic_1;
         else 
             ap_ready <= ap_const_logic_0;
         end if; 
     end process;
 
-    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start <= grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_ap_start_reg;
+    grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start <= grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_ap_start_reg;
 
-    m_axis_result_TDATA_blk_n_assign_proc : process(ap_CS_fsm_state6, ap_CS_fsm_state4, ap_CS_fsm_state5, m_axis_result_TREADY_int_regslice)
+    m_axis_result_TDATA_blk_n_assign_proc : process(ap_CS_fsm_state4, ap_CS_fsm_state5, ap_CS_fsm_state6, m_axis_result_TREADY_int_regslice)
     begin
         if (((ap_const_logic_1 = ap_CS_fsm_state5) or (ap_const_logic_1 = ap_CS_fsm_state4) or (ap_const_logic_1 = ap_CS_fsm_state6))) then 
             m_axis_result_TDATA_blk_n <= m_axis_result_TREADY_int_regslice;
@@ -526,42 +549,46 @@ begin
     end process;
 
 
-    m_axis_result_TDATA_int_regslice_assign_proc : process(ap_CS_fsm_state4, ap_CS_fsm_state5, zext_ln368_fu_199_p1, zext_ln368_1_fu_207_p1, m_axis_result_TREADY_int_regslice)
+    m_axis_result_TDATA_int_regslice_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, ap_CS_fsm_state5, zext_ln368_fu_209_p1, zext_ln368_1_fu_217_p1, m_axis_result_TREADY_int_regslice)
     begin
-        if ((m_axis_result_TREADY_int_regslice = ap_const_logic_1)) then
-            if ((ap_const_logic_1 = ap_CS_fsm_state5)) then 
-                m_axis_result_TDATA_int_regslice <= zext_ln368_1_fu_207_p1;
-            elsif ((ap_const_logic_1 = ap_CS_fsm_state4)) then 
-                m_axis_result_TDATA_int_regslice <= zext_ln368_fu_199_p1;
-            else 
-                m_axis_result_TDATA_int_regslice <= "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
-            end if;
+        if (((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state5))) then 
+            m_axis_result_TDATA_int_regslice <= zext_ln368_1_fu_217_p1;
+        elsif ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            m_axis_result_TDATA_int_regslice <= zext_ln368_fu_209_p1;
         else 
             m_axis_result_TDATA_int_regslice <= "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
         end if; 
     end process;
 
 
-    m_axis_result_TLAST_int_regslice_assign_proc : process(ap_CS_fsm_state4, ap_CS_fsm_state5, m_axis_result_TREADY_int_regslice)
+    m_axis_result_TLAST_int_regslice_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, ap_CS_fsm_state5, m_axis_result_TREADY_int_regslice)
     begin
-        if ((m_axis_result_TREADY_int_regslice = ap_const_logic_1)) then
-            if ((ap_const_logic_1 = ap_CS_fsm_state5)) then 
-                m_axis_result_TLAST_int_regslice <= ap_const_lv1_1;
-            elsif ((ap_const_logic_1 = ap_CS_fsm_state4)) then 
-                m_axis_result_TLAST_int_regslice <= ap_const_lv1_0;
-            else 
-                m_axis_result_TLAST_int_regslice <= "X";
-            end if;
+        if (((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state5))) then 
+            m_axis_result_TLAST_int_regslice <= ap_const_lv1_1;
+        elsif ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            m_axis_result_TLAST_int_regslice <= ap_const_lv1_0;
         else 
             m_axis_result_TLAST_int_regslice <= "X";
         end if; 
     end process;
 
+
+    m_axis_result_TUSER_int_regslice_assign_proc : process(status_s17_empty_n, tag_s19_dout, tag_s19_empty_n, ap_CS_fsm_state4, ap_CS_fsm_state5, tag_reg_254, m_axis_result_TREADY_int_regslice)
+    begin
+        if (((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state5))) then 
+            m_axis_result_TUSER_int_regslice <= tag_reg_254;
+        elsif ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            m_axis_result_TUSER_int_regslice <= tag_s19_dout;
+        else 
+            m_axis_result_TUSER_int_regslice <= "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX";
+        end if; 
+    end process;
+
     m_axis_result_TVALID <= regslice_both_m_axis_result_V_data_V_U_vld_out;
 
-    m_axis_result_TVALID_int_regslice_assign_proc : process(ap_CS_fsm_state4, ap_CS_fsm_state5, m_axis_result_TREADY_int_regslice)
+    m_axis_result_TVALID_int_regslice_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, ap_CS_fsm_state5, m_axis_result_TREADY_int_regslice)
     begin
-        if ((((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state5)) or ((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4)))) then 
+        if ((((m_axis_result_TREADY_int_regslice = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state5)) or (not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4)))) then 
             m_axis_result_TVALID_int_regslice <= ap_const_logic_1;
         else 
             m_axis_result_TVALID_int_regslice <= ap_const_logic_0;
@@ -649,35 +676,55 @@ begin
     end process;
 
 
-    status_s16_blk_n_assign_proc : process(status_s16_empty_n, ap_CS_fsm_state6)
+    status_s17_blk_n_assign_proc : process(status_s17_empty_n, ap_CS_fsm_state4)
     begin
-        if ((ap_const_logic_1 = ap_CS_fsm_state6)) then 
-            status_s16_blk_n <= status_s16_empty_n;
+        if ((ap_const_logic_1 = ap_CS_fsm_state4)) then 
+            status_s17_blk_n <= status_s17_empty_n;
         else 
-            status_s16_blk_n <= ap_const_logic_1;
+            status_s17_blk_n <= ap_const_logic_1;
         end if; 
     end process;
 
 
-    status_s16_read_assign_proc : process(status_s16_empty_n, ap_CS_fsm_state6, regslice_both_m_axis_result_V_data_V_U_apdone_blk, m_axis_result_TREADY_int_regslice)
+    status_s17_read_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, m_axis_result_TREADY_int_regslice)
     begin
-        if ((not(((status_s16_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0) or (regslice_both_m_axis_result_V_data_V_U_apdone_blk = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state6))) then 
-            status_s16_read <= ap_const_logic_1;
+        if ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            status_s17_read <= ap_const_logic_1;
         else 
-            status_s16_read <= ap_const_logic_0;
+            status_s17_read <= ap_const_logic_0;
         end if; 
     end process;
 
 
-    xk_s_read_assign_proc : process(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read, ap_CS_fsm_state3)
+    tag_s19_blk_n_assign_proc : process(tag_s19_empty_n, ap_CS_fsm_state4)
+    begin
+        if ((ap_const_logic_1 = ap_CS_fsm_state4)) then 
+            tag_s19_blk_n <= tag_s19_empty_n;
+        else 
+            tag_s19_blk_n <= ap_const_logic_1;
+        end if; 
+    end process;
+
+
+    tag_s19_read_assign_proc : process(status_s17_empty_n, tag_s19_empty_n, ap_CS_fsm_state4, m_axis_result_TREADY_int_regslice)
+    begin
+        if ((not(((tag_s19_empty_n = ap_const_logic_0) or (status_s17_empty_n = ap_const_logic_0) or (m_axis_result_TREADY_int_regslice = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            tag_s19_read <= ap_const_logic_1;
+        else 
+            tag_s19_read <= ap_const_logic_0;
+        end if; 
+    end process;
+
+
+    xk_s_read_assign_proc : process(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_xk_s_read, ap_CS_fsm_state3)
     begin
         if ((ap_const_logic_1 = ap_CS_fsm_state3)) then 
-            xk_s_read <= grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_xk_s_read;
+            xk_s_read <= grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_xk_s_read;
         else 
             xk_s_read <= ap_const_logic_0;
         end if; 
     end process;
 
-    zext_ln368_1_fu_207_p1 <= std_logic_vector(IEEE.numeric_std.resize(unsigned(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_w_V_out),32));
-    zext_ln368_fu_199_p1 <= std_logic_vector(IEEE.numeric_std.resize(unsigned(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184_psa_l_V_out),32));
+    zext_ln368_1_fu_217_p1 <= std_logic_vector(IEEE.numeric_std.resize(unsigned(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_w_V_out),32));
+    zext_ln368_fu_209_p1 <= std_logic_vector(IEEE.numeric_std.resize(unsigned(grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194_psa_l_V_out),32));
 end behav;

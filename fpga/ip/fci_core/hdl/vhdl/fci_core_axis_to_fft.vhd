@@ -26,7 +26,7 @@ port (
     s_axis_data_TREADY : OUT STD_LOGIC;
     s_axis_data_TKEEP : IN STD_LOGIC_VECTOR (1 downto 0);
     s_axis_data_TSTRB : IN STD_LOGIC_VECTOR (1 downto 0);
-    s_axis_data_TUSER : IN STD_LOGIC_VECTOR (0 downto 0);
+    s_axis_data_TUSER : IN STD_LOGIC_VECTOR (63 downto 0);
     s_axis_data_TLAST : IN STD_LOGIC_VECTOR (0 downto 0);
     s_axis_data_TID : IN STD_LOGIC_VECTOR (0 downto 0);
     s_axis_data_TDEST : IN STD_LOGIC_VECTOR (0 downto 0);
@@ -35,22 +35,29 @@ port (
     xn_s_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
     xn_s_full_n : IN STD_LOGIC;
     xn_s_write : OUT STD_LOGIC;
-    config_s17_din : OUT STD_LOGIC_VECTOR (7 downto 0);
-    config_s17_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s17_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
-    config_s17_full_n : IN STD_LOGIC;
-    config_s17_write : OUT STD_LOGIC );
+    config_s18_din : OUT STD_LOGIC_VECTOR (7 downto 0);
+    config_s18_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s18_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    config_s18_full_n : IN STD_LOGIC;
+    config_s18_write : OUT STD_LOGIC;
+    tag_s19_din : OUT STD_LOGIC_VECTOR (63 downto 0);
+    tag_s19_num_data_valid : IN STD_LOGIC_VECTOR (1 downto 0);
+    tag_s19_fifo_cap : IN STD_LOGIC_VECTOR (1 downto 0);
+    tag_s19_full_n : IN STD_LOGIC;
+    tag_s19_write : OUT STD_LOGIC );
 end;
 
 
 architecture behav of fci_core_axis_to_fft is 
     constant ap_const_logic_1 : STD_LOGIC := '1';
     constant ap_const_logic_0 : STD_LOGIC := '0';
-    constant ap_ST_fsm_state1 : STD_LOGIC_VECTOR (2 downto 0) := "001";
-    constant ap_ST_fsm_state2 : STD_LOGIC_VECTOR (2 downto 0) := "010";
-    constant ap_ST_fsm_state3 : STD_LOGIC_VECTOR (2 downto 0) := "100";
+    constant ap_ST_fsm_state1 : STD_LOGIC_VECTOR (3 downto 0) := "0001";
+    constant ap_ST_fsm_state2 : STD_LOGIC_VECTOR (3 downto 0) := "0010";
+    constant ap_ST_fsm_state3 : STD_LOGIC_VECTOR (3 downto 0) := "0100";
+    constant ap_ST_fsm_state4 : STD_LOGIC_VECTOR (3 downto 0) := "1000";
     constant ap_const_boolean_1 : BOOLEAN := true;
     constant ap_const_lv32_0 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000000";
+    constant ap_const_lv32_3 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000011";
     constant ap_const_lv32_1 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000001";
     constant ap_const_lv32_2 : STD_LOGIC_VECTOR (31 downto 0) := "00000000000000000000000000000010";
     constant ap_const_lv8_1 : STD_LOGIC_VECTOR (7 downto 0) := "00000001";
@@ -60,30 +67,35 @@ attribute shreg_extract : string;
     signal real_start : STD_LOGIC;
     signal start_once_reg : STD_LOGIC := '0';
     signal ap_done_reg : STD_LOGIC := '0';
-    signal ap_CS_fsm : STD_LOGIC_VECTOR (2 downto 0) := "001";
+    signal ap_CS_fsm : STD_LOGIC_VECTOR (3 downto 0) := "0001";
     attribute fsm_encoding : string;
     attribute fsm_encoding of ap_CS_fsm : signal is "none";
     signal ap_CS_fsm_state1 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state1 : signal is "none";
     signal internal_ap_ready : STD_LOGIC;
-    signal config_s17_blk_n : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din : STD_LOGIC_VECTOR (31 downto 0);
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY : STD_LOGIC;
-    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg : STD_LOGIC := '0';
-    signal ap_CS_fsm_state2 : STD_LOGIC;
-    attribute fsm_encoding of ap_CS_fsm_state2 : signal is "none";
+    signal config_s18_blk_n : STD_LOGIC;
+    signal tag_s19_blk_n : STD_LOGIC;
+    signal ap_CS_fsm_state4 : STD_LOGIC;
+    attribute fsm_encoding of ap_CS_fsm_state4 : signal is "none";
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_idle : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din : STD_LOGIC_VECTOR (31 downto 0);
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out : STD_LOGIC_VECTOR (63 downto 0);
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out_ap_vld : STD_LOGIC;
+    signal grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg : STD_LOGIC := '0';
+    signal ap_NS_fsm : STD_LOGIC_VECTOR (3 downto 0);
+    signal ap_NS_fsm_state2 : STD_LOGIC;
     signal ap_CS_fsm_state3 : STD_LOGIC;
     attribute fsm_encoding of ap_CS_fsm_state3 : signal is "none";
     signal ap_block_state1 : BOOLEAN;
-    signal ap_NS_fsm : STD_LOGIC_VECTOR (2 downto 0);
     signal ap_ST_fsm_state1_blk : STD_LOGIC;
     signal ap_ST_fsm_state2_blk : STD_LOGIC;
     signal ap_ST_fsm_state3_blk : STD_LOGIC;
+    signal ap_ST_fsm_state4_blk : STD_LOGIC;
     signal regslice_both_s_axis_data_V_data_V_U_apdone_blk : STD_LOGIC;
     signal s_axis_data_TDATA_int_regslice : STD_LOGIC_VECTOR (15 downto 0);
     signal s_axis_data_TVALID_int_regslice : STD_LOGIC;
@@ -98,7 +110,7 @@ attribute shreg_extract : string;
     signal regslice_both_s_axis_data_V_strb_V_U_vld_out : STD_LOGIC;
     signal regslice_both_s_axis_data_V_strb_V_U_ack_in : STD_LOGIC;
     signal regslice_both_s_axis_data_V_user_V_U_apdone_blk : STD_LOGIC;
-    signal s_axis_data_TUSER_int_regslice : STD_LOGIC_VECTOR (0 downto 0);
+    signal s_axis_data_TUSER_int_regslice : STD_LOGIC_VECTOR (63 downto 0);
     signal regslice_both_s_axis_data_V_user_V_U_vld_out : STD_LOGIC;
     signal regslice_both_s_axis_data_V_user_V_U_ack_in : STD_LOGIC;
     signal regslice_both_s_axis_data_V_last_V_U_apdone_blk : STD_LOGIC;
@@ -133,10 +145,12 @@ attribute shreg_extract : string;
         s_axis_data_TREADY : OUT STD_LOGIC;
         s_axis_data_TKEEP : IN STD_LOGIC_VECTOR (1 downto 0);
         s_axis_data_TSTRB : IN STD_LOGIC_VECTOR (1 downto 0);
-        s_axis_data_TUSER : IN STD_LOGIC_VECTOR (0 downto 0);
+        s_axis_data_TUSER : IN STD_LOGIC_VECTOR (63 downto 0);
         s_axis_data_TLAST : IN STD_LOGIC_VECTOR (0 downto 0);
         s_axis_data_TID : IN STD_LOGIC_VECTOR (0 downto 0);
-        s_axis_data_TDEST : IN STD_LOGIC_VECTOR (0 downto 0) );
+        s_axis_data_TDEST : IN STD_LOGIC_VECTOR (0 downto 0);
+        tag_V_out : OUT STD_LOGIC_VECTOR (63 downto 0);
+        tag_V_out_ap_vld : OUT STD_LOGIC );
     end component;
 
 
@@ -158,28 +172,30 @@ attribute shreg_extract : string;
 
 
 begin
-    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54 : component fci_core_axis_to_fft_Pipeline_SAMPLE_LOOP
+    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71 : component fci_core_axis_to_fft_Pipeline_SAMPLE_LOOP
     port map (
         ap_clk => ap_clk,
         ap_rst => ap_rst,
-        ap_start => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start,
-        ap_done => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done,
-        ap_idle => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle,
-        ap_ready => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready,
+        ap_start => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start,
+        ap_done => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done,
+        ap_idle => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_idle,
+        ap_ready => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready,
         s_axis_data_TVALID => s_axis_data_TVALID_int_regslice,
-        xn_s_din => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din,
+        xn_s_din => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din,
         xn_s_num_data_valid => ap_const_lv2_0,
         xn_s_fifo_cap => ap_const_lv2_0,
         xn_s_full_n => xn_s_full_n,
-        xn_s_write => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write,
+        xn_s_write => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write,
         s_axis_data_TDATA => s_axis_data_TDATA_int_regslice,
-        s_axis_data_TREADY => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY,
+        s_axis_data_TREADY => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY,
         s_axis_data_TKEEP => s_axis_data_TKEEP_int_regslice,
         s_axis_data_TSTRB => s_axis_data_TSTRB_int_regslice,
         s_axis_data_TUSER => s_axis_data_TUSER_int_regslice,
         s_axis_data_TLAST => s_axis_data_TLAST_int_regslice,
         s_axis_data_TID => s_axis_data_TID_int_regslice,
-        s_axis_data_TDEST => s_axis_data_TDEST_int_regslice);
+        s_axis_data_TDEST => s_axis_data_TDEST_int_regslice,
+        tag_V_out => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out,
+        tag_V_out_ap_vld => grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out_ap_vld);
 
     regslice_both_s_axis_data_V_data_V_U : component fci_core_regslice_both
     generic map (
@@ -225,7 +241,7 @@ begin
 
     regslice_both_s_axis_data_V_user_V_U : component fci_core_regslice_both
     generic map (
-        DataWidth => 1)
+        DataWidth => 64)
     port map (
         ap_clk => ap_clk,
         ap_rst => ap_rst,
@@ -303,7 +319,7 @@ begin
             else
                 if ((ap_continue = ap_const_logic_1)) then 
                     ap_done_reg <= ap_const_logic_0;
-                elsif (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state3))) then 
+                elsif (((tag_s19_full_n = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
                     ap_done_reg <= ap_const_logic_1;
                 end if; 
             end if;
@@ -311,16 +327,16 @@ begin
     end process;
 
 
-    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg_assign_proc : process(ap_clk)
+    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg_assign_proc : process(ap_clk)
     begin
         if (ap_clk'event and ap_clk =  '1') then
             if (ap_rst = '1') then
-                grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= ap_const_logic_0;
+                grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= ap_const_logic_0;
             else
-                if ((ap_const_logic_1 = ap_CS_fsm_state2)) then 
-                    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= ap_const_logic_1;
-                elsif ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready = ap_const_logic_1)) then 
-                    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= ap_const_logic_0;
+                if (((ap_const_logic_1 = ap_CS_fsm_state1) and (ap_const_logic_1 = ap_NS_fsm_state2))) then 
+                    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= ap_const_logic_1;
+                elsif ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready = ap_const_logic_1)) then 
+                    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= ap_const_logic_0;
                 end if; 
             end if;
         end if;
@@ -333,7 +349,7 @@ begin
             if (ap_rst = '1') then
                 start_once_reg <= ap_const_logic_0;
             else
-                if (((real_start = ap_const_logic_1) and (internal_ap_ready = ap_const_logic_0))) then 
+                if (((internal_ap_ready = ap_const_logic_0) and (real_start = ap_const_logic_1))) then 
                     start_once_reg <= ap_const_logic_1;
                 elsif ((internal_ap_ready = ap_const_logic_1)) then 
                     start_once_reg <= ap_const_logic_0;
@@ -343,11 +359,11 @@ begin
     end process;
 
 
-    ap_NS_fsm_assign_proc : process (real_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, config_s17_full_n, grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done, ap_CS_fsm_state3)
+    ap_NS_fsm_assign_proc : process (real_start, ap_done_reg, ap_CS_fsm, ap_CS_fsm_state1, config_s18_full_n, tag_s19_full_n, ap_CS_fsm_state4, grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done, ap_CS_fsm_state3)
     begin
         case ap_CS_fsm is
             when ap_ST_fsm_state1 => 
-                if ((not(((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
+                if ((not(((config_s18_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1) or (real_start = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then
                     ap_NS_fsm <= ap_ST_fsm_state2;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state1;
@@ -355,22 +371,29 @@ begin
             when ap_ST_fsm_state2 => 
                 ap_NS_fsm <= ap_ST_fsm_state3;
             when ap_ST_fsm_state3 => 
-                if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state3))) then
-                    ap_NS_fsm <= ap_ST_fsm_state1;
+                if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state3))) then
+                    ap_NS_fsm <= ap_ST_fsm_state4;
                 else
                     ap_NS_fsm <= ap_ST_fsm_state3;
                 end if;
+            when ap_ST_fsm_state4 => 
+                if (((tag_s19_full_n = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then
+                    ap_NS_fsm <= ap_ST_fsm_state1;
+                else
+                    ap_NS_fsm <= ap_ST_fsm_state4;
+                end if;
             when others =>  
-                ap_NS_fsm <= "XXX";
+                ap_NS_fsm <= "XXXX";
         end case;
     end process;
     ap_CS_fsm_state1 <= ap_CS_fsm(0);
-    ap_CS_fsm_state2 <= ap_CS_fsm(1);
     ap_CS_fsm_state3 <= ap_CS_fsm(2);
+    ap_CS_fsm_state4 <= ap_CS_fsm(3);
+    ap_NS_fsm_state2 <= ap_NS_fsm(1);
 
-    ap_ST_fsm_state1_blk_assign_proc : process(real_start, ap_done_reg, config_s17_full_n)
+    ap_ST_fsm_state1_blk_assign_proc : process(real_start, ap_done_reg, config_s18_full_n)
     begin
-        if (((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) then 
+        if (((config_s18_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1) or (real_start = ap_const_logic_0))) then 
             ap_ST_fsm_state1_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state1_blk <= ap_const_logic_0;
@@ -379,9 +402,9 @@ begin
 
     ap_ST_fsm_state2_blk <= ap_const_logic_0;
 
-    ap_ST_fsm_state3_blk_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done)
+    ap_ST_fsm_state3_blk_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done)
     begin
-        if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done = ap_const_logic_0)) then 
+        if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done = ap_const_logic_0)) then 
             ap_ST_fsm_state3_blk <= ap_const_logic_1;
         else 
             ap_ST_fsm_state3_blk <= ap_const_logic_0;
@@ -389,15 +412,25 @@ begin
     end process;
 
 
-    ap_block_state1_assign_proc : process(real_start, ap_done_reg, config_s17_full_n)
+    ap_ST_fsm_state4_blk_assign_proc : process(tag_s19_full_n)
     begin
-                ap_block_state1 <= ((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1));
+        if ((tag_s19_full_n = ap_const_logic_0)) then 
+            ap_ST_fsm_state4_blk <= ap_const_logic_1;
+        else 
+            ap_ST_fsm_state4_blk <= ap_const_logic_0;
+        end if; 
     end process;
 
 
-    ap_done_assign_proc : process(ap_done_reg, grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done, ap_CS_fsm_state3)
+    ap_block_state1_assign_proc : process(real_start, ap_done_reg, config_s18_full_n)
     begin
-        if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state3))) then 
+                ap_block_state1 <= ((config_s18_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1) or (real_start = ap_const_logic_0));
+    end process;
+
+
+    ap_done_assign_proc : process(ap_done_reg, tag_s19_full_n, ap_CS_fsm_state4)
+    begin
+        if (((tag_s19_full_n = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
             ap_done <= ap_const_logic_1;
         else 
             ap_done <= ap_done_reg;
@@ -407,7 +440,7 @@ begin
 
     ap_idle_assign_proc : process(real_start, ap_CS_fsm_state1)
     begin
-        if (((real_start = ap_const_logic_0) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+        if (((ap_const_logic_1 = ap_CS_fsm_state1) and (real_start = ap_const_logic_0))) then 
             ap_idle <= ap_const_logic_1;
         else 
             ap_idle <= ap_const_logic_0;
@@ -416,31 +449,31 @@ begin
 
     ap_ready <= internal_ap_ready;
 
-    config_s17_blk_n_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s17_full_n)
+    config_s18_blk_n_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s18_full_n)
     begin
-        if ((not(((real_start = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s17_blk_n <= config_s17_full_n;
+        if ((not(((ap_done_reg = ap_const_logic_1) or (real_start = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+            config_s18_blk_n <= config_s18_full_n;
         else 
-            config_s17_blk_n <= ap_const_logic_1;
+            config_s18_blk_n <= ap_const_logic_1;
         end if; 
     end process;
 
-    config_s17_din <= ap_const_lv8_1;
+    config_s18_din <= ap_const_lv8_1;
 
-    config_s17_write_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s17_full_n)
+    config_s18_write_assign_proc : process(real_start, ap_done_reg, ap_CS_fsm_state1, config_s18_full_n)
     begin
-        if ((not(((real_start = ap_const_logic_0) or (config_s17_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
-            config_s17_write <= ap_const_logic_1;
+        if ((not(((config_s18_full_n = ap_const_logic_0) or (ap_done_reg = ap_const_logic_1) or (real_start = ap_const_logic_0))) and (ap_const_logic_1 = ap_CS_fsm_state1))) then 
+            config_s18_write <= ap_const_logic_1;
         else 
-            config_s17_write <= ap_const_logic_0;
+            config_s18_write <= ap_const_logic_0;
         end if; 
     end process;
 
-    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg;
+    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg;
 
-    internal_ap_ready_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done, ap_CS_fsm_state3)
+    internal_ap_ready_assign_proc : process(tag_s19_full_n, ap_CS_fsm_state4)
     begin
-        if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state3))) then 
+        if (((tag_s19_full_n = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
             internal_ap_ready <= ap_const_logic_1;
         else 
             internal_ap_ready <= ap_const_logic_0;
@@ -459,10 +492,10 @@ begin
 
     s_axis_data_TREADY <= regslice_both_s_axis_data_V_data_V_U_ack_in;
 
-    s_axis_data_TREADY_int_regslice_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY, ap_CS_fsm_state3)
+    s_axis_data_TREADY_int_regslice_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY, ap_CS_fsm_state3)
     begin
         if ((ap_const_logic_1 = ap_CS_fsm_state3)) then 
-            s_axis_data_TREADY_int_regslice <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY;
+            s_axis_data_TREADY_int_regslice <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY;
         else 
             s_axis_data_TREADY_int_regslice <= ap_const_logic_0;
         end if; 
@@ -472,19 +505,40 @@ begin
 
     start_write_assign_proc : process(real_start, start_once_reg)
     begin
-        if (((real_start = ap_const_logic_1) and (start_once_reg = ap_const_logic_0))) then 
+        if (((start_once_reg = ap_const_logic_0) and (real_start = ap_const_logic_1))) then 
             start_write <= ap_const_logic_1;
         else 
             start_write <= ap_const_logic_0;
         end if; 
     end process;
 
-    xn_s_din <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din;
 
-    xn_s_write_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write, ap_CS_fsm_state3)
+    tag_s19_blk_n_assign_proc : process(tag_s19_full_n, ap_CS_fsm_state4)
+    begin
+        if ((ap_const_logic_1 = ap_CS_fsm_state4)) then 
+            tag_s19_blk_n <= tag_s19_full_n;
+        else 
+            tag_s19_blk_n <= ap_const_logic_1;
+        end if; 
+    end process;
+
+    tag_s19_din <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out;
+
+    tag_s19_write_assign_proc : process(tag_s19_full_n, ap_CS_fsm_state4)
+    begin
+        if (((tag_s19_full_n = ap_const_logic_1) and (ap_const_logic_1 = ap_CS_fsm_state4))) then 
+            tag_s19_write <= ap_const_logic_1;
+        else 
+            tag_s19_write <= ap_const_logic_0;
+        end if; 
+    end process;
+
+    xn_s_din <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din;
+
+    xn_s_write_assign_proc : process(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write, ap_CS_fsm_state3)
     begin
         if ((ap_const_logic_1 = ap_CS_fsm_state3)) then 
-            xn_s_write <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write;
+            xn_s_write <= grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write;
         else 
             xn_s_write <= ap_const_logic_0;
         end if; 

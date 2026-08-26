@@ -327,7 +327,7 @@
                 1 : begin
                     case(index2)
                     2: begin
-                        if (~axis_to_fft_U0.grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54.xn_s_blk_n) begin
+                        if (~axis_to_fft_U0.grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71.xn_s_blk_n) begin
                             if (~xn_s_U.if_empty_n) begin
                                 $display("//      Blocked by empty input FIFO 'fci_core_fci_core.xn_s_U' written by process 'fci_core_fci_core.fft_fci_fft_config_U0'");
                                 $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.xn_s_U");
@@ -339,7 +339,7 @@
                                 $fdisplay(fp, "Dependence_Channel_status FULL");
                             end
                         end
-                        if (~axis_to_fft_U0.config_s17_blk_n) begin
+                        if (~axis_to_fft_U0.config_s18_blk_n) begin
                             if (~config_s_U.if_empty_n) begin
                                 $display("//      Blocked by empty input FIFO 'fci_core_fci_core.config_s_U' written by process 'fci_core_fci_core.fft_fci_fft_config_U0'");
                                 $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.config_s_U");
@@ -353,6 +353,20 @@
                         end
                         if (~start_for_fft_fci_fft_config_U0_U.if_full_n & axis_to_fft_U0.ap_start & ~axis_to_fft_U0.real_start & (trans_in_cnt_0 == trans_out_cnt_0) & ~start_for_fft_fci_fft_config_U0_U.if_read) begin
                             $display("//      Blocked by full output start propagation FIFO 'fci_core_fci_core.start_for_fft_fci_fft_config_U0_U' read by process 'fci_core_fci_core.fft_fci_fft_config_U0',");
+                        end
+                    end
+                    3: begin
+                        if (~axis_to_fft_U0.tag_s19_blk_n) begin
+                            if (~tag_s_U.if_empty_n) begin
+                                $display("//      Blocked by empty input FIFO 'fci_core_fci_core.tag_s_U' written by process 'fci_core_fci_core.fft_to_psa_U0'");
+                                $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.tag_s_U");
+                                $fdisplay(fp, "Dependence_Channel_status EMPTY");
+                            end
+                            else if (~tag_s_U.if_full_n) begin
+                                $display("//      Blocked by full output FIFO 'fci_core_fci_core.tag_s_U' read by process 'fci_core_fci_core.fft_to_psa_U0'");
+                                $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.tag_s_U");
+                                $fdisplay(fp, "Dependence_Channel_status FULL");
+                            end
                         end
                     end
                     0: begin
@@ -374,7 +388,7 @@
                 3 : begin
                     case(index2)
                     2: begin
-                        if (~fft_to_psa_U0.grp_fft_to_psa_Pipeline_BIN_LOOP_fu_184.xk_s_blk_n) begin
+                        if (~fft_to_psa_U0.grp_fft_to_psa_Pipeline_BIN_LOOP_fu_194.xk_s_blk_n) begin
                             if (~xk_s_U.if_empty_n) begin
                                 $display("//      Blocked by empty input FIFO 'fci_core_fci_core.xk_s_U' written by process 'fci_core_fci_core.fft_fci_fft_config_U0'");
                                 $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.xk_s_U");
@@ -386,7 +400,7 @@
                                 $fdisplay(fp, "Dependence_Channel_status FULL");
                             end
                         end
-                        if (~fft_to_psa_U0.status_s16_blk_n) begin
+                        if (~fft_to_psa_U0.status_s17_blk_n) begin
                             if (~status_s_U.if_empty_n) begin
                                 $display("//      Blocked by empty input FIFO 'fci_core_fci_core.status_s_U' written by process 'fci_core_fci_core.fft_fci_fft_config_U0'");
                                 $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.status_s_U");
@@ -450,6 +464,20 @@
                         end
                         if (~start_for_fft_to_psa_U0_U.if_empty_n & fft_to_psa_U0.ap_idle & ~start_for_fft_to_psa_U0_U.if_write) begin
                             $display("//      Blocked by missing 'ap_start' from start propagation FIFO 'fci_core_fci_core.start_for_fft_to_psa_U0_U' written by process 'fci_core_fci_core.entry_proc_U0',");
+                        end
+                    end
+                    1: begin
+                        if (~fft_to_psa_U0.tag_s19_blk_n) begin
+                            if (~tag_s_U.if_empty_n) begin
+                                $display("//      Blocked by empty input FIFO 'fci_core_fci_core.tag_s_U' written by process 'fci_core_fci_core.axis_to_fft_U0'");
+                                $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.tag_s_U");
+                                $fdisplay(fp, "Dependence_Channel_status EMPTY");
+                            end
+                            else if (~tag_s_U.if_full_n) begin
+                                $display("//      Blocked by full output FIFO 'fci_core_fci_core.tag_s_U' read by process 'fci_core_fci_core.axis_to_fft_U0'");
+                                $fdisplay(fp, "Dependence_Channel_path fci_core_fci_core.tag_s_U");
+                                $fdisplay(fp, "Dependence_Channel_status FULL");
+                            end
                         end
                     end
                     endcase

@@ -151,15 +151,22 @@
  * instances share the exact same channel-relative register layout, so dma_s2mm.h's functions take
  * a dma_baseaddr parameter (AXI_DMA_BASEADDR or AXI_DMA_1_BASEADDR) rather than being duplicated.
  * ------------------------------------------------------------------------------------------- */
+/* Guarded because axi_dma_0 is the block design's decision, same as XPAR_FCI_SINK_0_BASEADDR
+ * below: once fci_sink replaces it (issue #12 BD integration), a BD without axi_dma_0 must not
+ * fail to build registers.h itself over a macro nothing still uses. */
+#ifdef XPAR_AXI_DMA_0_BASEADDR
 #define AXI_DMA_BASEADDR XPAR_AXI_DMA_0_BASEADDR
 #define AXI_DMA_DEVICE_ID XPAR_AXI_DMA_0_DEVICE_ID
+#endif
 
 #define AXI_DMA_1_BASEADDR XPAR_AXI_DMA_1_BASEADDR
 #define AXI_DMA_1_DEVICE_ID XPAR_AXI_DMA_1_DEVICE_ID
 
 /* c_include_sg=0 (Simple DMA): direct-register mode only, channel-relative offsets from
  * xaxidma_hw.h (XAXIDMA_TX_OFFSET/XAXIDMA_RX_OFFSET = MM2S/S2MM channel register bank base).
- * Channel-relative, so the same offsets apply to axi_dma_1 too -- only the base address differs. */
+ * Channel-relative, so the same offsets apply to axi_dma_1 too -- only the base address differs.
+ * Unguarded: axi_dma_1 (raw-trace capture) always exists regardless of axi_dma_0/fci_sink, and
+ * these offsets come from xaxidma_hw.h, not from a per-instance XPAR symbol. */
 #define AXI_DMA_MM2S_DMACR_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_CR_OFFSET)
 #define AXI_DMA_MM2S_DMASR_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_SR_OFFSET)
 #define AXI_DMA_MM2S_SA_OFFSET (XAXIDMA_TX_OFFSET + XAXIDMA_SRCADDR_OFFSET)
@@ -231,8 +238,23 @@
 #define AXI_INTC_BASEADDR XPAR_INTC_0_BASEADDR
 #define AXI_INTC_DEVICE_ID XPAR_INTC_0_DEVICE_ID
 
+#ifdef XPAR_AXI_DMA_0_BASEADDR
 #define INTC_DMA_S2MM_VEC_ID XPAR_INTC_0_AXIDMA_0_VEC_ID
+#endif
+
+/* Xilinx numbers XPAR_INTC_0_AXIDMA_<N>_VEC_ID by POSITION among AXI-DMA-type interrupt sources
+ * in the design, not by the source cell's literal instance name. With both axi_dma_0 and
+ * axi_dma_1 present they land on 0 and 1 respectively, matching the cell names -- but delete
+ * axi_dma_0 (issue #12 BD integration, once fci_sink replaces it) and axi_dma_1's OWN vector-ID
+ * macro renumbers down to the _0 slot, even though axi_dma_1 itself and its base-address macro
+ * (XPAR_AXI_DMA_1_BASEADDR) are completely untouched. Resolve by whichever macro actually exists,
+ * disambiguated by whether axi_dma_0's cell is still present: if XPAR_AXI_DMA_0_BASEADDR is
+ * defined, an AXIDMA_0-numbered vector genuinely belongs to it (claimed above), not to this one. */
+#if defined(XPAR_INTC_0_AXIDMA_1_VEC_ID)
 #define INTC_DMA_1_S2MM_VEC_ID XPAR_INTC_0_AXIDMA_1_VEC_ID
+#elif defined(XPAR_INTC_0_AXIDMA_0_VEC_ID) && !defined(XPAR_AXI_DMA_0_BASEADDR)
+#define INTC_DMA_1_S2MM_VEC_ID XPAR_INTC_0_AXIDMA_0_VEC_ID
+#endif
 #define INTC_UARTLITE_VEC_ID XPAR_INTC_0_UARTLITE_0_VEC_ID
 #define INTC_FCI_CORE_VEC_ID XPAR_INTC_0_FCI_CORE_0_VEC_ID
 
@@ -250,7 +272,9 @@
 #define AXI_INTC_MER_HIE_MASK XIN_INT_HARDWARE_ENABLE_MASK /* Hardware Interrupt Enable, sticky
                                                              * once set (per xintc_l.h) */
 
+#ifdef XPAR_AXI_DMA_0_BASEADDR
 #define INTC_DMA_S2MM_BIT (1U << INTC_DMA_S2MM_VEC_ID)
+#endif
 #define INTC_DMA_1_S2MM_BIT (1U << INTC_DMA_1_S2MM_VEC_ID)
 
 #endif /* SRC_REGISTERS_H_ */
