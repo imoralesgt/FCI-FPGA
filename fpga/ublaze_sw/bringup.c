@@ -366,6 +366,30 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
     xil_printf("%d\r\n", g_trace[i]);
 }
 
+/* Hands the most recent completed capture to the CLI ($RT). Signature matches CliTraceFn.
+ *
+ * Reports whatever the background raw-trace pipeline last completed rather than arming a capture
+ * and waiting for one: a $RT that blocked until the next trigger would stall the command interface
+ * for however long the source takes to produce an event, which at background rates is seconds. */
+int Bringup_CaptureTrace(s16 *buf, u32 max_samples, u32 *out_count) {
+  u32 addr = g_raw_ready_buf;
+  u32 depth = g_raw_ready_depth;
+  u32 i;
+
+  if (addr == 0 || depth == 0 || buf == 0 || out_count == 0)
+    return 0;
+  if (depth > max_samples)
+    depth = max_samples;
+  if (depth > RAW_TRACE_MAX_SAMPLES)
+    depth = RAW_TRACE_MAX_SAMPLES;
+
+  read_raw_trace(addr, depth);
+  for (i = 0; i < depth; i++)
+    buf[i] = g_trace[i];
+  *out_count = depth;
+  return 1;
+}
+
 /* When the raw-trace path yields nothing, "no capture" alone cannot distinguish the three very
  * different causes: the trigger never fired, or it fired but axi_dma_1 never completed (the
  * lockstep-broadcaster stall), or it completed but the interrupt never reached us. These registers
@@ -986,7 +1010,7 @@ static void start_continuous_capture(void) {
   xil_printf("  [INFO] armed -- events now serviced by interrupt in the background\r\n");
 }
 
-void Bringup_Run(void) {
+void Bringup_Init(void) {
   xil_printf("\r\n=== FCI register bring-up test ===\r\n");
   test_trigger_core();
   test_fci_core();
@@ -1028,42 +1052,11 @@ void Bringup_Run(void) {
   start_continuous_capture();
 
 #if FCI_RESULT_VIA_FCI_SINK
-  /* Both result FIFOs are drained here by polling rather than from an ISR. At 30 cps that is
-   * obviously sufficient, and at the 15 kcps design target a 32-deep FIFO still gives 2.1 ms of
-   * slack per drain pass -- far more than this loop's period. The watermark interrupts are
-   * configured by Acq_Configure() and left available for a future ISR-driven build; nothing here
-   * depends on them. */
-  {
-    AcqStats stats;
-    AcqEvent ev;
-    u32 printed = 0;
-
-    Acq_Configure(TRIGGER_DELAY, g_last_sigma);
-    Acq_ResetStats(&stats);
-    Acq_PrintCsvHeader();
-
-    while (1) {
-      if (Acq_PopPaired(&ev, &stats)) {
-        Acq_PrintEventCsv(&ev);
-        printed++;
-
-        /* Same reasoning as the raw-trace dump below: a handful of early traces for a visual
-         * sanity check against the reference pulse shape. */
-        if (printed <= 3)
-          print_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
-
-        /* Periodic health line. A nonzero dropped/overflow count is the signal that the two
-         * result streams are slipping and the FCI-vs-PSD comparison is being resynchronized
-         * rather than silently mispaired. */
-        if ((printed % 100u) == 0u)
-          Acq_PrintStats(&stats);
-      }
-    }
-  }
+  Acq_Configure(TRIGGER_DELAY, g_last_sigma);
 #else
   /* psd_core has been integrating since power-on with nothing draining it, so its FIFO is long
    * since full and its overflow flag set. Clear it here so that what follows starts from a known
-   * empty state and the positional pairing below is anchored.
+   * empty state and the positional pairing in Bringup_Run()'s loop is anchored.
    *
    * Positional pairing, not timestamp pairing: the HLS fci_core does not forward TUSER, so FCI
    * results carry no timestamp on this build. It is still sound, because axis_broadcaster_0 is
@@ -1099,6 +1092,53 @@ void Bringup_Run(void) {
                   Blr_GateThresholdForSigma(g_last_sigma), BLR_DEFAULT_HOLDOFF);
 
   Psd_Clear(PSD_CORE_BASEADDR);
+#endif
+}
+
+/* The legacy free-running acquisition loop, kept so a build can still stream CSV without a
+ * host attached. main() now calls Bringup_Init() and hands the UART to the CLI instead: the
+ * two cannot coexist, because this loop prints unsolicited lines that would interleave with
+ * command replies. */
+void Bringup_Run(void) {
+  Bringup_Init();
+
+#if FCI_RESULT_VIA_FCI_SINK
+  /* Both result FIFOs are drained here by polling rather than from an ISR. At 30 cps that is
+   * obviously sufficient, and at the 15 kcps design target a 32-deep FIFO still gives 2.1 ms of
+   * slack per drain pass -- far more than this loop's period. The watermark interrupts are
+   * configured by Acq_Configure() and left available for a future ISR-driven build; nothing here
+   * depends on them. */
+  {
+    AcqStats stats;
+    AcqEvent ev;
+    u32 printed = 0;
+
+    /* Bringup_Init() already called Acq_Configure() -- see there for why that has to happen
+     * whether or not this free-running loop is the one draining the result. */
+    Acq_ResetStats(&stats);
+    Acq_PrintCsvHeader();
+
+    while (1) {
+      if (Acq_PopPaired(&ev, &stats)) {
+        Acq_PrintEventCsv(&ev);
+        printed++;
+
+        /* Same reasoning as the raw-trace dump below: a handful of early traces for a visual
+         * sanity check against the reference pulse shape. */
+        if (printed <= 3)
+          print_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
+
+        /* Periodic health line. A nonzero dropped/overflow count is the signal that the two
+         * result streams are slipping and the FCI-vs-PSD comparison is being resynchronized
+         * rather than silently mispaired. */
+        if ((printed % 100u) == 0u)
+          Acq_PrintStats(&stats);
+      }
+    }
+  }
+#else
+  /* Bringup_Init() already configured psd_core/blr_core and cleared the FIFO -- see there. Only
+   * this loop's own header remains to print. */
 
   /* CSV header. Everything below this line is either a data row or a '#'-prefixed comment, so the
    * capture can be pasted straight into a spreadsheet and the comment rows filtered or deleted in
