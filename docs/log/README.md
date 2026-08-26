@@ -87,7 +87,7 @@ Large pulse, same setup — spike, flat plateau, then a cliff:
 ![The same artifact, step-down variant](images/ila-artifact-step-down.png)
 
 For reference, the analog pulse at the AFE output measured on a scope — negative-going, ~500 mV,
-fast fall and a few-µs exponential recovery. This is the shape the digitised trace must reproduce
+fast fall and a few-µs exponential recovery. This is the shape the digitized trace must reproduce
 (possibly inverted), with **no discontinuity, delta or spike**:
 
 ![Analog detector pulse on the oscilloscope](images/scope-analog-pulse.png)
@@ -342,7 +342,7 @@ At the normal operating point (fine gain 1.0 → code 819, coarse 6.0 → code 7
 | pulse decay τ | ~1.4 µs (~70 samples to 1/e) |
 | pulse amplitude | ~840–4100 counts, background dependent |
 | headroom to analog zero | ~6300 counts |
-| polarity (digitised) | **rising** — pulses go UP from baseline |
+| polarity (digitized) | **rising** — pulses go UP from baseline |
 
 ### Constants and what fixes them
 
@@ -651,7 +651,7 @@ first to touch the pins: the external ADC port itself, the IOB-packed capture re
 ADC word-format handling. `trigger_core`'s input is now an AXI4-Stream slave (16-bit TDATA, sample
 in the low bits) rather than a plain vector wired to pads.
 
-**The datapath is signed and zero-centred end to end, and offset binary is gone from it entirely.**
+**The datapath is signed and zero-centered end to end, and offset binary is gone from it entirely.**
 The LTC2248 is strapped for 2's complement, and 2's complement *is* signed — so in a signed
 datapath there is no conversion to perform at all, only sign extension. That is worth stating as a
 design property rather than a detail: the double-conversion hazard that would have re-created the
@@ -674,7 +674,7 @@ comfortably slower than the ~1.4 µs pulse decay it must not track.
 | 0x0C | `baseline`/status | RO, live estimate + gate state |
 | 0x10 | `holdoff` | **Derived from the pulse duration** — see below. Default 384 samples = 7.7 µs, past 5 decay constants. |
 
-Output is **signed, restored to zero** — not offset binary re-centred on mid-scale, which is what
+Output is **signed, restored to zero** — not offset binary re-centered on mid-scale, which is what
 the first version emitted. Zero is the natural origin for a bipolar pulse: `psd_core` integrates a
 zero-mean input with no pedestal to subtract, and `trigger_core` compares against a signed
 threshold. Nothing downstream carries a mid-scale constant, so nothing downstream can disagree
@@ -970,9 +970,9 @@ fractional-only PSD value. Now handled by taking the magnitude and emitting the 
 ## 8e. The reference dataset, and what the digitizer was actually sampling at
 
 `data/prepare_dataset.py` builds the committable verification set for the HLS testbench. It now
-handles **two sources in one identical schema**: the labelled Zenodo set published with the paper
+handles **two sources in one identical schema**: the labeled Zenodo set published with the paper
 (the verification reference, carrying the paper's own FCI), and **CoMPASS ROOT files** measured on
-this setup (unlabelled, for characterising the real detector through the same datapath). ROOT is
+this setup (unlabeled, for characterizing the real detector through the same datapath). ROOT is
 read with `uproot` — pure Python, no ROOT installation, and the TTree is self-describing, unlike
 the `.BIN` format where the byte layout has to be assumed.
 
@@ -980,7 +980,7 @@ The CLI **refuses to overwrite the tagged reference set**, because measured data
 reference FCI: writing it to `fci_verification_set.csv` would not fail, it would quietly disable
 the testbench's figure of merit.
 
-### Every sample was duplicated — on every digitizer, format and OS
+### Every sample was duplicated — in every format and on both operating systems
 
 Across four acquisitions and all three CoMPASS formats, every sample appeared exactly twice:
 
@@ -990,11 +990,35 @@ Across four acquisitions and all three CoMPASS formats, every sample appeared ex
 | offset grid `s[2k+1] == s[2k+2]` | 20–43%, **no** event at 100% |
 | run lengths of identical consecutive samples | **all even** — 0 odd out of 1,573,672 |
 
-The run-length test is the decisive one: a genuinely slow or oversampled signal produces odd run
-lengths constantly, so a strictly even distribution can only come from each sample being emitted
-twice. Decimating by 2 is provably lossless. Recording the same setup **on a Windows machine
+The run-length test is the sharpest of the three: a genuinely slow or oversampled signal produces
+odd run lengths constantly, so a strictly even distribution is very hard to get any other way.
+Worth stating as evidence rather than proof, though — it constrains the *pattern*, not the
+mechanism, and says nothing about whether the doubling originates in the firmware, in CoMPASS, or
+in the acquisition settings requested. Decimating by 2 is provably lossless either way. Recording the same setup **on a Windows machine
 changed nothing**, which — together with its appearance in CSV, BIN and ROOT — rules out the host,
 the OS and CoMPASS's file writers.
+
+### Confirmed on a second family — each board at exactly half its nominal rate
+
+The same tests were run on the earlier organic-scintillator campaign (`FFT-organic`, archived on
+the external drive), recorded with a **DT5725SB s/n 30364** — a different family, 250 Msps, 14-bit,
+ROC 4.31 / AMC 136.140, also DPP-PSD. It behaves identically: **100.00% aligned identity in all
+2400 events tested across four runs and both channels, and 0 odd runs out of 600,298.**
+
+| board | declared `sampleTime` | samples/record | distinct | `RECLEN` | implied interval | true rate |
+|---|---|---|---|---|---|---|
+| DT5751 | 1000 ps | 39,996 | 19,998 | 39,996 ns | **2.0 ns** | 500 Msps |
+| DT5725SB | 4000 ps | 560 | 280 | 2,240 ns | **8.0 ns** | 125 Msps |
+
+Two different families, each storing waveforms at **exactly half** the nominal ADC rate, both
+running DPP-PSD firmware — and with **different detectors** on each (CLYC + SiPM on the DT5751,
+organic scintillators on the DT5725SB), so the effect is not a property of the signal either. That points at the DPP firmware rather than at one product — which is
+what makes it worth asking CAEN about rather than working around silently.
+
+Worth keeping the epistemics straight: the duplication is *measured* on both boards; the 2.0 ns
+figure for the DT5751 is *independently confirmed* by the pulser; the 8.0 ns figure for the
+DT5725SB is *inferred* from the same record-length arithmetic the pulser validated, since no
+pulser run exists for that unit.
 
 ### A 100 kHz pulser settled it: the ADC runs at 500 MS/s
 
@@ -1018,10 +1042,72 @@ distinct sample.
 three formats, two operating systems, strictly even run lengths, and decimation by 2 being exactly
 lossless. There was never any information to recover.
 
-This also mostly reconciles the decay-time puzzle: τ ≈ 1900–2260 distinct samples × 2 ns ≈
-**3.8–4.5 µs** against the detector's stated ~6 µs. No longer a factor-of-several discrepancy, but
-not a match either — plausibly CLYC's multi-component decay pulling an averaged single-exponential
-fit short. That remains open and is not claimed as explained.
+### The detector's own pulse confirms it, independently of the pulser
+
+The decay-time puzzle is now closed, and it closed by measuring rather than by assuming. The Zenodo
+dataset published with the paper was recorded with **the same CLYC + SiPM detector**, at a *known*
+100 Msps — so it is an absolute time reference that needs no pulser at all.
+
+Fitting its scintillation decay gives **τ = 462 samples = 4.62 µs for gamma events** by log fit
+(5.01 µs neutron), or **4.89 µs** taking the 1/e crossing directly — the definition matters at the
+5% level here, and is worth stating whenever this number is quoted. Matching the averaged DT5751 pulse against that reference with the
+time scale as the only free parameter gives:
+
+```
+best match = 4.84 DT5751 distinct samples per reference sample
+             10 ns / 4.84 = 2.07 ns per distinct sample
+```
+
+That agrees with the pulser's 2.000 ns to **3%**, and it excludes the declared 1 ns outright — 1 ns
+would require a factor of 10, not 4.84.
+
+**Two methods, two precisions — worth keeping distinct.** Matching the whole pulse *shape* is the
+more precise of the two (2.07 ns) because it compares like with like: both averages are processed
+identically, so the window sensitivity cancels. Comparing a single fitted **τ** instead — fitting
+the DT5751 decay independently and asking what interval reproduces 4.62 µs — gives τ = 1900–2160
+distinct samples and a looser **2.1–2.4 ns**, because a single-exponential fit to a low-amplitude,
+multi-component decay moves with the fit window. Both exclude 1 ns by more than a factor of two.
+The CAEN support email uses only the τ comparison, since that needs nothing from the reference
+dataset but a single scalar. The factor is stable across gamma-only, neutron-only and
+combined averages and across every fit window tried. The recent DT5751 runs were **background
+measurements**, so they are gamma-dominated and the gamma subset is the right reference; it happens
+not to matter, since all three subsets give the same factor.
+
+**The detector's decay constant, from three references.** The detector is a Scionix
+**V12.7B30/SIP-E3-CLYC-X** (CLYC:Ce, SiPM readout, built-in preamplifier). Its data sheet specifies,
+for gammas, **rise time 1.5 µs and fall time 5 µs** — and gammas is the right column, since the
+recent runs are background.
+
+| source | fall time (max → 1/e) |
+|---|---|
+| Scionix data sheet, gammas | **5 µs** |
+| Zenodo recording, same detector, known 100 Msps | **4.89 µs** |
+| Direct oscilloscope measurement | **~6 µs** |
+| DT5751 read at the pulser-verified 2.000 ns | **4.13 µs** (2064 distinct samples) |
+
+The data sheet and the Zenodo recording agree to **2%**, which settles the reference: ~5 µs. The
+oscilloscope's ~6 µs is the outlier, about 20% high, and the DT5751's 4.13 µs is about 17% low.
+The latter is expected from the data itself — these background pulses are only **6–16 ADC codes**
+tall on a 10-bit board, so the baseline estimate, not the sampling, limits where the 1/e point
+lands.
+
+An earlier revision of this section claimed the ~6 µs figure was simply wrong, then later gave it
+equal weight to Zenodo. Neither was right: with the data sheet in hand the correct reading is that
+~5 µs is the reference value, the oscilloscope sits ~20% above it, and the discrepancy is worth
+a second look but changes nothing here.
+
+**The rise time does not corroborate, and is not used.** The same data sheet specifies 1.5 µs, but
+the Zenodo recording of this detector gives a 10–90% rise of **0.13 µs** — a factor of ten away,
+at a known sample rate, so the disagreement is real and not a sampling artifact. Separately, the
+rise measured on the DT5751 average is dominated by alignment jitter: aligning 6-count pulses on
+their minimum smears a sub-µs edge far more than it smears a 4 µs tail. Two independent reasons to
+leave the rise-time check out rather than let it muddy the fall-time one.
+
+The sampling conclusion is insensitive to all of this: at 2 ns the DT5751 gives 4.13 µs, within 20%
+of every reference; at the declared 1 ns it gives 2.06 µs, less than half of all of them.
+
+(This is unrelated to the ~1.4 µs figure in §8a: that is the AFE-shaped pulse on the Cmod board,
+a different signal chain from the CAEN measurement of the raw SiPM + preamp output.)
 
 ### The consequence: the ROOT path is currently 5× too fast
 
@@ -1102,8 +1188,9 @@ batch had to be reverted):
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
 - CFD trigger, the original motivation for the BLR in issue #12 — cross-level triggering biases
   low-energy events, which is visible in the §8d energy dependence
-- The detector's decay time still measures ~3.8–4.5 µs against a stated ~6 µs (§8e); worth settling
-  against a known reference before the shaper is sized from it
+- Size the planned shaper from the **Scionix data sheet's 5 µs** fall time (§8e), corroborated to 2%
+  by the Zenodo recording of this detector. Worth a second look at why the oscilloscope reads ~20%
+  high, but not a blocker
 - PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
 
