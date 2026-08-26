@@ -22,8 +22,16 @@ typedef struct {
 
 /* pre_trigger MUST match trigger_core's delay register: it is where the trigger sits inside the
  * captured frame, and psd_core has no other way to know. pre_gate/short_gate/long_gate are the
- * gate geometry in samples at 50 Msps. baseline_ref is the code treated as zero charge -- mid-scale
- * (8192) when fed by blr_core, which re-centers there. */
+ * gate geometry in samples at 50 Msps.
+ *
+ * baseline_ref is a SIGNED residual-pedestal trim, and 0 is correct when fed by blr_core, which
+ * restores the baseline to zero rather than to mid-scale. (An earlier version of this comment said
+ * 8192; that belonged to the offset-binary datapath, which is gone.) It is passed as u32 because
+ * that is what the register write takes -- a negative trim must be written as its two's-complement
+ * value in the low DATA_WIDTH bits, e.g. Psd_Configure(..., (u32)(s32)-12).
+ *
+ * Note it cannot correct the low-energy PSD pathology: a constant offset shifts El and Es by fixed
+ * multiples of the gate lengths, which cannot drive PSD negative at low energy. See docs/log 8d. */
 void Psd_Configure(u32 base, u32 pre_trigger, u32 pre_gate, u32 short_gate, u32 long_gate,
                    u32 baseline_ref);
 

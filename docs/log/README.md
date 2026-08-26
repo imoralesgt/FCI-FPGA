@@ -943,14 +943,110 @@ With a low-level discriminator at `El >= 18000`:
 | **FCI** | **0.0814** | **11.3%** | **2%** of variance |
 | PSD | 0.2627 | 26.3% | 22% of variance |
 
-**This is FCI against a mis-configured PSD, and should not be read as FCI beating PSD.** A residual
-baseline offset of roughly **12 counts** (2100 counts of charge accumulated over ~170 tail samples)
-accounts for the low-energy PSD pathology: a constant pedestal integrates linearly with gate
-length, so it biases `El` far more than `Es` and grows as a fraction of the ratio as pulses get
-smaller — exactly the energy-dependent smear the table shows. `psd_core` already has the register
-to cancel it: `baseline_ref` set to about **−12**. **That test has not been run yet**, and until it
-is, the comparison is not a fair one. It is the single highest-value outstanding experiment in
-issue #12.
+**This is FCI against a mis-configured PSD, and should not be read as FCI beating PSD.** What is
+wrong with the PSD is now better understood than when those numbers were taken — and it is not what
+was recorded here previously.
+
+### The low-energy PSD pathology is not a baseline offset
+
+An earlier revision of this section attributed it to a residual pedestal of about **−12 counts** and
+named `psd_core`'s `baseline_ref` as the fix, calling that the highest-value outstanding experiment.
+**That was wrong, and the arithmetic refutes it without needing any new data.**
+
+With a constant pedestal `p`, a long gate `L_l` and short gate `L_s`, and a true ratio `c`:
+
+```
+PSD_meas = (c*El_true + (L_l - L_s)*p) / (El_true + L_l*p)
+```
+
+As `El_true -> 0` this tends to `(L_l - L_s)/L_l` = 170/250 = **+0.68**, *for any value of p at all*,
+sign included. A constant offset simply cannot drive PSD negative at low energy. The measured
+low-energy median is **−1.28**.
+
+Checked against 1111 events of real hardware output (`Energy,FCI,PSD`), the charge collected in the
+gate region between samples 80 and 250 behaves like this:
+
+| `El` bin | fraction with `Es > El` | tail charge per sample |
+|---|---|---|
+| 243 – 6,013 | 100.0% | **−27.0** |
+| 6,013 – 8,971 | 99.1% | −14.0 |
+| 8,971 – 12,187 | 94.6% | −6.7 |
+| 12,187 – 20,224 | 28.8% | +12.1 |
+| 20,224 – 28,090 | 0.0% | +48.0 |
+| 200,953 – 3,161,186 | 0.0% | **+1354.1** |
+
+A fixed offset would put the *same* number in every row of that last column. It swings by two orders
+of magnitude and changes sign. Whatever is happening scales with pulse amplitude.
+
+### The leading hypothesis: the BLR gate never closes for small pulses
+
+`blr_core` shuts its gate when the input deviates from the estimate by more than `gate_thr`, which
+firmware sets to **4σ** (`Blr_GateThresholdForSigma`, floored at 32, capped at 1024) — roughly
+**168–256 counts** on this detector. A pulse whose peak never reaches that threshold never closes the
+gate, so the BLR treats it as baseline drift and subtracts it: the pulse is partially cancelled and
+its tail is driven **negative**. That produces exactly the observed signature — negative tail charge
+for small pulses, clean integration for large ones.
+
+The crossover supports it numerically. Median PSD changes sign at `El` ≈ 12,000–14,000; the captured
+raw trace gives `El`/peak ≈ 137, so that crossover is a peak amplitude of **~95 counts**, the same
+order as `gate_thr`. Same order, not the same number — so this is a hypothesis with quantitative
+support, not a settled cause.
+
+**Two tests, both already built in and neither needing new RTL:**
+
+1. **`blr_core` bypass** (`ctrl` bit 0, §8a — it exists for exactly this A/B). If the low-energy
+   pathology survives with the BLR bypassed, the BLR is not the cause and the hypothesis dies in one
+   run.
+2. **Sweep `gate_thr`.** If the crossover energy moves with it, the mechanism is confirmed and the
+   threshold can be set from the pulse population rather than from noise alone.
+
+### The undershoot is the detector's, and it does not reach the PSD gates
+
+The undershoot is **intrinsic to the detector's built-in preamplifier** — observed directly on an
+oscilloscope with the detector plugged straight in, no AFE, no FPGA, nothing of ours in the loop.
+That is worth recording as a property of the signal rather than a suspicion about our own chain.
+
+Measured on the captured trace (peak 710 counts at sample 133):
+
+| | |
+|---|---|
+| zero crossing after the peak | sample 857 — **14.5 µs** after the peak |
+| undershoot minimum | sample 1004, −90 counts = **−12.7% of peak** |
+| still negative at | the end of the 1024-sample record |
+
+**It cannot be the cause of the low-energy PSD pathology.** The long gate closes ~3.7 µs after the
+peak; the undershoot begins ~14.5 µs after it, four times later. A linear preamplifier scales its
+shape with amplitude, so that separation holds for small pulses as much as large ones — the gate
+never sees the undershoot at any energy. The amplitude-dependent *sign reversal* of §8d therefore
+still requires a non-linear element, and the gated BLR remains the only one in the chain. The
+bypass test is unaffected and still discriminates.
+
+The earlier 400 → 250 gate reduction did its job and should stay.
+
+### But it does reach the BLR gate — a rate-dependent risk
+
+```
+signal falls back inside +/- gate_thr   sample 411
+hold-off 384 samples -> gate reopens    sample 795
+undershoot spans                        sample 857 onward
+```
+
+The gate reopens **before** the undershoot arrives, so `blr_core` tracks a genuinely negative
+excursion and pulls its estimate down — which biases every subsequent restored sample *up*.
+
+Whether that matters is purely a question of event rate, against the BLR's `2^12` = 4096-sample
+(82 µs) time constant:
+
+- **~30 cps today:** 33 ms between events, 1.65 M samples. Fully recovered, no effect. This is why
+  it has never shown up.
+- **15 kcps design target:** 66.7 µs between events, 3333 samples — *shorter* than the time
+  constant. Each event would begin on a baseline still biased by its predecessor.
+
+So this is an error that no bench measurement at present rates can reveal, and that appears only as
+the rate rises. Two candidate fixes, neither tested: extend `holdoff` past the undershoot (~1200
+samples rather than 384), or gate on signed deviation so the undershoot closes the gate the same way
+the pulse does. The second is the more principled — the undershoot is signal, and the gate exists to
+keep signal out of the estimate.
 
 ### A pairing bug, and why it was invisible
 
@@ -1163,9 +1259,11 @@ batch had to be reverted):
 
 **Issue #12 / #13 — remaining:**
 
-- **Set `psd_core`'s `baseline_ref` to ≈ −12 and re-run the comparison.** The highest-value
-  outstanding experiment: until it is done, the FCI-vs-PSD numbers in §8d are FCI against a
-  mis-configured PSD, not a fair comparison.
+- **Find out why small pulses integrate to negative tail charge** (§8d). Until this is settled the
+  FCI-vs-PSD numbers are FCI against a mis-configured PSD, not a fair comparison. Two ready tests,
+  in order: run with `blr_core` bypassed (`ctrl` bit 0) to confirm or kill the BLR-gate hypothesis in
+  a single acquisition, then sweep `gate_thr` to see whether the crossover energy tracks it.
+  **Not** `baseline_ref` — a constant offset is arithmetically incapable of producing this.
 - **`fci_core_rtl`** — the VHDL replacement for the HLS core is partly built: `fci_core_pkg.vhd`
   and `bin_accumulator.vhd` (**9/9**, `FFT_LENGTH` generic, default 1024, bit-reversed indexing)
   and `fci_axi4lite_regs.vhd` (configurable windows at 0x00–0x0C) exist. **Still to do:** the top
@@ -1184,6 +1282,9 @@ batch had to be reverted):
 
 **Later:**
 
+- **`blr_core` hold-off vs the preamp undershoot** (§8d): the gate reopens ~60 samples before the
+  undershoot starts, so the BLR tracks it. Harmless at 30 cps, a real bias at the 15 kcps target.
+  Fix by extending `holdoff` past it or by gating on signed deviation
 - Trapezoidal filter and histogram builder (§8 for sizing)
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
 - CFD trigger, the original motivation for the BLR in issue #12 — cross-level triggering biases
