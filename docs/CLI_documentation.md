@@ -111,7 +111,17 @@ All six fields are **unsigned decimal** counters, except that any field reads th
 
 All six fields read −1 if the FCI result path is not present in the loaded bitstream.
 
-### 2.4 Read Trace (`$RT`)
+### 2.4 Read Counts (`$RC`)
+
+`!RC <fci_event_count> <psd_event_count>` — total events each core has processed since its last
+clear, **unsigned decimal**. `fci_event_count` reads −1 if the FCI result path is not present in
+the loaded bitstream.
+
+Unlike every other field in this section, these advance whether or not anything is popping either
+FIFO — `$RS`'s counters only change inside a successful `$RV`, so polling `$RS` alone while never
+calling `$RV` observes a value that cannot move. `$RC` is the field to poll for a live event rate.
+
+### 2.5 Read Trace (`$RT`)
 
 `$RT [n]` — captures one raw trace.
 

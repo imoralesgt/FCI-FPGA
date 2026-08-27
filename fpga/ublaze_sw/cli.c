@@ -521,6 +521,26 @@ static int h_rn(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/* Raw per-core event counts, direct from the hardware, independent of $RV/pairing. Unlike $RS's
+ * `paired`, these advance whether or not anything is popping either FIFO -- $RS only updates
+ * inside Acq_PopPaired(), so it is a snapshot of the last time $RV ran, not a live rate. This is
+ * what live-rate diagnostics should poll instead: measuring background activity by watching $RS
+ * without also calling $RV is watching a value that cannot move. */
+static int h_rc(const char *c, const s32 *a, int n) {
+  (void)a;
+  if (n != 0)
+    return ERR_PARAM;
+  reply_open(c);
+#if CLI_HAVE_RESULTS
+  reply_val_u(FciSink_EventCount(FCI_SINK_BASEADDR));
+#else
+  reply_val(-1);
+#endif
+  reply_val_u(Psd_EventCount(PSD_CORE_BASEADDR));
+  reply_close();
+  return 0;
+}
+
 static int h_rs(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -575,10 +595,10 @@ static const struct {
 } g_cmds[] = {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
-    {{'R', 'S'}, h_rs},   {{'R', 'T'}, h_rt},  {{'G', 'T'}, h_gt},  {{'S', 'T'}, h_st},
-    {{'G', 'B'}, h_gb},   {{'S', 'B'}, h_sb},  {{'G', 'P'}, h_gp},  {{'S', 'P'}, h_sp},
-    {{'G', 'F'}, h_gf},   {{'S', 'F'}, h_sf},  {{'G', 'V'}, h_gv},  {{'S', 'V'}, h_sv},
-    {{'G', 'H'}, h_gh},   {{'S', 'H'}, h_sh},
+    {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'T'}, h_rt},  {{'G', 'T'}, h_gt},
+    {{'S', 'T'}, h_st},   {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},  {{'G', 'P'}, h_gp},
+    {{'S', 'P'}, h_sp},   {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},  {{'G', 'V'}, h_gv},
+    {{'S', 'V'}, h_sv},   {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},
 };
 
 #define CLI_CMD_COUNT ((int)(sizeof(g_cmds) / sizeof(g_cmds[0])))
