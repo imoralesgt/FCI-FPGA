@@ -386,21 +386,21 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
  * Reports whatever the background raw-trace pipeline last completed rather than arming a capture
  * and waiting for one: a $RT that blocked until the next trigger would stall the command interface
  * for however long the source takes to produce an event, which at background rates is seconds. */
-int Bringup_CaptureTrace(s16 *buf, u32 max_samples, u32 *out_count) {
+int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
   u32 addr = g_raw_ready_buf;
   u32 depth = g_raw_ready_depth;
-  u32 i;
 
-  if (addr == 0 || depth == 0 || buf == 0 || out_count == 0)
+  if (addr == 0 || depth == 0 || out_buf == 0 || out_count == 0)
     return 0;
   if (depth > max_samples)
     depth = max_samples;
   if (depth > RAW_TRACE_MAX_SAMPLES)
     depth = RAW_TRACE_MAX_SAMPLES;
 
+  /* Reads straight into g_trace, this file's own static storage -- see cli.h's CliTraceFn comment
+   * for why the caller gets a pointer into it rather than a copy. */
   read_raw_trace(addr, depth);
-  for (i = 0; i < depth; i++)
-    buf[i] = g_trace[i];
+  *out_buf = g_trace;
   *out_count = depth;
   return 1;
 }

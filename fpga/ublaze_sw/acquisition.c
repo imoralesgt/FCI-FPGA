@@ -136,12 +136,13 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   return 1;
 }
 
+/* Magnitude first, sign printed separately -- scaled/10000 truncates toward zero, so for any
+ * |scaled| < 10000 (i.e. any FCI or PSD value between -1.0 and 0, squarely within this project's
+ * real range) the whole-number part alone loses the sign entirely and -0.5 would print as 0.5000.
+ * Same fix as bringup.c's print_fixed4, which exists for exactly this reason. */
 static void print_scaled(const char *label, s32 scaled) {
-  s32 whole = scaled / 10000;
-  s32 frac = scaled % 10000;
-  if (frac < 0)
-    frac = -frac;
-  xil_printf("%s=%d.%04d", label, whole, frac);
+  s32 mag = (scaled < 0) ? -scaled : scaled;
+  xil_printf("%s=%s%d.%04d", label, (scaled < 0) ? "-" : "", mag / 10000, mag % 10000);
 }
 
 void Acq_PrintEvent(const AcqEvent *ev) {

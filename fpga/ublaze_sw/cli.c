@@ -50,7 +50,6 @@ static u32 g_len;
 static int g_truncated; /* a line ran past CLI_LINE_MAX; reject it rather than act on a fragment */
 
 static CliTraceFn g_trace_fn;
-static s16 g_trace[CLI_TRACE_MAX];
 
 static int g_running;
 #if CLI_HAVE_RESULTS
@@ -544,6 +543,7 @@ static int h_rs(const char *c, const s32 *a, int n) {
  * framing does not have. */
 static int h_rt(const char *c, const s32 *a, int n) {
   u32 count = 0, i, want = CLI_TRACE_MAX;
+  const s16 *trace = 0;
   if (n > 1)
     return ERR_PARAM;
   if (n == 1) {
@@ -551,14 +551,14 @@ static int h_rt(const char *c, const s32 *a, int n) {
       return ERR_PARAM;
     want = (u32)a[0];
   }
-  if (g_trace_fn == 0 || !g_trace_fn(g_trace, want, &count)) {
+  if (g_trace_fn == 0 || !g_trace_fn(&trace, want, &count)) {
     reply_one(c, 0);
     return 0;
   }
   reply_open(c);
   reply_val((s32)count);
   for (i = 0; i < count; i++)
-    reply_val((s32)g_trace[i]);
+    reply_val((s32)trace[i]);
   reply_close();
   return 0;
 }

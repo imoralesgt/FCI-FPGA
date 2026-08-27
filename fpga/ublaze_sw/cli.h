@@ -29,12 +29,20 @@
 /* Longest raw trace $RT will return. Matches bringup.c's RAW_TRACE_MAX_SAMPLES. */
 #define CLI_TRACE_MAX 2048
 
-/* Fills buf with up to max_samples of the most recent captured trace, writing the sample count to
- * out_count. Returns 1 on success, 0 if no trace could be captured.
+/* Points *out_buf at the most recent captured trace (up to max_samples long, in bringup.c's own
+ * static storage -- not copied), writing the sample count to *out_count. Returns 1 on success, 0
+ * if no trace could be captured, in which case *out_buf and *out_count are untouched.
+ *
+ * A pointer rather than a copy into a buffer cli.c supplies: MicroBlaze here is single-threaded
+ * with no preemption, so the returned storage stays valid for as long as h_rt() needs it (it is
+ * read out and the reply sent before Cli_Poll() returns, well before the next capture could
+ * overwrite it) -- a second 2048-sample (4 KB) static buffer in cli.c to receive a copy would only
+ * duplicate storage bringup.c already owns, and that duplication is exactly what overflowed the
+ * MicroBlaze's 64 KB local memory the first time this was tried.
  *
  * Registered rather than called directly because the capture path owns the DMA and the raw-trace
  * BRAM, and cli.c has no business knowing about either. */
-typedef int (*CliTraceFn)(s16 *buf, u32 max_samples, u32 *out_count);
+typedef int (*CliTraceFn)(const s16 **out_buf, u32 max_samples, u32 *out_count);
 void Cli_SetTraceProvider(CliTraceFn fn);
 
 /* Call once after the cores are configured. */

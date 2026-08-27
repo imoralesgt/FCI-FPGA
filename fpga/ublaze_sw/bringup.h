@@ -25,9 +25,10 @@ void Bringup_Init(void);
  * command replies. */
 void Bringup_Run(void);
 
-/* Copies the most recently completed raw trace into buf, writing the sample count to out_count.
- * Returns 1 on success, 0 if no capture has completed yet. Matches CliTraceFn so it can be handed
- * to Cli_SetTraceProvider(). */
-int Bringup_CaptureTrace(s16 *buf, u32 max_samples, u32 *out_count);
+/* Points *out_buf at the most recently completed raw trace (this file's own static storage, not a
+ * copy) and writes the sample count to *out_count. Returns 1 on success, 0 if no capture has
+ * completed yet. Matches CliTraceFn so it can be handed to Cli_SetTraceProvider() -- see that
+ * type's comment for why a pointer rather than a copy. */
+int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count);
 
 #endif /* SRC_BRINGUP_H_ */
