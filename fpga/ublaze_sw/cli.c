@@ -505,6 +505,68 @@ static int h_rv(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/* FIFO depth (both cores are provisioned identically -- see psd_core_top.vhd/fci_sink_top.vhd's
+ * FIFO_DEPTH generic, default 32). No symbolic constant is exported to firmware for this; $SP/$SF's
+ * watermark range check already hardcodes the same 32 for the same reason -- it is a hardware fact
+ * with nowhere natural to live as shared code between a VHDL generic and a C header. */
+#define RB_MAX_BATCH 32
+
+/* Pops up to n paired events (default/max RB_MAX_BATCH) in ONE round trip, stopping early if the
+ * FIFO empties. This exists because $RV costs a full round trip per event, and on this UART/USB
+ * link that round trip is dominated by the adapter's own latency (measured ~16 ms, i.e. a hard
+ * ceiling around 60 requests/second) rather than by anything on the wire or in firmware -- no FIFO
+ * depth fixes a per-event round trip that slow. Batching amortizes that fixed cost across up to
+ * RB_MAX_BATCH events per request instead of paying it once per event, which is the only lever
+ * available on the host side of a synchronous request/response protocol. It does not by itself
+ * reach the 15 kcps design target (that needs on-chip histogramming or interrupt-driven service,
+ * not a deeper poll), but it is the right fix for ordinary background-rate operation, where the
+ * round trip itself, not any FIFO, was the limiting factor.
+ *
+ * Reply: `!RB [<ts_lo> <ts_hi> <psa_l> <psa_w> <fci> <energy_short> <energy_long> <psd>] ... <count>`
+ * -- count groups of the same eight fields $RV reports for one event, followed by the count itself.
+ * count trails rather than leads, unlike every other multi-value reply in this protocol: the actual
+ * count is only known once the FIFO runs dry or the request is satisfied, and reply_val streams
+ * straight to the UART with nothing buffered, so there is no going back to fill in a leading count
+ * after the fact. Buffering up to 32 events (1 KB) in a local array to print count-first was the
+ * alternative, and was rejected -- this firmware only just recovered headroom from an LMB overflow
+ * caused by exactly this kind of duplicated buffering, and streaming needs none. count can be less
+ * than requested, including 0, if the FIFO ran dry partway through -- it is never a validity flag
+ * the way $RV's leading value is, because a batch of zero simply means nothing was pending. */
+static int h_rb(const char *c, const s32 *a, int n) {
+  u32 want = RB_MAX_BATCH, got = 0;
+  if (n > 1)
+    return ERR_PARAM;
+  if (n == 1) {
+    if (!in_range(a[0], 1, RB_MAX_BATCH))
+      return ERR_PARAM;
+    want = (u32)a[0];
+  }
+#if CLI_HAVE_RESULTS
+  reply_open(c);
+  if (g_running) {
+    AcqEvent ev;
+    while (got < want && Acq_PopPaired(&ev, &g_stats)) {
+      reply_val_u((u32)(ev.timestamp & 0xFFFFFFFFu));
+      reply_val_u((u32)(ev.timestamp >> 32));
+      reply_val((s32)ev.psa_l);
+      reply_val((s32)ev.psa_w);
+      reply_val((s32)ev.fci_scaled);
+      reply_val(ev.energy_short);
+      reply_val(ev.energy_long);
+      reply_val(ev.psd_scaled);
+      got++;
+    }
+  }
+  reply_val_u(got);
+  reply_close();
+#else
+  (void)want;
+  (void)got;
+  reply_one(c, -1);
+#endif
+  return 0;
+}
+
 /* FIFO occupancy on both sides, so a host can size its polling instead of guessing. */
 static int h_rn(const char *c, const s32 *a, int n) {
   (void)a;
@@ -595,10 +657,10 @@ static const struct {
 } g_cmds[] = {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
-    {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'T'}, h_rt},  {{'G', 'T'}, h_gt},
-    {{'S', 'T'}, h_st},   {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},  {{'G', 'P'}, h_gp},
-    {{'S', 'P'}, h_sp},   {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},  {{'G', 'V'}, h_gv},
-    {{'S', 'V'}, h_sv},   {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},
+    {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'T'}, h_rt},
+    {{'G', 'T'}, h_gt},   {{'S', 'T'}, h_st},  {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},
+    {{'G', 'P'}, h_gp},   {{'S', 'P'}, h_sp},  {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},
+    {{'G', 'V'}, h_gv},   {{'S', 'V'}, h_sv},  {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},
 };
 
 #define CLI_CMD_COUNT ((int)(sizeof(g_cmds) / sizeof(g_cmds[0])))

@@ -121,7 +121,24 @@ Unlike every other field in this section, these advance whether or not anything 
 FIFO — `$RS`'s counters only change inside a successful `$RV`, so polling `$RS` alone while never
 calling `$RV` observes a value that cannot move. `$RC` is the field to poll for a live event rate.
 
-### 2.5 Read Trace (`$RT`)
+### 2.5 Read Batch (`$RB`)
+
+`$RB [n]` — pops up to `n` paired events (default and maximum 32) in one request, stopping early if
+the FIFO empties.
+
+`!RB [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd] ... <count>`
+
+Zero or more repetitions of the same eight fields `$RV` reports for one event, **followed by the
+count** of how many are present. The count trails rather than leads, unlike every other reply in
+this section — it can only be known once the batch is complete. `count` can be less than requested,
+including 0; a batch of zero simply means nothing was pending, not an error.
+
+`$RB` costs the same one UART round trip as `$RV`, but can return many events per trip instead of
+one. On a link where round-trip latency dominates over per-event data volume, this raises the
+achievable event rate roughly in proportion to `n`; it does not by itself reach a rate limited by
+the link's raw round-trip count. The reply is `!RB -1` if the FCI result path is not present in the loaded bitstream, matching `$RV`.
+
+### 2.6 Read Trace (`$RT`)
 
 `$RT [n]` — captures one raw trace.
 
