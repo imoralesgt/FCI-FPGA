@@ -25,7 +25,16 @@
  *                    nonzero pedestal show up as a nonzero integral, which is how a broken
  *                    baseline restoration announces itself instead of hiding in the energy.
  *   SHORT_GATE  80   ~1.6 us, a little over one decay constant: the prompt component.
- *   LONG_GATE  400   ~8 us, about 5.7 decay constants, so essentially the full charge.
+ *   LONG_GATE  250   ~5 us, ends at sample 318 -- comfortably before the AFE's post-pulse
+ *                    undershoot seen in captured traces (project log section 8d).
+ *
+ * LONG_GATE was originally 400 (~8 us, ~5.7 decay constants) and was cut to 250 after the first
+ * hardware run showed 14% of events integrating a negative tail (El < Es) because 400 reached
+ * into that undershoot. This file's own copy of the fix went missing for a while: the cut was
+ * first made in bringup.c's now-dead DMA0-path Psd_Configure() call, but this is the config path
+ * that has actually been running since fci_sink replaced axi_dma_0, and it still had the original
+ * 400 -- reproducing the exact negative-energy_long symptom the original fix eliminated, caught
+ * live via $RB.
  *
  * These are the discrimination knobs and are meant to be swept: the whole point of the exercise is
  * finding the pair that separates gammas from neutrons best on this detector. They are starting
@@ -33,7 +42,7 @@
  */
 #define PSD_PRE_GATE 32
 #define PSD_SHORT_GATE 80
-#define PSD_LONG_GATE 400
+#define PSD_LONG_GATE 250
 
 /* Drain in batches rather than one interrupt per event: at the 15 kcps design target a per-event
  * ISR is 15,000 interrupts a second, where the entry/exit overhead alone starts to dominate. Both
@@ -136,12 +145,13 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   return 1;
 }
 
+/* Magnitude first, sign printed separately -- scaled/10000 truncates toward zero, so for any
+ * |scaled| < 10000 (i.e. any FCI or PSD value between -1.0 and 0, squarely within this project's
+ * real range) the whole-number part alone loses the sign entirely and -0.5 would print as 0.5000.
+ * Same fix as bringup.c's print_fixed4, which exists for exactly this reason. */
 static void print_scaled(const char *label, s32 scaled) {
-  s32 whole = scaled / 10000;
-  s32 frac = scaled % 10000;
-  if (frac < 0)
-    frac = -frac;
-  xil_printf("%s=%d.%04d", label, whole, frac);
+  s32 mag = (scaled < 0) ? -scaled : scaled;
+  xil_printf("%s=%s%d.%04d", label, (scaled < 0) ? "-" : "", mag / 10000, mag % 10000);
 }
 
 void Acq_PrintEvent(const AcqEvent *ev) {

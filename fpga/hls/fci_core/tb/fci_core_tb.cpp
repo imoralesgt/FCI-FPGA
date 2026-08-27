@@ -132,8 +132,15 @@ int main() {
   // meaningful. Only the ratio is: compare FCI = PSA_l/PSA_w end-to-end instead.
   double max_fci_abserr = 0.0;
   std::vector<double> fci_hw_gamma, fci_hw_neutron;
+  // Stage 3: TUSER (the event timestamp) must reach both result beats unchanged. A per-event
+  // pattern with the index baked into the low bits, rather than a fixed constant, is what turns an
+  // off-by-one or copy-paste bug in the tag threading into a visible mismatch instead of a
+  // coincidental match.
+  unsigned tag_mismatches = 0;
 
+  unsigned event_idx = 0;
   for (auto &ev : events) {
+    ap_uint<64> expected_tag = (ap_uint<64>(0xA5A5A5A5UL) << 32) | event_idx;
     // Decimate by 2 (even-indexed samples), then remap the legacy 10-bit dataset codes into the
     // 14-bit LTC2248 code space (x16) for a representative test of this board's actual datapath.
     std::vector<unsigned> code14(N_SAMPLES);
@@ -158,7 +165,7 @@ int main() {
       beat.data = code14[i];
       beat.keep = -1;
       beat.strb = -1;
-      beat.user = 0;
+      beat.user = expected_tag;
       beat.id = 0;
       beat.dest = 0;
       beat.last = (i == N_SAMPLES - 1) ? 1 : 0;
@@ -169,6 +176,8 @@ int main() {
 
     axis_out_t beat_l = m_axis_result.read();
     axis_out_t beat_w = m_axis_result.read();
+    if (beat_l.user != expected_tag || beat_w.user != expected_tag)
+      tag_mismatches++;
     double psa_l_hw = q12_16_to_double(beat_l.data);
     double psa_w_hw = q12_16_to_double(beat_w.data);
 
@@ -180,7 +189,12 @@ int main() {
       fci_hw_neutron.push_back(fci_hw);
     else
       fci_hw_gamma.push_back(fci_hw);
+    event_idx++;
   }
+
+  std::printf("[Stage 3] TUSER forwarded to both result beats: %u mismatch%s of %zu events\n",
+              tag_mismatches, tag_mismatches == 1 ? "" : "es", events.size());
+  bool stage3_tag_pass = (tag_mismatches == 0);
 
   std::printf("[Stage 2] FCI (=PSA_l/PSA_w) HLS-fixed vs float-golden (1024/50Msps): "
               "max abs err = %.6f\n",
@@ -208,7 +222,7 @@ int main() {
               mean_g, std_g, mean_n, std_n, fom);
   bool separable = (mean_n > mean_g) && (fom > 0.5);
 
-  bool pass = stage1_pass && stage2_accuracy_pass && separable;
+  bool pass = stage1_pass && stage2_accuracy_pass && separable && stage3_tag_pass;
   std::printf("%s\n", pass ? "TEST PASSED" : "TEST FAILED");
   return pass ? 0 : 1;
 }

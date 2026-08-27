@@ -57,8 +57,11 @@ typedef ap_ufixed<28, 12> psa_t;
 // ---------------------------------------------------------------------------
 // AXI4-Stream port types
 // ---------------------------------------------------------------------------
-typedef ap_axiu<16, 1, 1, 1> axis_in_t;  // one ADC sample per beat (14 valid bits, zero-extended)
-typedef ap_axiu<32, 1, 1, 1> axis_out_t; // PSA_l then PSA_w per event, Q12.16 zero-extended to 32 bits
+// TUSER carries trigger_core's 64-bit event timestamp, held constant across every beat of one
+// capture (see trigger_core_top.vhd) and forwarded unchanged to both result beats so fci_sink can
+// pair a result with its event without a separate register read -- see fci_sink_top.vhd.
+typedef ap_axiu<16, 64, 1, 1> axis_in_t;  // one ADC sample per beat (14 valid bits, zero-extended)
+typedef ap_axiu<32, 64, 1, 1> axis_out_t; // PSA_l then PSA_w per event, Q12.16 zero-extended to 32 bits
 
 void fci_core(hls::stream<axis_in_t> &s_axis_data, hls::stream<axis_out_t> &m_axis_result,
               ap_uint<BIN_INDEX_WIDTH> psa_l_lo, ap_uint<BIN_INDEX_WIDTH> psa_l_hi,

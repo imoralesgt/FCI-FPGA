@@ -32,16 +32,22 @@ module fci_core_axis_to_fft (
         xn_s_fifo_cap,
         xn_s_full_n,
         xn_s_write,
-        config_s17_din,
-        config_s17_num_data_valid,
-        config_s17_fifo_cap,
-        config_s17_full_n,
-        config_s17_write
+        config_s18_din,
+        config_s18_num_data_valid,
+        config_s18_fifo_cap,
+        config_s18_full_n,
+        config_s18_write,
+        tag_s19_din,
+        tag_s19_num_data_valid,
+        tag_s19_fifo_cap,
+        tag_s19_full_n,
+        tag_s19_write
 );
 
-parameter    ap_ST_fsm_state1 = 3'd1;
-parameter    ap_ST_fsm_state2 = 3'd2;
-parameter    ap_ST_fsm_state3 = 3'd4;
+parameter    ap_ST_fsm_state1 = 4'd1;
+parameter    ap_ST_fsm_state2 = 4'd2;
+parameter    ap_ST_fsm_state3 = 4'd4;
+parameter    ap_ST_fsm_state4 = 4'd8;
 
 input   ap_clk;
 input   ap_rst;
@@ -58,7 +64,7 @@ input   s_axis_data_TVALID;
 output   s_axis_data_TREADY;
 input  [1:0] s_axis_data_TKEEP;
 input  [1:0] s_axis_data_TSTRB;
-input  [0:0] s_axis_data_TUSER;
+input  [63:0] s_axis_data_TUSER;
 input  [0:0] s_axis_data_TLAST;
 input  [0:0] s_axis_data_TID;
 input  [0:0] s_axis_data_TDEST;
@@ -67,40 +73,51 @@ input  [1:0] xn_s_num_data_valid;
 input  [1:0] xn_s_fifo_cap;
 input   xn_s_full_n;
 output   xn_s_write;
-output  [7:0] config_s17_din;
-input  [1:0] config_s17_num_data_valid;
-input  [1:0] config_s17_fifo_cap;
-input   config_s17_full_n;
-output   config_s17_write;
+output  [7:0] config_s18_din;
+input  [1:0] config_s18_num_data_valid;
+input  [1:0] config_s18_fifo_cap;
+input   config_s18_full_n;
+output   config_s18_write;
+output  [63:0] tag_s19_din;
+input  [1:0] tag_s19_num_data_valid;
+input  [1:0] tag_s19_fifo_cap;
+input   tag_s19_full_n;
+output   tag_s19_write;
 
 reg ap_done;
 reg ap_idle;
 reg start_write;
 reg xn_s_write;
-reg config_s17_write;
+reg config_s18_write;
+reg tag_s19_write;
 
 reg    real_start;
 reg    start_once_reg;
 reg    ap_done_reg;
-(* fsm_encoding = "none" *) reg   [2:0] ap_CS_fsm;
+(* fsm_encoding = "none" *) reg   [3:0] ap_CS_fsm;
 wire    ap_CS_fsm_state1;
 reg    internal_ap_ready;
-reg    config_s17_blk_n;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready;
-wire   [31:0] grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write;
-wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY;
-reg    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg;
-wire    ap_CS_fsm_state2;
+reg    config_s18_blk_n;
+reg    tag_s19_blk_n;
+wire    ap_CS_fsm_state4;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_idle;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready;
+wire   [31:0] grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY;
+wire   [63:0] grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out;
+wire    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out_ap_vld;
+reg    grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg;
+reg   [3:0] ap_NS_fsm;
+wire    ap_NS_fsm_state2;
 wire    ap_CS_fsm_state3;
 reg    ap_block_state1;
-reg   [2:0] ap_NS_fsm;
 reg    ap_ST_fsm_state1_blk;
 wire    ap_ST_fsm_state2_blk;
 reg    ap_ST_fsm_state3_blk;
+reg    ap_ST_fsm_state4_blk;
 wire    regslice_both_s_axis_data_V_data_V_U_apdone_blk;
 wire   [15:0] s_axis_data_TDATA_int_regslice;
 wire    s_axis_data_TVALID_int_regslice;
@@ -115,7 +132,7 @@ wire   [1:0] s_axis_data_TSTRB_int_regslice;
 wire    regslice_both_s_axis_data_V_strb_V_U_vld_out;
 wire    regslice_both_s_axis_data_V_strb_V_U_ack_in;
 wire    regslice_both_s_axis_data_V_user_V_U_apdone_blk;
-wire   [0:0] s_axis_data_TUSER_int_regslice;
+wire   [63:0] s_axis_data_TUSER_int_regslice;
 wire    regslice_both_s_axis_data_V_user_V_U_vld_out;
 wire    regslice_both_s_axis_data_V_user_V_U_ack_in;
 wire    regslice_both_s_axis_data_V_last_V_U_apdone_blk;
@@ -136,31 +153,33 @@ wire    ap_ce_reg;
 initial begin
 #0 start_once_reg = 1'b0;
 #0 ap_done_reg = 1'b0;
-#0 ap_CS_fsm = 3'd1;
-#0 grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg = 1'b0;
+#0 ap_CS_fsm = 4'd1;
+#0 grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg = 1'b0;
 end
 
-fci_core_axis_to_fft_Pipeline_SAMPLE_LOOP grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54(
+fci_core_axis_to_fft_Pipeline_SAMPLE_LOOP grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71(
     .ap_clk(ap_clk),
     .ap_rst(ap_rst),
-    .ap_start(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start),
-    .ap_done(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done),
-    .ap_idle(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_idle),
-    .ap_ready(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready),
+    .ap_start(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start),
+    .ap_done(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done),
+    .ap_idle(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_idle),
+    .ap_ready(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready),
     .s_axis_data_TVALID(s_axis_data_TVALID_int_regslice),
-    .xn_s_din(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din),
+    .xn_s_din(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din),
     .xn_s_num_data_valid(2'd0),
     .xn_s_fifo_cap(2'd0),
     .xn_s_full_n(xn_s_full_n),
-    .xn_s_write(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write),
+    .xn_s_write(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write),
     .s_axis_data_TDATA(s_axis_data_TDATA_int_regslice),
-    .s_axis_data_TREADY(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY),
+    .s_axis_data_TREADY(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY),
     .s_axis_data_TKEEP(s_axis_data_TKEEP_int_regslice),
     .s_axis_data_TSTRB(s_axis_data_TSTRB_int_regslice),
     .s_axis_data_TUSER(s_axis_data_TUSER_int_regslice),
     .s_axis_data_TLAST(s_axis_data_TLAST_int_regslice),
     .s_axis_data_TID(s_axis_data_TID_int_regslice),
-    .s_axis_data_TDEST(s_axis_data_TDEST_int_regslice)
+    .s_axis_data_TDEST(s_axis_data_TDEST_int_regslice),
+    .tag_V_out(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out),
+    .tag_V_out_ap_vld(grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out_ap_vld)
 );
 
 fci_core_regslice_both #(
@@ -206,7 +225,7 @@ regslice_both_s_axis_data_V_strb_V_U(
 );
 
 fci_core_regslice_both #(
-    .DataWidth( 1 ))
+    .DataWidth( 64 ))
 regslice_both_s_axis_data_V_user_V_U(
     .ap_clk(ap_clk),
     .ap_rst(ap_rst),
@@ -275,7 +294,7 @@ always @ (posedge ap_clk) begin
     end else begin
         if ((ap_continue == 1'b1)) begin
             ap_done_reg <= 1'b0;
-        end else if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state3))) begin
+        end else if (((tag_s19_full_n == 1'b1) & (1'b1 == ap_CS_fsm_state4))) begin
             ap_done_reg <= 1'b1;
         end
     end
@@ -283,12 +302,12 @@ end
 
 always @ (posedge ap_clk) begin
     if (ap_rst == 1'b1) begin
-        grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= 1'b0;
+        grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= 1'b0;
     end else begin
-        if ((1'b1 == ap_CS_fsm_state2)) begin
-            grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= 1'b1;
-        end else if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_ready == 1'b1)) begin
-            grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg <= 1'b0;
+        if (((1'b1 == ap_CS_fsm_state1) & (1'b1 == ap_NS_fsm_state2))) begin
+            grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= 1'b1;
+        end else if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_ready == 1'b1)) begin
+            grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg <= 1'b0;
         end
     end
 end
@@ -297,7 +316,7 @@ always @ (posedge ap_clk) begin
     if (ap_rst == 1'b1) begin
         start_once_reg <= 1'b0;
     end else begin
-        if (((real_start == 1'b1) & (internal_ap_ready == 1'b0))) begin
+        if (((internal_ap_ready == 1'b0) & (real_start == 1'b1))) begin
             start_once_reg <= 1'b1;
         end else if ((internal_ap_ready == 1'b1)) begin
             start_once_reg <= 1'b0;
@@ -306,7 +325,7 @@ always @ (posedge ap_clk) begin
 end
 
 always @ (*) begin
-    if (((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1))) begin
+    if (((config_s18_full_n == 1'b0) | (ap_done_reg == 1'b1) | (real_start == 1'b0))) begin
         ap_ST_fsm_state1_blk = 1'b1;
     end else begin
         ap_ST_fsm_state1_blk = 1'b0;
@@ -316,7 +335,7 @@ end
 assign ap_ST_fsm_state2_blk = 1'b0;
 
 always @ (*) begin
-    if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done == 1'b0)) begin
+    if ((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done == 1'b0)) begin
         ap_ST_fsm_state3_blk = 1'b1;
     end else begin
         ap_ST_fsm_state3_blk = 1'b0;
@@ -324,7 +343,15 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state3))) begin
+    if ((tag_s19_full_n == 1'b0)) begin
+        ap_ST_fsm_state4_blk = 1'b1;
+    end else begin
+        ap_ST_fsm_state4_blk = 1'b0;
+    end
+end
+
+always @ (*) begin
+    if (((tag_s19_full_n == 1'b1) & (1'b1 == ap_CS_fsm_state4))) begin
         ap_done = 1'b1;
     end else begin
         ap_done = ap_done_reg;
@@ -332,7 +359,7 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if (((real_start == 1'b0) & (1'b1 == ap_CS_fsm_state1))) begin
+    if (((1'b1 == ap_CS_fsm_state1) & (real_start == 1'b0))) begin
         ap_idle = 1'b1;
     end else begin
         ap_idle = 1'b0;
@@ -340,23 +367,23 @@ always @ (*) begin
 end
 
 always @ (*) begin
-    if ((~((real_start == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
-        config_s17_blk_n = config_s17_full_n;
+    if ((~((ap_done_reg == 1'b1) | (real_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        config_s18_blk_n = config_s18_full_n;
     end else begin
-        config_s17_blk_n = 1'b1;
+        config_s18_blk_n = 1'b1;
     end
 end
 
 always @ (*) begin
-    if ((~((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
-        config_s17_write = 1'b1;
+    if ((~((config_s18_full_n == 1'b0) | (ap_done_reg == 1'b1) | (real_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
+        config_s18_write = 1'b1;
     end else begin
-        config_s17_write = 1'b0;
+        config_s18_write = 1'b0;
     end
 end
 
 always @ (*) begin
-    if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state3))) begin
+    if (((tag_s19_full_n == 1'b1) & (1'b1 == ap_CS_fsm_state4))) begin
         internal_ap_ready = 1'b1;
     end else begin
         internal_ap_ready = 1'b0;
@@ -373,14 +400,14 @@ end
 
 always @ (*) begin
     if ((1'b1 == ap_CS_fsm_state3)) begin
-        s_axis_data_TREADY_int_regslice = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_s_axis_data_TREADY;
+        s_axis_data_TREADY_int_regslice = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_s_axis_data_TREADY;
     end else begin
         s_axis_data_TREADY_int_regslice = 1'b0;
     end
 end
 
 always @ (*) begin
-    if (((real_start == 1'b1) & (start_once_reg == 1'b0))) begin
+    if (((start_once_reg == 1'b0) & (real_start == 1'b1))) begin
         start_write = 1'b1;
     end else begin
         start_write = 1'b0;
@@ -388,8 +415,24 @@ always @ (*) begin
 end
 
 always @ (*) begin
+    if ((1'b1 == ap_CS_fsm_state4)) begin
+        tag_s19_blk_n = tag_s19_full_n;
+    end else begin
+        tag_s19_blk_n = 1'b1;
+    end
+end
+
+always @ (*) begin
+    if (((tag_s19_full_n == 1'b1) & (1'b1 == ap_CS_fsm_state4))) begin
+        tag_s19_write = 1'b1;
+    end else begin
+        tag_s19_write = 1'b0;
+    end
+end
+
+always @ (*) begin
     if ((1'b1 == ap_CS_fsm_state3)) begin
-        xn_s_write = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_write;
+        xn_s_write = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_write;
     end else begin
         xn_s_write = 1'b0;
     end
@@ -398,7 +441,7 @@ end
 always @ (*) begin
     case (ap_CS_fsm)
         ap_ST_fsm_state1 : begin
-            if ((~((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1)) & (1'b1 == ap_CS_fsm_state1))) begin
+            if ((~((config_s18_full_n == 1'b0) | (ap_done_reg == 1'b1) | (real_start == 1'b0)) & (1'b1 == ap_CS_fsm_state1))) begin
                 ap_NS_fsm = ap_ST_fsm_state2;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state1;
@@ -408,10 +451,17 @@ always @ (*) begin
             ap_NS_fsm = ap_ST_fsm_state3;
         end
         ap_ST_fsm_state3 : begin
-            if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state3))) begin
-                ap_NS_fsm = ap_ST_fsm_state1;
+            if (((grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_done == 1'b1) & (1'b1 == ap_CS_fsm_state3))) begin
+                ap_NS_fsm = ap_ST_fsm_state4;
             end else begin
                 ap_NS_fsm = ap_ST_fsm_state3;
+            end
+        end
+        ap_ST_fsm_state4 : begin
+            if (((tag_s19_full_n == 1'b1) & (1'b1 == ap_CS_fsm_state4))) begin
+                ap_NS_fsm = ap_ST_fsm_state1;
+            end else begin
+                ap_NS_fsm = ap_ST_fsm_state4;
             end
         end
         default : begin
@@ -422,24 +472,28 @@ end
 
 assign ap_CS_fsm_state1 = ap_CS_fsm[32'd0];
 
-assign ap_CS_fsm_state2 = ap_CS_fsm[32'd1];
-
 assign ap_CS_fsm_state3 = ap_CS_fsm[32'd2];
 
+assign ap_CS_fsm_state4 = ap_CS_fsm[32'd3];
+
+assign ap_NS_fsm_state2 = ap_NS_fsm[32'd1];
+
 always @ (*) begin
-    ap_block_state1 = ((real_start == 1'b0) | (config_s17_full_n == 1'b0) | (ap_done_reg == 1'b1));
+    ap_block_state1 = ((config_s18_full_n == 1'b0) | (ap_done_reg == 1'b1) | (real_start == 1'b0));
 end
 
 assign ap_ready = internal_ap_ready;
 
-assign config_s17_din = 8'd1;
+assign config_s18_din = 8'd1;
 
-assign grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_ap_start_reg;
+assign grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_ap_start_reg;
 
 assign s_axis_data_TREADY = regslice_both_s_axis_data_V_data_V_U_ack_in;
 
 assign start_out = real_start;
 
-assign xn_s_din = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_54_xn_s_din;
+assign tag_s19_din = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_tag_V_out;
+
+assign xn_s_din = grp_axis_to_fft_Pipeline_SAMPLE_LOOP_fu_71_xn_s_din;
 
 endmodule //fci_core_axis_to_fft
