@@ -10,11 +10,6 @@ webtalk*.jou
 webtalk*.log
 fsm_encoding.os
 
-# Exported/generated IP and bitstreams (regenerate via scripts/run_hls.tcl etc.)
-!fpga/ip/*
-!fpga/ip/.gitkeep
-fpga/bitstream/*
-!fpga/bitstream/.gitkeep
 
 # Convention: any project_* dir under fpga/ (e.g. fpga/projects/project_fci) is a local Vivado
 # project, not checked in -- fpga/bd/ holds the exported block-design tcl instead, which IS
@@ -33,3 +28,6 @@ xsim.dir/
 xvhdl.log
 xvhdl.pb
 webtalk*.tcl
+
+# Leftovers of Python runs in the data analysis folder
+*.pyc

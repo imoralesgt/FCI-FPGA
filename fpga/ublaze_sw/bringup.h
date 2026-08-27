@@ -31,4 +31,10 @@ void Bringup_Run(void);
  * type's comment for why a pointer rather than a copy. */
 int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count);
 
+/* Must be called immediately after writing a new value to the trigger's depth register (CLI $ST
+ * index 3) -- see bringup.c for why a bare register write there can permanently wedge the raw-trace
+ * capture pipeline. Resets and re-arms axi_dma_1's S2MM channel to match, bounded (like
+ * Dma_ResetCore()), so a hardware fault here fails safely rather than blocking. */
+void Bringup_ReconfigureRawTraceDepth(u32 new_depth);
+
 #endif /* SRC_BRINGUP_H_ */

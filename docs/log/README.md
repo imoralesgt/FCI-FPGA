@@ -1223,6 +1223,106 @@ ratio the FCI is built from, so each group of 5 samples should be averaged rathe
 
 ---
 
+## 8f. The `sw/` client, and three real hangs found by driving the device for real
+
+Everything before this section was driven by one-off diagnostic scripts. `sw/` adds the real
+client: `fci_api` (pure Python, no Qt — a synchronous, thread-safe `transact()` primitive plus a
+typed method per command) and a PySide6 GUI on top (live FCI/PSD view, raw-trace oscilloscope,
+per-subsystem config panels, a threshold calibration wizard, FoM grid-search optimization). Driving
+the device continuously, from a GUI, the way an actual user would — rather than a script that runs
+once and exits — surfaced three genuine firmware hangs that no amount of scripted one-shot testing
+had hit.
+
+### The FSL hang guard, finally applied
+
+`getfslx(..., FSL_DEFAULT)` in `read_raw_trace()`'s retrieval loop (MM2S → FSL stream 1 → CPU) is a
+single blocking MicroBlaze instruction: a missing beat hangs the whole CPU with no diagnostic, no
+timeout, and no recovery — exactly the item left open since §9's original list. Fixed with a bounded
+`tget`/carry-flag poll (`RAW_TRACE_FSL_TIMEOUT_ITERS = 2,000,000`, `tget` and the carry-flag read
+combined into **one** `asm volatile` block — two separate statements have no compiler-enforced
+adjacency and let other code land between them, corrupting the carry read) and a recovery path,
+`recover_raw_trace_pipeline()`, that resets and re-arms `axi_dma_1` under
+`microblaze_disable_interrupts()` if the poll times out. Verified by disassembly (`tget`/`addic`
+directly adjacent) and by 100+ consecutive continuous captures with no stall.
+
+### A wrong hypothesis: torn reads of `g_raw_ready_buf`/`g_raw_ready_depth`
+
+Before the real cause below was found, the oscilloscope (continuous `$RT` at `depth=1024`) hung
+completely. `g_raw_ready_buf`/`g_raw_ready_depth` are two separate `volatile u32`s, written together
+by `service_dma1_event()` (the ISR) but read as two separate statements by `Bringup_CaptureTrace()`
+— a textbook torn read. Guarding the read with `microblaze_disable_interrupts()`/`enable()` was
+tried. It did **not** fix the hang it was aimed at, and it introduced a **new** regression: the same
+oscilloscope scenario that used to run cleanly started hanging with the guard in place. Reverted.
+Kept as a precedent, the same spirit as §5: a plausible, real-looking race that measurably was not
+the bug.
+
+### The real cause: `axi_dma_1`'s S2MM channel armed at a depth that no longer matches `capture_engine`
+
+`capture_engine.vhd` (§8c) is already correct here: since double-buffering, each half latches its
+*own* `depth_i` snapshot (`depth_latch`) at the instant its trigger fires, specifically so a live
+depth change can never corrupt a capture already in flight. The bug was entirely on the software
+side of that boundary. `service_dma1_event()` re-arms `axi_dma_1`'s S2MM channel for the *next*
+capture by reading `TRIGGER_CORE_DEPTH_OFFSET` fresh, at ISR time — correct for deciding what the
+next arm should use, but the same read was also used to *label* the transfer that had just
+completed, which may have been armed under a different, now-superseded depth value. Worse: if
+`depth` is written again (any `$ST` index 3, e.g. the calibration wizard's widen-then-restore, or
+the oscilloscope's own depth field) after that arm but before the next real trigger fires,
+`capture_engine` latches the *new*, larger depth for that capture and streams more samples than
+`axi_dma_1` was armed to accept. The DMA completes at its own, shorter, stale length and stops
+asserting `tready`; `capture_engine`'s stream FSM is left waiting for a `tready` that never returns
+— permanently wedged, with no bound on this side of the pipe (unlike the FSL side above).
+
+Two escalating hardware repros nailed it down: an isolated widen→(20×`$RT`)→restore sequence with
+no threshold touched at all reproduced a total, unrecoverable hang (every command, not just `$RT`)
+on the very next capture after the restore; the full calibration wizard flow (real ~4 s collection
+loop, real `apply_to_device()`) reproduced it identically. Neither an isolated `$ST`
+threshold+polarity write nor sustained polling at a *fixed* depth (the FSL fix's own 100+-call
+verification, above) reproduced anything — it is specifically depth changing underneath an armed
+transfer.
+
+Fixed by tracking what depth is actually armed (`g_raw_armed_depth`, updated at every arm site —
+`start_raw_trace_pipeline()`, `service_dma1_event()`, `recover_raw_trace_pipeline()` — instead of
+re-derived from a live register read) and by a new `Bringup_ReconfigureRawTraceDepth()`, called from
+the CLI's `$ST` depth handler immediately after the register write, that resets and re-arms
+`axi_dma_1` to the new depth right away rather than leaving the old arm in place for the next ISR to
+opportunistically catch up on. Both repro scripts, re-run against the fix, completed 41/41 calls
+each with no hang and byte-for-byte config restoration.
+
+### Calibration wizard: same lesson as §4.4, on the client side
+
+The wizard's own threshold math went through the same kind of wrong turn firmware's original
+`calibrate_threshold()` did (§4.4). First it parked the trigger at `blr_core`'s live baseline —
+found to be an entirely different numeric domain from what `trigger_core`'s comparator actually
+compares against, so it never fired at all. Then it parked at `threshold=0` directly, in the right
+domain, confirmed to fire at kHz — and hung the entire device, reproduced repeatedly, independent of
+the two firmware fixes above. The working theory is an interrupt livelock (the capture-complete ISR
+firing faster than the main loop can ever be scheduled), matching §4.4's own "inside the noise band
+it fires at kHz" observation, but this was never proven at the firmware level — the client sidesteps
+it instead. The wizard now never touches the threshold register at all: it collects the pre-trigger
+region of real, sparse, background-radiation-triggered captures at whatever threshold is *already*
+configured, pools several for statistics (widening `delay`/`depth` for a bigger pre-trigger window,
+always restored afterward), and proposes `mean + Nσ` — the same formula as §4.4's firmware
+calibration, just computed over the CLI instead of raw MMIO.
+
+### Left open
+
+- **The `threshold=0` interrupt livelock is still unconfirmed at the firmware level** — nothing here
+  proves or fixes it, the client just never creates the condition. If any future feature is tempted
+  to force a high trigger rate, this needs solving first, not rediscovering.
+- ~~A transient framing glitch — two leading NUL bytes on the first transaction right after a
+  fresh serial connection.~~ **Fixed:** `FciTransport.transact()` now strips leading NUL bytes
+  from each reply line before parsing it — the existing `reset_input_buffer()` calls only clear
+  what's *already* in the OS buffer, not bytes still in flight over USB at that instant, so the
+  race could still land 1-2 stray NULs at the front of a reply. NUL is never valid content in this
+  ASCII protocol, so stripping it is safe.
+- The oscilloscope's "Calibrate Threshold…" button is now disabled while continuous (`Start`) mode
+  is running, purely to avoid the calibration wizard's own `$ST` delay/depth writes contending with
+  the oscilloscope's concurrent `$RT` polling. This is a UI-level precaution, not a confirmed
+  firmware bug in its own right — unlike the depth-arm race above, this specific interaction was
+  never isolated as a reproducible hang on its own.
+
+---
+
 ## 9. Current state
 
 - `fci_core` and `trigger_core` built, verified, packaged; `trigger_core` testbench **8/8**
@@ -1241,6 +1341,9 @@ ratio the FCI is built from, so each group of 5 samples should be averaged rathe
 - Traces clean at all tested gains; the artifact reproduces only when deliberately re-created
 - `main.c` reduced to an entry point calling `Bringup_Run()`; all bring-up lives in `bringup.c`
 - 81.6% LUT, 81.0% BRAM, fully routed at WNS +1.811 ns (§8)
+- `sw/` client built and driving the device for real: `fci_api` (typed, thread-safe) plus a PySide6
+  GUI (live FCI/PSD view, oscilloscope, config panels, calibration wizard, FoM optimization) — see
+  §8f for the three real hangs it found and fixed
 
 ### Open items
 
@@ -1248,8 +1351,9 @@ ratio the FCI is built from, so each group of 5 samples should be averaged rathe
 batch had to be reverted):
 
 - The two TREADY ILA probes — highest value, already proven useful in §7b
-- FSL hang guard: `getfslx(..., FSL_DEFAULT)` compiles to a *blocking* `get`, so a missing beat
-  hangs MicroBlaze with no diagnostic. A non-blocking variant plus a timeout is the fix
+- ~~FSL hang guard: `getfslx(..., FSL_DEFAULT)` compiles to a *blocking* `get`, so a missing beat
+  hangs MicroBlaze with no diagnostic.~~ **Done (§8f):** bounded `tget` poll + DMA reset/re-arm
+  recovery.
 - `wait_running` in the DMA arm sequence — PG021 specifies set `DMACR.RS`, wait for `DMASR.Halted`
   to clear, *then* write address and length; the current sequence does not wait
 - Noise-band calibration refinements, and `CAPTURE_DEPTH` as a named constant (the capture depth is
@@ -1292,8 +1396,12 @@ batch had to be reverted):
 - Size the planned shaper from the **Scionix data sheet's 5 µs** fall time (§8e), corroborated to 2%
   by the Zenodo recording of this detector. Worth a second look at why the oscilloscope reads ~20%
   high, but not a blocker
-- PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format
+- ~~PC-side "oscilloscope" tool consuming the `RAW,<depth>` UART format~~ **Done (§8f):** the
+  `sw/` GUI's oscilloscope view
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
+- The `threshold=0` interrupt livelock theory (§8f) — still unconfirmed at the firmware level
+- ~~The transient two-leading-NUL-byte framing glitch on a fresh serial connection~~ **Fixed
+  (§8f):** stray leading NULs are now stripped before parsing each reply
 
 ### Diagnostics retained
 
