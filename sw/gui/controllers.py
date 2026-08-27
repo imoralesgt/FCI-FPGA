@@ -36,6 +36,11 @@ class AppController(QObject):
         self._expect_connection = False
         self._reconnect_count = 0
 
+        self._live_acq_running = False
+        self._scope_running = False
+        """Tracked here (not read off the views) so on_record_toggled() can tell whether
+        re-checking Record mid-acquisition should resume recording immediately -- see there."""
+
         self._reconnect_timer = QTimer(self)
         self._reconnect_timer.setSingleShot(True)
         self._reconnect_timer.timeout.connect(self._attempt_reconnect)
@@ -166,6 +171,8 @@ class AppController(QObject):
             self.worker = None
             self.transport = None
             self.config_client = None
+            self._live_acq_running = False
+            self._scope_running = False
 
             if self._expect_connection:
                 if self._reconnect_count >= config.MAX_RECONNECT_ATTEMPTS:
@@ -195,10 +202,12 @@ class AppController(QObject):
     def start_acquisition(self) -> None:
         if self.worker is not None:
             self.worker.request_start_acquisition()
+        self._live_acq_running = True
 
     def stop_acquisition(self) -> None:
         if self.worker is not None:
             self.worker.request_stop_acquisition()
+        self._live_acq_running = False
 
     @Slot(list)
     def on_batch_received(self, events) -> None:
@@ -219,12 +228,20 @@ class AppController(QObject):
         trigger for writing files -- that happens in _ensure_recording_session(), gated behind
         the confirmation shown when Start is actually pressed. Unchecking it, though, closes any
         session already in progress immediately: turning Record off must always mean "stop
-        writing now", not "stop next time Start happens to be pressed"."""
+        writing now", not "stop next time Start happens to be pressed".
+
+        Symmetrically, re-checking it while live/scope acquisition is already running (Start was
+        pressed before Record got toggled off) has no future Start press to hang a fresh
+        _ensure_recording_session() off of -- resume immediately instead. Skips the confirmation
+        dialog on purpose: that dialog guards *starting* acquisition with recording armed, not
+        re-arming a preference the user just disabled a moment ago on already-running acquisition."""
         if not checked and self.csv_logger is not None:
             logger.info(f"Recording stopped ({self.csv_logger.event_count} events logged).")
             self.csv_logger = None
             self.scope_csv_logger = None
             self.view.set_recording_active(False)
+        elif checked and self.csv_logger is None and (self._live_acq_running or self._scope_running):
+            self._ensure_recording_session()
 
     def _confirm_and_maybe_record(self) -> bool:
         """Consulted by LiveView/ScopeView before their Start button does anything. Returns
@@ -260,10 +277,12 @@ class AppController(QObject):
     def scope_start(self, n: int) -> None:
         if self.worker is not None:
             self.worker.request_scope_start(n)
+        self._scope_running = True
 
     def scope_stop(self) -> None:
         if self.worker is not None:
             self.worker.request_scope_stop()
+        self._scope_running = False
 
     def scope_single(self, n: int) -> None:
         if self.worker is not None:

@@ -89,11 +89,11 @@ class MainWindow(QMainWindow):
         # internally) means that content scrolls instead of forcing the whole window to grow past
         # the screen to satisfy the layout's combined minimum size.
         self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
-        self.tabs.addTab(self._scrollable(self.scope_view), "Oscilloscope")
+        self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
         self.tabs.addTab(self.config_panel, "Configuration")
         main_layout.addWidget(self.tabs)
 
-        # PSD's Pre-trigger and the oscilloscope Trigger's Delay are the same physical quantity as
+        # PSD's Pre-trigger and the Trigger tab's Delay are the same physical quantity as
         # far as firmware is concerned (PSD_FIELDS' own tooltip says as much: psd_core needs to
         # know where trigger_core's delay put the pulse in the capture window) -- keep the two
         # controls' pending values mirrored live as either is edited, so committing either panel's
@@ -124,7 +124,7 @@ class MainWindow(QMainWindow):
         tinted background across the whole window -- not just a label change buried in a status
         bar the user has to go looking for."""
         if active:
-            self.central_widget.setStyleSheet("background-color: #4a1414;")
+            self.central_widget.setStyleSheet("background-color: #e4fbfb;")
             self.chk_record.setStyleSheet(
                 "QCheckBox { font-weight: bold; padding: 2px 8px; color: #ff5555; }"
             )

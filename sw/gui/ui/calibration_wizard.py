@@ -77,10 +77,8 @@ from fci_api import FciClient, FciError
 logger = logging.getLogger(__name__)
 
 CALIBRATION_DEPTH = 512
-"""Fixed regardless of whatever the oscilloscope's own Depth is currently set to -- both because
-CALIBRATION_DELAY needs depth >= 2*delay to actually deliver that much pre-trigger history, and
-because 512 keeps each capture well clear of the known FSL-read hang risk (see TRIGGER_FIELDS'
-Depth tooltip in config_panel.py) even though this polls read_trace() repeatedly."""
+"""Fixed regardless of whatever the Trigger tab's own Depth is currently set to -- CALIBRATION_DELAY
+needs depth >= 2*delay to actually deliver that much pre-trigger history."""
 CALIBRATION_DELAY = CALIBRATION_DEPTH // 2
 """256 -- the hardware's own delay ceiling (trigger_core: "valid range 2..256"). This is "half the
 trace length" per the user's request, and also happens to be the largest pre-trigger window the

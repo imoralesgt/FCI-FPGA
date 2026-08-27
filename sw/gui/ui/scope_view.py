@@ -1,17 +1,13 @@
-"""Raw-trace oscilloscope view, with traditional Start/Stop/Single controls -- for setting up
-acquisition parameters (trigger threshold, gate placement) by eye. "Start" continuously re-captures
-and redraws (like a real scope's run mode); "Single" grabs and holds exactly one frame; neither
-writes anything to disk -- this view is for live setup, not for recording (see
-CLI_documentation.md section 2.6, $RT).
+"""This view is the front end of the whole capture chain, not a separate viewer: trigger_core's
+live-triggered stream feeds this trace AND fci_core/psd_core directly (same Vivado BD tap, via
+axis_broadcaster_0) -- the Trigger config here is what every FCI/PSD event is actually computed
+from, not just what gets plotted. "Start" continuously re-captures and redraws; "Single" grabs one
+frame; neither writes anything to disk (see CLI_documentation.md section 2.6, $RT).
 
-There used to be a separate "Samples" spinbox here controlling the `n` argument to $RT. That was
-misleading: $RT's `n` only CAPS how many samples of the trigger's last completed background
-capture get returned (Bringup_CaptureTrace() in firmware) -- it does not re-arm a new capture at
-that depth. The trace's actual length is entirely governed by the Trigger's own Depth register
-(TRIGGER_FIELDS below, embedded in this same view), so asking $RT for more than Depth currently
-holds can never return more than Depth. Every request here now simply asks for the firmware's own
-max (TRACE_MAX_SAMPLES) so this cap is never the limiting factor -- change Depth, not a second
-"Samples" control, to actually get a longer or shorter trace.
+$RT's `n` only CAPS how many samples of the trigger's last completed capture come back
+(Bringup_CaptureTrace() in firmware); it does not re-arm a new capture at that depth. The trace's
+actual length is set entirely by the Trigger's own Depth field below. Every request here asks for
+the firmware's own max (TRACE_MAX_SAMPLES), so Depth is always the real limiting factor.
 
 All controls for this view live inside ScopeView itself, not in MainWindow -- nothing here needs
 anything from outside this widget except the client (set_client(), for the embedded Trigger config
@@ -47,7 +43,9 @@ class ScopeView(QWidget):
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        ctrl_box = QGroupBox("Oscilloscope Controls")
+        layout.addWidget(QLabel("Sets acquisition settings for FCI/PSD"))
+
+        ctrl_box = QGroupBox("Capture Controls")
         ctrl_layout = QHBoxLayout(ctrl_box)
 
         self.btn_start = QPushButton("Start")
@@ -80,12 +78,13 @@ class ScopeView(QWidget):
         self.plot_widget.showGrid(x=True, y=True)
         self.curve = self.plot_widget.plot(pen=pg.mkPen("c", width=1))
 
+        TRIGGER_LINE_COLOR = (152, 251, 152)  # pale green
         self.trigger_line = pg.InfiniteLine(
             angle=0,
             movable=False,
-            pen=pg.mkPen("r", width=1, style=Qt.PenStyle.DashLine),
+            pen=pg.mkPen(TRIGGER_LINE_COLOR, width=1, style=Qt.PenStyle.DashLine),
             label="trigger threshold = {value:0.0f}",
-            labelOpts={"position": 0.98, "color": "r"},
+            labelOpts={"position": 0.98, "color": TRIGGER_LINE_COLOR},
         )
         self.trigger_line.setVisible(False)
         self.plot_widget.addItem(self.trigger_line)

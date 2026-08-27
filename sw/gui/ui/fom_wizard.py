@@ -186,6 +186,9 @@ class _OptimizeDiscriminatorPanel(QGroupBox):
 
         self.result = _ResultPanel(title, color)
 
+        self.lbl_status = QLabel("Idle")
+        self.lbl_status.setStyleSheet("font-weight: bold;")
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 1)
         self.progress_bar.setValue(0)
@@ -200,6 +203,7 @@ class _OptimizeDiscriminatorPanel(QGroupBox):
         layout.addWidget(self.chk_enabled)
         layout.addWidget(self.energy_cut)
         layout.addWidget(params_box)
+        layout.addWidget(self.lbl_status)
         layout.addWidget(self.progress_bar)
         layout.addWidget(self.result)
         layout.addWidget(QLabel("Log:"))
@@ -228,8 +232,11 @@ class _OptimizeDiscriminatorPanel(QGroupBox):
         self.progress_bar.setValue(completed)
 
     def reset_progress(self) -> None:
-        self.progress_bar.setRange(0, 1)
-        self.progress_bar.setValue(0)
+        """Indeterminate ('busy') rather than a static 0 -- collecting events for the first grid
+        point can take a while with nothing to report yet, and a motionless bar during that stretch
+        reads as frozen rather than working. set_progress() above switches it to a real N/M count
+        the moment the first grid point actually completes."""
+        self.progress_bar.setRange(0, 0)
 
     def build_plan(self) -> DiscriminatorSweepPlan:
         return DiscriminatorSweepPlan(
@@ -245,6 +252,14 @@ class _OptimizeDiscriminatorPanel(QGroupBox):
         self.chk_enabled.setEnabled(not running)
         self.energy_cut.setEnabled(not running and self.chk_enabled.isChecked())
         self._params_box.setEnabled(not running and self.chk_enabled.isChecked())
+        if not running:
+            self.lbl_status.setText("Idle")
+        elif self.chk_enabled.isChecked():
+            self.lbl_status.setText("⏳ Running...")
+        else:
+            self.lbl_status.setText("Not included in this run")
+            self.progress_bar.setRange(0, 1)
+            self.progress_bar.setValue(0)  # clears any leftover N/M from a previous run
 
 
 # --------------------------------------------------------------------------------- Compute FoM tab
@@ -367,7 +382,7 @@ class FomWizard(QDialog):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setWidget(content)
-        self.tabs.addTab(scroll, "Optimize (live sweep)")
+        self.tabs.addTab(scroll, "Live FoM optimization")
 
     def _start_optimization(self) -> None:
         if self._client is None:
@@ -450,11 +465,7 @@ class FomWizard(QDialog):
     def _build_compute_tab(self) -> None:
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.addWidget(QLabel(
-            "Fits the double-Gaussian to a fixed set of events and reports the FoM -- no device "
-            "access, no sweeping. Use Optimize to actually improve separation against live "
-            "hardware; use this to check separation in data you already have."
-        ))
+        layout.addWidget(QLabel("Fits the double-Gaussian to a fixed set of events and reports the FoM."))
 
         src_box = QGroupBox("Data source")
         src_layout = QHBoxLayout(src_box)
@@ -488,6 +499,10 @@ class FomWizard(QDialog):
         results_layout = QHBoxLayout()
         self.psd_result = _ResultPanel("PSD", (255, 140, 0))
         self.fci_result = _ResultPanel("FCI", (0, 170, 255))
+        # Capped so two side-by-side histograms plus everything above them fit inside the dialog's
+        # fixed size without the tab's scroll area ever needing to activate.
+        self.psd_result.plot.setMaximumHeight(220)
+        self.fci_result.plot.setMaximumHeight(220)
         results_layout.addWidget(self.psd_result)
         results_layout.addWidget(self.fci_result)
         layout.addLayout(results_layout)

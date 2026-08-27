@@ -38,7 +38,7 @@ PSD_SWEEP_PARAMS = [
     SweepParam("short_gate", "Short gate", 0, 2048),
     SweepParam("long_gate", "Long gate", 0, 2048),
 ]
-"""pre_trigger is excluded: it is locked to the oscilloscope's trigger Delay, not a discrimination
+"""pre_trigger is excluded: it is locked to the Trigger tab's Delay, not a discrimination
 knob. baseline_ref is excluded too: it is a pedestal trim, not a pulse-shape parameter -- see its
 own docstring in fci_api/types.py. These three are explicitly what acquisition.c itself calls "the
 discrimination knobs ... meant to be swept" (PSD_PRE_GATE/SHORT_GATE/LONG_GATE's own comment)."""

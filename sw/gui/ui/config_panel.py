@@ -212,10 +212,7 @@ TRIGGER_FIELDS = [
     Field("delay", "Delay (samples)", 2, 256,
           tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
     Field("depth", "Depth (samples)", 1, 2048,
-          tooltip="Capture depth: samples per trace -- this is what the oscilloscope actually "
-                  "reads back, regardless of what $RT is asked for. Large values raise the risk "
-                  "of hitting a known firmware hang (an untimed-out FSL read in read_raw_trace()) "
-                  "-- prefer a few hundred samples unless you specifically need the full depth."),
+          tooltip="Capture length -- also used to compute FCI/PSD."),
 ]
 
 BLR_FIELDS = [
@@ -239,7 +236,7 @@ width -- is the field's real ceiling."""
 
 PSD_FIELDS = [
     Field("pre_trigger", "Pre-trigger", 0, TRACE_MAX_SAMPLES,
-          tooltip="Must equal the oscilloscope's trigger Delay -- kept in sync automatically."),
+          tooltip="Must equal the Trigger tab's Delay -- kept in sync automatically."),
     Field("pre_gate", "Pre-gate", 0, TRACE_MAX_SAMPLES,
           tooltip="Samples before the trigger where gate integration begins. Cannot exceed the "
                   "trace length."),

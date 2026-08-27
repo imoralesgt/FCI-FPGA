@@ -54,7 +54,7 @@ class CsvLogger:
 
 
 class TraceCsvLogger:
-    """Appends one row per raw trace captured in the oscilloscope view: a host wall-clock
+    """Appends one row per raw trace captured in the Trigger view: a host wall-clock
     timestamp (the device's $RT reply carries no timestamp of its own -- see TraceResult), then
     every sample in that capture. Row width varies with the "Samples" control's current setting,
     which is fine for a plain CSV -- each row is self-describing via its own sample count.
@@ -71,7 +71,7 @@ class TraceCsvLogger:
         self.path = directory / f"{stamp}_scope_traces{suffix_part}.csv"
 
         with open(self.path, "w", encoding="utf-8") as f:
-            f.write("# FCI-FPGA oscilloscope trace log\n")
+            f.write("# FCI-FPGA trigger trace log\n")
             f.write(f"# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             f.write("# Columns: host_timestamp,n_samples,sample_0,sample_1,...\n")
 
