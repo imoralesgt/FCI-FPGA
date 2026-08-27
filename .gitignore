@@ -28,3 +28,6 @@ xsim.dir/
 xvhdl.log
 xvhdl.pb
 webtalk*.tcl
+
+# Leftovers of Python runs in the data analysis folder
+*.pyc

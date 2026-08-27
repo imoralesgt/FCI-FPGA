@@ -20,6 +20,7 @@
 
 #include "acquisition.h"
 #include "blr.h"
+#include "bringup.h"
 #include "fci_sink.h"
 #include "psd.h"
 #include "registers.h"
@@ -168,6 +169,10 @@ static int trg_set(s32 idx, s32 v) {
     if (!in_range(v, 1, CLI_TRACE_MAX))
       return 0;
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_DEPTH_OFFSET, (u32)v);
+    /* See Bringup_ReconfigureRawTraceDepth()'s own comment: a bare register write here, without
+     * also re-arming axi_dma_1's S2MM channel to match, can permanently wedge the raw-trace
+     * pipeline the next time a real trigger fires. */
+    Bringup_ReconfigureRawTraceDepth((u32)v);
     return 1;
   default:
     return 0;

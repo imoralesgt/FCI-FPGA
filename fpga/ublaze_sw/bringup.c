@@ -211,6 +211,13 @@ static void start_fci_core_realtime(void) {
 #define RAW_TRACE_BUF_B (RAW_TRACE_BRAM_BASEADDR + RAW_TRACE_MAX_SAMPLES * 2)
 
 static u32 g_raw_write_buf = RAW_TRACE_BUF_A; /* ISR-only */
+/* The depth axi_dma_1's S2MM channel is CURRENTLY armed for -- i.e. what the transfer that
+ * completes next will actually have used. Updated by every S2MM arm site (start/recover/service/
+ * Bringup_ReconfigureRawTraceDepth below), all of which either run before interrupts are enabled
+ * or with them explicitly disabled, same as g_raw_write_buf above. Reading TRIGGER_CORE_DEPTH_OFFSET
+ * fresh at completion time -- what this used to do -- is wrong: that register may have already
+ * moved on to a value that has nothing to do with the transfer that just finished. */
+static u32 g_raw_armed_depth = RAW_TRACE_MAX_SAMPLES; /* ISR-only */
 /* Published by the ISR once at least one capture has completed; 0 = none yet. */
 static volatile u32 g_raw_ready_buf = 0;
 static volatile u32 g_raw_ready_depth = 0;
@@ -223,17 +230,20 @@ static void service_dma1_event(void) {
   DmaS2mm_AckComplete(AXI_DMA_1_BASEADDR);
 
   u32 just_completed = g_raw_write_buf;
-  u32 depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
-  if (depth == 0 || depth > RAW_TRACE_MAX_SAMPLES)
-    depth = RAW_TRACE_MAX_SAMPLES; /* guard the fixed-size buffers above */
+  u32 completed_depth = g_raw_armed_depth; /* what the transfer that JUST completed actually used */
+
+  u32 next_depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
+  if (next_depth == 0 || next_depth > RAW_TRACE_MAX_SAMPLES)
+    next_depth = RAW_TRACE_MAX_SAMPLES; /* guard the fixed-size buffers above */
 
   /* Re-arm into the other slot before publishing/reading this one, same reasoning as the PSA
    * double-buffer below. */
   g_raw_write_buf = (g_raw_write_buf == RAW_TRACE_BUF_A) ? RAW_TRACE_BUF_B : RAW_TRACE_BUF_A;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+  g_raw_armed_depth = next_depth;
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, next_depth * 2);
 
   g_raw_ready_buf = just_completed;
-  g_raw_ready_depth = depth;
+  g_raw_ready_depth = completed_depth;
   g_raw_event_count++;
 }
 
@@ -338,6 +348,7 @@ static void start_raw_trace_pipeline(void) {
     depth = RAW_TRACE_MAX_SAMPLES;
 
   g_raw_write_buf = RAW_TRACE_BUF_A;
+  g_raw_armed_depth = depth;
   DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
 
   Intc_Init(INTC_DMA_1_S2MM_BIT, intc_isr, NULL);
@@ -388,7 +399,49 @@ static void recover_raw_trace_pipeline(void) {
     depth = RAW_TRACE_MAX_SAMPLES;
 
   g_raw_write_buf = RAW_TRACE_BUF_A;
+  g_raw_armed_depth = depth;
   DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+
+  microblaze_enable_interrupts();
+}
+
+/* Called whenever software changes the trigger's depth register at runtime ($ST index 3), to
+ * close the window that would otherwise exist between that write and the next real trigger:
+ * axi_dma_1's S2MM channel stays armed at whatever depth it last saw (from start/recover/service
+ * above) until service_dma1_event() opportunistically re-arms it at the NEXT completion -- but
+ * capture_engine (trigger_core_top.vhd, capture_engine.vhd) latches depth_i into its own
+ * per-buffer depth_latch at the moment a trigger actually fires, which can land on the NEW value
+ * before S2MM has ever been told about it. If the new depth is LARGER, capture_engine ends up
+ * streaming more samples than S2MM was armed to accept: S2MM completes/interrupts at its own,
+ * shorter, stale length and stops asserting tready, and capture_engine's stream FSM is left
+ * waiting for a tready that will never come again -- wedged permanently, no software-visible
+ * timeout on this side of the pipe (unlike the bounded FSL retrieval in read_raw_trace()).
+ *
+ * Confirmed on real hardware: a depth change followed shortly by a real trigger reproduces a
+ * total device hang (every CLI command times out, not just $RT) with no firmware fix other than
+ * this one -- neither the FSL read timeout (read_raw_trace()) nor the Bringup_CaptureTrace() read
+ * of g_raw_ready_buf/g_raw_ready_depth (tried and reverted earlier) touch this; the wedge is
+ * entirely on the S2MM/capture_engine side, upstream of both. The calibration wizard's own
+ * delay/depth widen-then-restore is exactly this pattern and was the first thing to reproduce it.
+ *
+ * Same disable-interrupts/reset/re-arm shape as recover_raw_trace_pipeline(), just run proactively
+ * on every depth write instead of reactively on a detected FSL stall -- see that function's own
+ * comment for why the interrupt-disable window matters here too. */
+void Bringup_ReconfigureRawTraceDepth(u32 new_depth) {
+  if (new_depth == 0 || new_depth > RAW_TRACE_MAX_SAMPLES)
+    new_depth = RAW_TRACE_MAX_SAMPLES;
+
+  microblaze_disable_interrupts();
+
+  if (!Dma_ResetCore(AXI_DMA_1_BASEADDR)) {
+    xil_printf("  [FAIL] Bringup_ReconfigureRawTraceDepth: Dma_ResetCore (axi_dma_1) timed out\r\n");
+    microblaze_enable_interrupts();
+    return;
+  }
+
+  g_raw_write_buf = RAW_TRACE_BUF_A;
+  g_raw_armed_depth = new_depth;
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, new_depth * 2);
 
   microblaze_enable_interrupts();
 }
@@ -472,19 +525,24 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
  * for however long the source takes to produce an event, which at background rates is seconds. */
 int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
   /* g_raw_ready_buf/g_raw_ready_depth are two separate volatile variables, updated together (but
-   * not atomically from this reader's point of view) by service_dma1_event() -- the ISR -- every
-   * time a capture completes. Confirmed on real hardware: a threshold that triggers near-
-   * continuously (e.g. 0, parked at the noise band) hangs the whole device within the first few
-   * $RT calls, while a sparse threshold at the identical depth/delay survives many calls cleanly
-   * -- exactly the signature of the ISR firing between these two reads often enough to matter only
-   * at high trigger rates. A torn read hands read_raw_trace() an address from one capture paired
-   * with the depth from a different, later one, which is undefined for it. Snapshotting both with
-   * interrupts held off makes them consistent with each other. */
-  u32 addr, depth;
-  microblaze_disable_interrupts();
-  addr = g_raw_ready_buf;
-  depth = g_raw_ready_depth;
-  microblaze_enable_interrupts();
+   * not atomically from this reader's point of view) by service_dma1_event() -- the ISR. A brief
+   * microblaze_disable_interrupts() window here was tried to make the pair consistent (the
+   * suspected mechanism being a torn read: an address from one capture paired with the depth from
+   * a different, later one), on the theory that this explained a hang seen with the trigger parked
+   * at a near-continuously-firing threshold. It did not fix that hang (still reproduced with the
+   * guard in place, root-caused since to something else -- interrupt livelock at that trigger
+   * rate, avoided now by never forcing that rate at all -- see calibration_wizard.py) and it
+   * introduced a NEW regression: the oscilloscope's continuous mode (repeated $RT calls, roughly
+   * every 200ms, indefinitely) at depth=1024 hung with this guard in place, after working
+   * correctly without it. This function runs on every single $RT, unlike the rare-path recovery
+   * in recover_raw_trace_pipeline() -- disabling interrupts here, even briefly, on every call
+   * during continuous polling is the likely reason: it can delay this ISR (and whatever else
+   * shares axis_broadcaster_0's lockstep with it) at exactly the cadence that matters. Reverted
+   * back to a plain, unprotected read. If a torn read ever needs revisiting, it should be tested
+   * in isolation from both the interrupt-livelock scenario and continuous-poll scenarios, not
+   * assumed from either. */
+  u32 addr = g_raw_ready_buf;
+  u32 depth = g_raw_ready_depth;
 
   if (addr == 0 || depth == 0 || out_buf == 0 || out_count == 0)
     return 0;

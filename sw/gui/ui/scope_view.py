@@ -101,6 +101,11 @@ class ScopeView(QWidget):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_single.setEnabled(False)
+        # Calibration widens/restores the trigger's delay+depth registers around its capture
+        # loop. Doing that concurrently with this view's own continuous $RT polling races the
+        # same trigger-core/DMA registers the live capture is using and has been observed to hang
+        # the device -- so calibration is simply unavailable while a run is active.
+        self.btn_calibrate.setEnabled(False)
         self.start_clicked.emit(TRACE_MAX_SAMPLES)
 
     def _on_stop(self) -> None:
@@ -108,6 +113,7 @@ class ScopeView(QWidget):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_single.setEnabled(True)
+        self.btn_calibrate.setEnabled(True)
         self.stop_clicked.emit()
 
     def _on_single(self) -> None:
@@ -126,7 +132,7 @@ class ScopeView(QWidget):
         self.btn_start.setEnabled(enabled)
         self.btn_single.setEnabled(enabled)
         self.btn_stop.setEnabled(enabled and self._running)
-        self.btn_calibrate.setEnabled(enabled)
+        self.btn_calibrate.setEnabled(enabled and not self._running)
 
     def set_trigger_level(self, threshold: int | None) -> None:
         """Updates the horizontal dashed reference line. None hides it (e.g. while disconnected,

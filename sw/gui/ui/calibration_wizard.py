@@ -17,30 +17,34 @@ the user's own request. depth/delay are ALWAYS restored to whatever they were be
 whether calibration succeeds, fails, or is cancelled -- only the proposed threshold/rising are a
 lasting change, and only once the user explicitly applies them.
 
-Like bringup.c, this ALWAYS parks the trigger at the noise band before collecting -- not only when
-nothing is triggering at all. Measured directly on this hardware (2026-08-27): leaving whatever
-operational threshold was already configured in place while collecting produced grossly inflated
-statistics (sigma ~1600 against a baseline noise floor measured elsewhere this session at 7-170),
-because that threshold's own "pre-trigger" window was capturing the rise of the real pulse it was
-tuned to catch, not quiet baseline.
+Earlier versions of this wizard tried to actively FORCE a high capture rate before collecting --
+first by parking the trigger at blr_core's live baseline (which turned out to be a completely
+different numeric domain from what trigger_core's comparator actually uses, and never fired at
+all), then by parking at threshold=0 directly (in the right domain, and confirmed to fire at a very
+high rate). Both were abandoned. threshold=0 measurably hung the ENTIRE device -- not just trace
+reads, every CLI command including a plain ping -- reproduced repeatedly and independent of two
+separate firmware fixes for the specific races found along the way (both real bugs, both kept, see
+bringup.c). The working theory: this hardware's capture-completion interrupt fires fast enough at
+threshold=0 (bringup.c's own comment: "fires at kHz" for an in-band threshold) that the CPU can get
+stuck perpetually servicing it and never return to the main loop that answers the CLI at all -- an
+interrupt livelock, not a data race, and not something a firmware patch to this wizard's own call
+path can fix. A sparse threshold at the identical depth/delay survived many consecutive calls
+cleanly in the same testing.
 
-Finding the park point: an earlier version of this wizard used blr_core's own live baseline
-estimate directly as the park threshold. Measured directly on this hardware: that reads in a
-completely different numeric domain from what trigger_core's comparator (and read_trace()) actually
-use -- blr_core reported a baseline around -6380 while raw trace samples cluster near 0, putting
-the threshold thousands of counts below every real sample and latching the rising-edge comparator
-permanently true (confirmed over a full 60s observation window: exactly one capture, ever -- the
-same "threshold well below baseline never fires" failure mode bringup.c's own comments describe).
+So this wizard now does the opposite: it never touches the trigger threshold at all, only rising
+(the user's chosen polarity) and depth/delay (widened for a bigger pre-trigger window per capture,
+same as before). Whatever threshold is already configured when the wizard runs is what it collects
+against -- which is exactly the premise the user's own request was built on: background radiation
+always produces some pulses, so a sparse, already-reasonable threshold will accumulate enough
+captures given enough patience, without ever forcing the pathological trigger rate that hangs the
+device. If the current threshold genuinely is not triggering at all (e.g. left at 0 from a previous
+failed calibration), this fails cleanly with a message saying so, rather than trying to fix that
+itself by any means that risks the same hang.
 
-The fix: park at threshold=0 directly, in the SAME domain read_trace() itself reports, rather than
-deriving a park point from any other register. This is correct specifically because BLR keeps the
-restored baseline close to zero already (blr_core's whole job) -- sweeping across the ADC's full
-span, the way bringup.c's find_noise_band() does at cold boot before BLR has necessarily settled,
-is not needed here. Quality control handles the rest: a real pulse landing inside a capture's
+Quality control still handles per-capture contamination: a real pulse landing inside a capture's
 pre-trigger window inflates that ONE capture's own internal sigma well above the others', so each
 captured window's sigma is compared against the average across all of them and any capture whose
-own sigma exceeds that average is dropped before pooling -- cheaper and more direct than hunting
-for a "cleaner" park threshold, since it works on whatever park threshold is used.
+own sigma exceeds that average is dropped before pooling.
 
 Calls FciClient directly from the GUI thread while its modal dialog is open, the same deliberate
 exception config_panel.py documents (FciTransport's RLock is what makes this safe alongside the
@@ -93,7 +97,10 @@ N_CAPTURES_MINIMUM = 3
 captures remain -- background rate varies, and demanding the full target would make calibration
 fail on a slow run for no good reason."""
 
-CAPTURE_TIMEOUT_S = 20.0
+CAPTURE_TIMEOUT_S = 30.0
+"""Longer than earlier versions of this wizard needed: collecting at whatever rate the current,
+sparse threshold naturally produces (rather than forcing a high one) trades speed for never
+touching the trigger rate that hung the device -- see module docstring."""
 CAPTURE_POLL_INTERVAL_S = 0.15
 """How often read_trace() is polled while collecting -- background pulses observed this session run
 at a few Hz to a few tens of Hz, so this comfortably catches fresh captures without hammering the
@@ -211,20 +218,21 @@ class CalibrationWizard(QDialog):
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(True)
 
     def _collect_pooled_baseline(self, original, rising: bool) -> tuple[list[int], int]:
-        """Parks the trigger at threshold=0 (see module docstring for why this always happens, not
-        only when nothing is triggering, and why zero rather than a swept or probed value), widens
-        delay/depth, collects several fresh captures' pre-trigger windows, then drops any whose own
-        sigma is above the group's average before pooling the rest. Returns (pooled_samples,
-        n_survivors) -- never touches self, so callers own the restore/UI update around it."""
-        self._client.set_trigger(threshold=0, rising=rising,
-                                  delay=CALIBRATION_DELAY, depth=CALIBRATION_DEPTH)
+        """Never touches the trigger threshold (see module docstring for why forcing a high
+        capture rate is now deliberately avoided) -- only rising and the widened delay/depth.
+        Collects several fresh captures' pre-trigger windows at whatever rate the CURRENT
+        threshold naturally produces, then drops any whose own sigma is above the group's average
+        before pooling the rest. Returns (pooled_samples, n_survivors) -- never touches self, so
+        callers own the restore/UI update around it."""
+        self._client.set_trigger(rising=rising, delay=CALIBRATION_DELAY, depth=CALIBRATION_DEPTH)
 
         captures = self._poll_for_captures()
         if len(captures) < N_CAPTURES_MINIMUM:
             raise CalibrationError(
-                f"Only {len(captures)} capture(s) observed in {CAPTURE_TIMEOUT_S:.0f}s while "
-                f"parked at threshold=0 -- too few to calibrate from. Check the detector/AFE "
-                f"chain is actually connected and producing signal."
+                f"Only {len(captures)} capture(s) observed in {CAPTURE_TIMEOUT_S:.0f}s at the "
+                f"current trigger threshold ({original.threshold}) -- too few to calibrate from. "
+                f"Set a threshold that is at least triggering occasionally first, and check the "
+                f"detector/AFE chain is actually connected and producing signal."
             )
 
         per_capture_sigma = [statistics.pstdev(c) for c in captures]
