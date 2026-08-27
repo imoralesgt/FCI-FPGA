@@ -1309,8 +1309,12 @@ calibration, just computed over the CLI instead of raw MMIO.
 - **The `threshold=0` interrupt livelock is still unconfirmed at the firmware level** — nothing here
   proves or fixes it, the client just never creates the condition. If any future feature is tempted
   to force a high trigger rate, this needs solving first, not rediscovering.
-- A transient framing glitch — two leading NUL bytes on the first transaction right after a fresh
-  serial connection — recurs occasionally and always self-resolves on retry. Not investigated.
+- ~~A transient framing glitch — two leading NUL bytes on the first transaction right after a
+  fresh serial connection.~~ **Fixed:** `FciTransport.transact()` now strips leading NUL bytes
+  from each reply line before parsing it — the existing `reset_input_buffer()` calls only clear
+  what's *already* in the OS buffer, not bytes still in flight over USB at that instant, so the
+  race could still land 1-2 stray NULs at the front of a reply. NUL is never valid content in this
+  ASCII protocol, so stripping it is safe.
 - The oscilloscope's "Calibrate Threshold…" button is now disabled while continuous (`Start`) mode
   is running, purely to avoid the calibration wizard's own `$ST` delay/depth writes contending with
   the oscilloscope's concurrent `$RT` polling. This is a UI-level precaution, not a confirmed
@@ -1396,8 +1400,8 @@ batch had to be reverted):
   `sw/` GUI's oscilloscope view
 - `axi_timer_0` for list-mode timestamps; `adc_of` (ADC overflow flag) currently unused
 - The `threshold=0` interrupt livelock theory (§8f) — still unconfirmed at the firmware level
-- The transient two-leading-NUL-byte framing glitch on a fresh serial connection (§8f) — not
-  investigated, always self-resolves on retry
+- ~~The transient two-leading-NUL-byte framing glitch on a fresh serial connection~~ **Fixed
+  (§8f):** stray leading NULs are now stripped before parsing each reply
 
 ### Diagnostics retained
 

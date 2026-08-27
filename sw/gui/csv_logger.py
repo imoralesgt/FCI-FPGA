@@ -15,11 +15,13 @@ CSV_HEADER = "timestamp,psa_l,psa_w,fci,energy_short,energy_long,psd"
 
 
 class CsvLogger:
-    def __init__(self, directory: Path, suffix: str = ""):
+    """Filename is always `{prefix}_{index:04d}_fci_live.csv` -- the index is never optional (see
+    controllers.py's _ensure_recording_session() for how prefix/index are chosen and why an
+    unindexed name was rejected)."""
+
+    def __init__(self, directory: Path, prefix: str, index: int):
         directory.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        suffix_part = f"_{suffix}" if suffix else ""
-        self.path = directory / f"{stamp}_fci_live{suffix_part}.csv"
+        self.path = directory / f"{prefix}_{index:04d}_fci_live.csv"
 
         with open(self.path, "w", encoding="utf-8") as f:
             f.write(f"# FCI-FPGA live acquisition log\n")
@@ -64,11 +66,9 @@ class TraceCsvLogger:
     record the live view logs continuously.
     """
 
-    def __init__(self, directory: Path, suffix: str = ""):
+    def __init__(self, directory: Path, prefix: str, index: int):
         directory.mkdir(parents=True, exist_ok=True)
-        stamp = time.strftime("%Y%m%d_%H%M%S")
-        suffix_part = f"_{suffix}" if suffix else ""
-        self.path = directory / f"{stamp}_scope_traces{suffix_part}.csv"
+        self.path = directory / f"{prefix}_{index:04d}_scope_traces.csv"
 
         with open(self.path, "w", encoding="utf-8") as f:
             f.write("# FCI-FPGA trigger trace log\n")

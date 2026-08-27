@@ -59,16 +59,26 @@ lifetime average would stay skewed by however long acquisition sat paused, and w
 slowly after a real rate change. A short window tracks the current rate and naturally settles to
 0 while paused, with no separate pause-awareness needed."""
 
+ENERGY_REGION_FALLBACK = (0.0, 1.0)
+"""Where a discriminator's LinearRegionItem starts if its LLD/ULD cut gets enabled before any
+event has arrived yet (nothing real to anchor a range to). Replaced the moment there's data: see
+LiveView._on_cut_enabled_toggled()."""
+
 
 class _ControlsPanel(QGroupBox):
-    """Left-of-plot column: Start/Stop/Reset plus that subsystem's own configuration form. Two of
-    these exist, one beside each plot -- see module docstring for why Start/Stop/Reset are
-    mirrored between them rather than independent.
-    """
+    """Left-of-plot column: Start/Stop/Reset, that subsystem's own configuration form, and a
+    checkbox enabling that discriminator's LLD/ULD cut. Two of these exist, one beside each plot
+    -- see module docstring for why Start/Stop/Reset are mirrored between them rather than
+    independent; the cut, unlike those, is NOT mirrored -- FCI and PSD gate independently.
+
+    The cut's actual range lives on the plot itself (LiveView's fci_energy_region/
+    psd_energy_region, a pg.LinearRegionItem dragged directly on the energy axis), not here --
+    this checkbox only turns that gate on/off. See LiveView._mask_for()."""
 
     start_clicked = Signal()
     stop_clicked = Signal()
     reset_clicked = Signal()
+    cut_toggled = Signal(bool)
 
     def __init__(self, title: str, config_panel: SubsystemPanel):
         super().__init__(title)
@@ -90,6 +100,15 @@ class _ControlsPanel(QGroupBox):
         layout.addLayout(ops_layout)
 
         layout.addWidget(config_panel)
+
+        self.chk_cut_enabled = QCheckBox("Enable LLD/ULD")
+        self.chk_cut_enabled.setToolTip(
+            "Gates this plot, its stats, and recording by an energy_long range -- drag the "
+            "shaded region's edges on the plot to set it."
+        )
+        self.chk_cut_enabled.toggled.connect(self.cut_toggled.emit)
+        layout.addWidget(self.chk_cut_enabled)
+
         layout.addStretch(1)
 
     def set_running(self, running: bool) -> None:
@@ -263,6 +282,13 @@ class LiveView(QWidget):
         self.heatmap_fci.setLookupTable(self._heatmap_lut())
         self.heatmap_fci.setVisible(False)
         self.plot_fci.addItem(self.heatmap_fci)
+        self.fci_energy_region = pg.LinearRegionItem(brush=pg.mkBrush(255, 200, 0, 40))
+        self.fci_energy_region.setVisible(False)
+        self.plot_fci.addItem(self.fci_energy_region)
+        self.fci_controls.cut_toggled.connect(
+            lambda checked: self._on_cut_enabled_toggled(self.fci_energy_region, checked)
+        )
+        self.fci_energy_region.sigRegionChangeFinished.connect(self._on_cut_changed)
         grid.addWidget(self.plot_fci, 0, 1)
 
         self.fci_stats = _StatsPanel("FCI Statistics", "Dropped (fci)", "Overflow (fci)")
@@ -287,6 +313,13 @@ class LiveView(QWidget):
         self.heatmap_psd.setLookupTable(self._heatmap_lut())
         self.heatmap_psd.setVisible(False)
         self.plot_psd.addItem(self.heatmap_psd)
+        self.psd_energy_region = pg.LinearRegionItem(brush=pg.mkBrush(100, 200, 255, 40))
+        self.psd_energy_region.setVisible(False)
+        self.plot_psd.addItem(self.psd_energy_region)
+        self.psd_controls.cut_toggled.connect(
+            lambda checked: self._on_cut_enabled_toggled(self.psd_energy_region, checked)
+        )
+        self.psd_energy_region.sigRegionChangeFinished.connect(self._on_cut_changed)
         grid.addWidget(self.plot_psd, 1, 1)
 
         self.psd_stats = _StatsPanel("PSD Statistics", "Dropped (psd)", "Overflow (psd)")
@@ -328,27 +361,101 @@ class LiveView(QWidget):
         # there), so it can be stale by however much accumulated while the other one was active --
         # refresh it now, on the switch, rather than leaving it stale until the next batch happens
         # to arrive.
-        if checked:
-            self._update_heatmaps()
-        else:
-            self.scatter_fci.setData(self._energy, self._fci)
-            self.scatter_psd.setData(self._energy, self._psd)
+        self._refresh_plots()
 
-    def _update_heatmaps(self) -> None:
-        if not self._energy:
-            return
+    def _on_cut_enabled_toggled(self, region: pg.LinearRegionItem, checked: bool) -> None:
+        region.setVisible(checked)
+        if checked:
+            # Reset to "everything currently accumulated" every time the cut is (re-)enabled,
+            # rather than remembering wherever it was last dragged to -- a fresh, predictable
+            # starting point (narrow FROM here) beats resuming a stale range from a previous,
+            # possibly very different, session.
+            if self._energy:
+                lo, hi = float(min(self._energy)), float(max(self._energy))
+                if hi <= lo:
+                    hi = lo + 1.0
+            else:
+                lo, hi = ENERGY_REGION_FALLBACK
+            region.setRegion((lo, hi))
+        self._on_cut_changed()
+
+    def _on_cut_changed(self) -> None:
+        """A panel's own LLD/ULD cut changed (enabled/disabled, or its region was dragged) --
+        both the plot (_refresh_plots) and that panel's "Events plotted" count
+        (_refresh_side_panels) depend on it, so both need redoing; neither add_events() nor
+        update_stats() would otherwise run again until the next batch."""
+        self._refresh_plots()
+        self._refresh_side_panels()
+
+    @staticmethod
+    def _mask_for(controls: "_ControlsPanel", region: pg.LinearRegionItem,
+                   energy: np.ndarray) -> np.ndarray:
+        """True for every energy sample this discriminator's cut would keep. An unchecked cut
+        keeps everything -- the region only constrains anything once its checkbox is on."""
+        if not controls.chk_cut_enabled.isChecked():
+            return np.ones(len(energy), dtype=bool)
+        lo, hi = region.getRegion()
+        return (energy >= lo) & (energy <= hi)
+
+    def filter_for_recording(self, events: list[AcqEvent]) -> list[AcqEvent]:
+        """Events kept for the CSV log: since fci_live.csv is one row per event carrying BOTH
+        discriminators' values, an event survives only if it passes EVERY currently-enabled cut
+        (an unchecked cut imposes no constraint) -- the same AND-of-enabled-cuts a reader would
+        expect from "this row's FCI value is in-range AND its PSD value is in-range". Does not
+        re-apply the energy_long <= 0 exclusion; that's unconditional already (see add_events())
+        and unrelated to this cut."""
+        out = []
+        for e in events:
+            energy = e.energy_long
+            if self.fci_controls.chk_cut_enabled.isChecked():
+                lo, hi = self.fci_energy_region.getRegion()
+                if not (lo <= energy <= hi):
+                    continue
+            if self.psd_controls.chk_cut_enabled.isChecked():
+                lo, hi = self.psd_energy_region.getRegion()
+                if not (lo <= energy <= hi):
+                    continue
+            out.append(e)
+        return out
+
+    def _refresh_plots(self) -> None:
+        """Applies each discriminator's own LLD/ULD cut to the shared accumulated arrays and
+        redraws whichever representation -- scatter or heatmap -- is currently visible. FCI and
+        PSD are masked independently, so the two can show different energy slices of the same
+        underlying event stream. Called after every new batch, on the heatmap/scatter toggle, and
+        whenever either panel's cut changes (enabled/disabled or dragged)."""
         energy = np.asarray(self._energy, dtype=np.float64)
+        heatmap = self.chk_heatmap.isChecked()
+        for values, controls, region, scatter, img in (
+            (self._fci, self.fci_controls, self.fci_energy_region, self.scatter_fci,
+             self.heatmap_fci),
+            (self._psd, self.psd_controls, self.psd_energy_region, self.scatter_psd,
+             self.heatmap_psd),
+        ):
+            mask = self._mask_for(controls, region, energy)
+            e = energy[mask]
+            v = np.asarray(values, dtype=np.float64)[mask]
+            if heatmap:
+                self._update_heatmap(e, v, img)
+            else:
+                scatter.setData(e, v)
+
+    def _update_heatmap(self, energy: np.ndarray, values: np.ndarray, img: pg.ImageItem) -> None:
+        if len(energy) == 0:
+            img.clear()
+            return
         x_min, x_max = float(energy.min()), float(energy.max())
         if x_max <= x_min:
             x_max = x_min + 1.0
-        for values, img in ((self._fci, self.heatmap_fci), (self._psd, self.heatmap_psd)):
-            hist, _, _ = np.histogram2d(
-                energy, np.asarray(values, dtype=np.float64),
-                bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
-                range=[[x_min, x_max], [0.0, 1.0]],
-            )
-            img.setImage(hist, autoLevels=True)
-            img.setRect(QRectF(x_min, 0.0, x_max - x_min, 1.0))
+        hist, _, _ = np.histogram2d(
+            energy, values, bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
+            range=[[x_min, x_max], [0.0, 1.0]],
+        )
+        # log1p (not log): most bins are near-empty and a few are dense, so a linear color
+        # scale saturates the busy bins and makes everything else invisible; log1p(0) = 0
+        # keeps empty bins mapped cleanly instead of producing -inf.
+        img.setImage(np.log1p(hist), autoLevels=True)
+        img.setRect(QRectF(x_min, 0.0, x_max - x_min, 1.0))
 
     def get_accumulated_events(self) -> tuple[list[int], list[float], list[float]]:
         """(energy, fci, psd) parallel lists for whatever is currently plotted -- the FoM wizard's
@@ -416,11 +523,7 @@ class LiveView(QWidget):
             del self._fci[:overflow]
             del self._psd[:overflow]
 
-        if self.chk_heatmap.isChecked():
-            self._update_heatmaps()
-        else:
-            self.scatter_fci.setData(self._energy, self._fci)
-            self.scatter_psd.setData(self._energy, self._psd)
+        self._refresh_plots()
 
         self._rate_samples.append((time.monotonic(), self._total_events))
         self._refresh_side_panels()
@@ -454,9 +557,14 @@ class LiveView(QWidget):
         overflow_fci = s.overflow_fci if s else 0
         overflow_psd = s.overflow_psd if s else 0
         rate = self._current_rate_hz()
+        # "Events plotted" reflects each discriminator's OWN LLD/ULD cut, not the shared total --
+        # it's meant to match what that plot is actually showing right now.
+        energy = np.asarray(self._energy, dtype=np.float64)
+        fci_shown = int(self._mask_for(self.fci_controls, self.fci_energy_region, energy).sum())
+        psd_shown = int(self._mask_for(self.psd_controls, self.psd_energy_region, energy).sum())
         self.fci_stats.update_counts(
-            self._total_events, rate, self._excluded_events, paired, dropped_fci, overflow_fci
+            fci_shown, rate, self._excluded_events, paired, dropped_fci, overflow_fci
         )
         self.psd_stats.update_counts(
-            self._total_events, rate, self._excluded_events, paired, dropped_psd, overflow_psd
+            psd_shown, rate, self._excluded_events, paired, dropped_psd, overflow_psd
         )

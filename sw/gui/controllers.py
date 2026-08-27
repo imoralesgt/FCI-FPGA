@@ -6,6 +6,8 @@ drop state machine, mirroring the reference GUI's own) and the CSV logger.
 from __future__ import annotations
 
 import logging
+import re
+import time
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Slot
@@ -48,6 +50,8 @@ class AppController(QObject):
         self._connect_signals()
         self.scan_ports()
         self.view.txt_csv_dir.setText(str(config.DEFAULT_CSV_DIR))
+        self.view.txt_file_prefix.setText(time.strftime("%Y%m%d"))
+        self._update_filename_preview()
 
         logger.info("AppController initialized.")
 
@@ -56,6 +60,8 @@ class AppController(QObject):
         self.view.btn_connect.clicked.connect(self.toggle_connection)
         self.view.btn_browse_dir.clicked.connect(self.browse_csv_dir)
         self.view.chk_record.toggled.connect(self.on_record_toggled)
+        self.view.txt_file_prefix.textChanged.connect(self._update_filename_preview)
+        self.view.chk_autoincrement.toggled.connect(self._update_filename_preview)
         self.view.live_view.confirm_start = self._confirm_and_maybe_record
         self.view.scope_view.confirm_start = self._confirm_and_maybe_record
         self.view.live_view.start_clicked.connect(self.start_acquisition)
@@ -213,7 +219,7 @@ class AppController(QObject):
     def on_batch_received(self, events) -> None:
         self.view.live_view.add_events(events)
         if self.csv_logger is not None:
-            self.csv_logger.append_many(events)
+            self.csv_logger.append_many(self.view.live_view.filter_for_recording(events))
 
     @Slot(object)
     def on_trace_received(self, trace) -> None:
@@ -240,14 +246,17 @@ class AppController(QObject):
             self.csv_logger = None
             self.scope_csv_logger = None
             self.view.set_recording_active(False)
+            self._update_filename_preview()
         elif checked and self.csv_logger is None and (self._live_acq_running or self._scope_running):
-            self._ensure_recording_session()
+            if not self._ensure_recording_session():
+                self.view.chk_record.setChecked(False)  # user declined the overwrite warning
 
     def _confirm_and_maybe_record(self) -> bool:
         """Consulted by LiveView/ScopeView before their Start button does anything. Returns
-        whether Start should proceed at all -- declining the recording warning cancels the whole
-        Start action, not just recording, since the warning is framed as "Start will begin
-        recording" rather than as a separate, skippable prompt."""
+        whether Start should proceed at all -- declining the recording warning (or a follow-on
+        overwrite warning from _ensure_recording_session()) cancels the whole Start action, not
+        just recording, since the warning is framed as "Start will begin recording" rather than
+        as a separate, skippable prompt."""
         if not self.view.chk_record.isChecked():
             return True
         reply = QMessageBox.question(
@@ -260,17 +269,83 @@ class AppController(QObject):
         )
         if reply != QMessageBox.StandardButton.Ok:
             return False
-        self._ensure_recording_session()
-        return True
+        return self._ensure_recording_session()
 
-    def _ensure_recording_session(self) -> None:
-        if self.csv_logger is not None:
-            return  # already recording (e.g. Stop then Start again) -- keep using the same files
+    # ---- filename prefix / index (File Management tab) ----
+
+    FILENAME_INDEX_DIGITS = 4
+
+    def _sanitized_prefix(self) -> str:
+        prefix = self.view.txt_file_prefix.text().strip().replace("/", "_").replace("\\", "_")
+        return prefix or "recording"
+
+    def _next_free_index(self, out_dir: Path, prefix: str) -> int:
+        """Lowest index for which neither the fci_live nor the scope_traces file exists yet --
+        1 if out_dir doesn't exist or nothing matching `prefix` is in it."""
+        used: set[int] = set()
+        if out_dir.exists():
+            pattern = re.compile(rf"^{re.escape(prefix)}_(\d+)_(?:fci_live|scope_traces)\.csv$")
+            for p in out_dir.iterdir():
+                m = pattern.match(p.name)
+                if m:
+                    used.add(int(m.group(1)))
+        index = 1
+        while index in used:
+            index += 1
+        return index
+
+    def _would_overwrite(self, out_dir: Path, prefix: str, index: int) -> bool:
+        stem = f"{prefix}_{index:0{self.FILENAME_INDEX_DIGITS}d}"
+        return (out_dir / f"{stem}_fci_live.csv").exists() or \
+               (out_dir / f"{stem}_scope_traces.csv").exists()
+
+    def _update_filename_preview(self) -> None:
         out_dir = Path(self.view.txt_csv_dir.text())
-        self.csv_logger = CsvLogger(out_dir)
-        self.scope_csv_logger = TraceCsvLogger(out_dir)
+        prefix = self._sanitized_prefix()
+        autoincrement = self.view.chk_autoincrement.isChecked()
+        index = self._next_free_index(out_dir, prefix) if autoincrement else 1
+        stem = f"{prefix}_{index:0{self.FILENAME_INDEX_DIGITS}d}"
+        warning = ""
+        if not autoincrement and self._would_overwrite(out_dir, prefix, index):
+            warning = "  ⚠ already exists -- will be overwritten"
+        self.view.lbl_filename_preview.setText(
+            f"Next files: {stem}_fci_live.csv, {stem}_scope_traces.csv{warning}"
+        )
+
+    def _ensure_recording_session(self) -> bool:
+        """Returns whether a session is (now) active. False only means the user declined an
+        overwrite warning -- callers (Start confirmation, on_record_toggled's resume-mid-run
+        path) must treat that the same as declining to record at all."""
+        if self.csv_logger is not None:
+            return True  # already recording (e.g. Stop then Start again) -- keep the same files
+        out_dir = Path(self.view.txt_csv_dir.text())
+        prefix = self._sanitized_prefix()
+        autoincrement = self.view.chk_autoincrement.isChecked()
+
+        if autoincrement:
+            index = self._next_free_index(out_dir, prefix)
+        else:
+            index = 1
+            if self._would_overwrite(out_dir, prefix, index):
+                stem = f"{prefix}_{index:0{self.FILENAME_INDEX_DIGITS}d}"
+                reply = QMessageBox.warning(
+                    self.view,
+                    "File Will Be Overwritten",
+                    f"{stem}_fci_live.csv and/or {stem}_scope_traces.csv already exist in "
+                    f"{out_dir} and Autoincrement is off -- continuing will overwrite them."
+                    "\n\nContinue?",
+                    QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                    QMessageBox.StandardButton.Cancel,
+                )
+                if reply != QMessageBox.StandardButton.Ok:
+                    return False
+
+        self.csv_logger = CsvLogger(out_dir, prefix, index)
+        self.scope_csv_logger = TraceCsvLogger(out_dir, prefix, index)
         self.view.set_recording_active(True)
         logger.info(f"Recording started: {self.csv_logger.path}, {self.scope_csv_logger.path}")
+        self._update_filename_preview()
+        return True
 
     # ---------------------------------------------------------------------------------- scope
 
@@ -315,6 +390,7 @@ class AppController(QObject):
         )
         if chosen:
             self.view.txt_csv_dir.setText(chosen)
+            self._update_filename_preview()
 
     def cleanup(self) -> None:
         logger.info("Shutting down.")

@@ -140,6 +140,15 @@ class FciTransport:
                     f"(got {raw!r})"
                 )
 
+            # A freshly-opened connection has occasionally been observed to prepend one or two
+            # stray NUL bytes to the very first reply, still within this same line -- a
+            # USB-serial buffering/timing race (bytes already in flight over USB when
+            # reset_input_buffer() above ran) rather than anything the firmware sends. NUL is
+            # never valid content in this ASCII-only protocol, so stripping it here is safe: it
+            # can only turn an otherwise-good reply into a parseable one, never mask a genuine
+            # mismatch.
+            raw = raw.lstrip(b"\x00")
+
         line = raw.decode("ascii", errors="replace").strip()
         tokens = line.split()
         if not tokens:

@@ -1,7 +1,9 @@
-"""Top-level window shell: connection row, CSV directory row, and a tab widget hosting the three
-views. Mirrors the reference GUI's overall structure (connection bar, then tabs) with the
-tab-per-domain split this project's richer state (live acquisition / scope / 6 config subsystems)
-calls for, instead of one tab per counter channel.
+"""Top-level window shell: connection row, an always-visible Record row, and a tab widget hosting
+the four views (File Management is one of them, not a separate row, so it doesn't compete for
+space with the always-visible Record control). Mirrors the reference GUI's overall structure
+(connection bar, then tabs) with the tab-per-domain split this project's richer state (live
+acquisition / scope / 6 config subsystems / file naming) calls for, instead of one tab per counter
+channel.
 """
 
 import logging
@@ -11,7 +13,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMainWindow,
     QPushButton,
     QScrollArea,
@@ -21,6 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from ui.config_panel import ConfigPanel
+from ui.file_management_view import FileManagementView
 from ui.live_view import LiveView
 from ui.scope_view import ScopeView
 
@@ -56,33 +58,25 @@ class MainWindow(QMainWindow):
         conn_layout.addWidget(self.lbl_status)
         main_layout.addLayout(conn_layout)
 
-        dir_layout = QHBoxLayout()
-        dir_layout.addWidget(QLabel("CSV Output Directory:"))
-        self.txt_csv_dir = QLineEdit()
-        self.txt_csv_dir.setReadOnly(True)
-        self.txt_csv_dir.setMinimumWidth(420)
-        dir_layout.addWidget(self.txt_csv_dir)
-        self.btn_browse_dir = QPushButton("Browse...")
-        dir_layout.addWidget(self.btn_browse_dir)
-
+        record_layout = QHBoxLayout()
         # The dot is its own QLabel, not text baked into the checkbox: an emoji/dingbat glyph like
         # "⬤" often renders from a color-emoji font that ignores the checkbox's own text color, so
         # styling it through the checkbox's stylesheet alone left it black instead of red.
         self.lbl_record_icon = QLabel("●")
         self.lbl_record_icon.setStyleSheet("color: #e63030; font-size: 13px;")
-        dir_layout.addWidget(self.lbl_record_icon)
+        record_layout.addWidget(self.lbl_record_icon)
         self.chk_record = QCheckBox("Record")
         self.chk_record.setStyleSheet("QCheckBox { font-weight: bold; padding: 2px 8px; }")
         self.chk_record.setChecked(True)  # armed by default -- see AppController's Start confirm
-        dir_layout.addWidget(self.chk_record)
-
-        dir_layout.addStretch(1)
-        main_layout.addLayout(dir_layout)
+        record_layout.addWidget(self.chk_record)
+        record_layout.addStretch(1)
+        main_layout.addLayout(record_layout)
 
         self.tabs = QTabWidget()
         self.live_view = LiveView()
         self.scope_view = ScopeView()
         self.config_panel = ConfigPanel()
+        self.file_view = FileManagementView()
         # Each tab's content now includes full config forms (FCI/PSD embedded in the live view,
         # Trigger embedded in the scope view) on top of the plots -- taller than fits on many
         # screens at once. Wrapping each tab in its own scroll area (config_panel already did this
@@ -91,7 +85,16 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
         self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
         self.tabs.addTab(self.config_panel, "Configuration")
+        self.tabs.addTab(self.file_view, "File Management")
         main_layout.addWidget(self.tabs)
+
+        # Convenience aliases -- everything below (AppController, this class' own methods) refers
+        # to these directly rather than reaching through file_view each time.
+        self.txt_csv_dir = self.file_view.txt_csv_dir
+        self.btn_browse_dir = self.file_view.btn_browse_dir
+        self.txt_file_prefix = self.file_view.txt_file_prefix
+        self.chk_autoincrement = self.file_view.chk_autoincrement
+        self.lbl_filename_preview = self.file_view.lbl_filename_preview
 
         # PSD's Pre-trigger and the Trigger tab's Delay are the same physical quantity as
         # far as firmware is concerned (PSD_FIELDS' own tooltip says as much: psd_core needs to
