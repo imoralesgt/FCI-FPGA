@@ -50,8 +50,19 @@ class AcquisitionWorker(QThread):
         self._scope_n = 2048
         self._start_acq_request = threading.Event()
         self._stop_acq_request = threading.Event()
+        self._batch_poll_suspended = threading.Event()
+        """Set while the FoM sweep worker needs exclusive use of $RB for its own grid-point event
+        collection. Without this, this worker's own unconditional per-iteration read_batch() call
+        (below) would race the sweep's reads for the same 32-deep FIFO, splitting events between
+        the two unpredictably and making "collect N fresh events for this grid point" unreliable."""
 
     # ---- thread-safe requests from the GUI thread; the worker's own loop acts on these ----
+
+    def suspend_batch_polling(self) -> None:
+        self._batch_poll_suspended.set()
+
+    def resume_batch_polling(self) -> None:
+        self._batch_poll_suspended.clear()
 
     def request_trace(self, n: int = 2048) -> None:
         """Requests one $RT capture on the worker's own thread ("Single"). Safe to call from any
@@ -121,9 +132,10 @@ class AcquisitionWorker(QThread):
                 if trace is not _FAILED:
                     self.trace_received.emit(trace)
 
-            events = self._safe_call(self._client.read_batch, "read_batch")
-            if events is not _FAILED and events:
-                self.batch_received.emit(events)
+            if not self._batch_poll_suspended.is_set():
+                events = self._safe_call(self._client.read_batch, "read_batch")
+                if events is not _FAILED and events:
+                    self.batch_received.emit(events)
 
             if stats_countdown <= 0:
                 stats = self._safe_call(self._client.read_stats, "read_stats")

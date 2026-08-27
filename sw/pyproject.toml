@@ -5,10 +5,12 @@ description = "Client API and GUI for the FCI-FPGA MicroBlaze CLI (docs/CLI_docu
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "numpy>=1.26.0",
     "pyinstaller>=6.21.0",
     "pyqtgraph>=0.14.0",
     "pyserial>=3.5",
     "pyside6>=6.11.1",
+    "scipy>=1.11.0",
 ]
 
 [build-system]

@@ -33,9 +33,11 @@ import logging
 import time
 from collections import deque
 
+import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QRectF, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -106,6 +108,11 @@ class _StatsPanel(QGroupBox):
 
     def __init__(self, title: str, dropped_label: str, overflow_label: str):
         super().__init__(title)
+        self._rate_history: deque[tuple[float, float]] = deque()
+        """(monotonic_time, rate_hz) pairs within RATE_HISTORY_WINDOW_S, oldest first -- feeds the
+        small rate-vs-time plot below the counts. Independent of LiveView's own _rate_samples
+        (that one is raw event timestamps used to COMPUTE the current rate; this one is a history
+        of the already-computed rate values themselves, sampled once per update_counts() call)."""
 
         layout = QVBoxLayout(self)
         stats_grid = QGridLayout()
@@ -128,7 +135,22 @@ class _StatsPanel(QGroupBox):
             stats_grid.addWidget(QLabel(name), row, 0)
             stats_grid.addWidget(widget, row, 1)
         layout.addLayout(stats_grid)
+
+        layout.addWidget(QLabel("Rate vs time:"))
+        self.rate_plot = pg.PlotWidget()
+        self.rate_plot.setMaximumHeight(80)
+        self.rate_plot.showAxis("bottom", False)
+        self.rate_plot.setLabel("left", "Hz")
+        self.rate_plot.getPlotItem().setMenuEnabled(False)
+        self.rate_plot.getPlotItem().hideButtons()
+        self.rate_curve = self.rate_plot.plot(pen=pg.mkPen((0, 200, 120), width=1.5))
+        layout.addWidget(self.rate_plot)
+
         layout.addStretch(1)
+
+    RATE_HISTORY_WINDOW_S = 120.0
+    """How far back the small rate-vs-time plot looks -- long enough to show a real trend, short
+    enough that the plot stays readable at "very small" size without needing to decimate points."""
 
     def update_counts(self, events: int, rate_hz: float, excluded: int, paired: int,
                        dropped: int, overflow: int) -> None:
@@ -139,10 +161,26 @@ class _StatsPanel(QGroupBox):
         self.lbl_dropped.setText(str(dropped))
         self.lbl_overflow.setText(str(overflow))
 
+        now = time.monotonic()
+        self._rate_history.append((now, rate_hz))
+        cutoff = now - self.RATE_HISTORY_WINDOW_S
+        while self._rate_history and self._rate_history[0][0] < cutoff:
+            self._rate_history.popleft()
+        if self._rate_history:
+            t0 = self._rate_history[0][0]
+            xs = [t - t0 for t, _ in self._rate_history]
+            ys = [r for _, r in self._rate_history]
+            self.rate_curve.setData(xs, ys)
+
+    def clear_rate_history(self) -> None:
+        self._rate_history.clear()
+        self.rate_curve.setData([], [])
+
 
 class LiveView(QWidget):
     start_clicked = Signal()
     stop_clicked = Signal()
+    fom_wizard_clicked = Signal()
 
     MAX_POINTS = 20_000
     """Sliding-window cap so a long session doesn't grow memory/render time without bound --
@@ -174,6 +212,20 @@ class LiveView(QWidget):
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
 
+        top_row = QHBoxLayout()
+        top_row.addStretch(1)
+        self.chk_heatmap = QCheckBox("Heatmap view")
+        self.chk_heatmap.setToolTip(
+            "Shows accumulation density (2D histogram) instead of individual points -- easier to "
+            "read once enough events pile up that a scatter plot just looks like a solid blob."
+        )
+        self.chk_heatmap.toggled.connect(self._on_heatmap_toggled)
+        top_row.addWidget(self.chk_heatmap)
+        self.btn_fom_wizard = QPushButton("FoM Optimization...")
+        self.btn_fom_wizard.clicked.connect(self.fom_wizard_clicked.emit)
+        top_row.addWidget(self.btn_fom_wizard)
+        layout.addLayout(top_row)
+
         self.fci_config = SubsystemPanel("FCI Configuration", FCI_FIELDS, "get_fci", "set_fci")
         self.psd_config = SubsystemPanel("PSD Configuration", PSD_FIELDS, "get_psd", "set_psd")
 
@@ -199,8 +251,18 @@ class LiveView(QWidget):
         self.plot_fci.setLabel("left", "FCI")
         self.plot_fci.showGrid(x=True, y=True)
         self.plot_fci.setMinimumHeight(self.PLOT_MIN_HEIGHT)
+        # FCI/PSD are both normalized ratios, so 0-1 is a sensible starting window -- set once,
+        # manually (autorange off), so it stays put rather than snapping to the data's own extent
+        # on every batch. The user can still zoom/pan freely afterwards; this only fixes the
+        # INITIAL view, not a permanent lock.
+        self.plot_fci.enableAutoRange(axis="y", enable=False)
+        self.plot_fci.setYRange(0, 1, padding=0)
         self.scatter_fci = pg.ScatterPlotItem(size=4, brush=pg.mkBrush(255, 200, 0, 140), pen=None)
         self.plot_fci.addItem(self.scatter_fci)
+        self.heatmap_fci = pg.ImageItem()
+        self.heatmap_fci.setLookupTable(self._heatmap_lut())
+        self.heatmap_fci.setVisible(False)
+        self.plot_fci.addItem(self.heatmap_fci)
         grid.addWidget(self.plot_fci, 0, 1)
 
         self.fci_stats = _StatsPanel("FCI Statistics", "Dropped (fci)", "Overflow (fci)")
@@ -217,8 +279,14 @@ class LiveView(QWidget):
         self.plot_psd.setLabel("left", "PSD")
         self.plot_psd.showGrid(x=True, y=True)
         self.plot_psd.setMinimumHeight(self.PLOT_MIN_HEIGHT)
+        self.plot_psd.enableAutoRange(axis="y", enable=False)
+        self.plot_psd.setYRange(0, 1, padding=0)
         self.scatter_psd = pg.ScatterPlotItem(size=4, brush=pg.mkBrush(100, 200, 255, 140), pen=None)
         self.plot_psd.addItem(self.scatter_psd)
+        self.heatmap_psd = pg.ImageItem()
+        self.heatmap_psd.setLookupTable(self._heatmap_lut())
+        self.heatmap_psd.setVisible(False)
+        self.plot_psd.addItem(self.heatmap_psd)
         grid.addWidget(self.plot_psd, 1, 1)
 
         self.psd_stats = _StatsPanel("PSD Statistics", "Dropped (psd)", "Overflow (psd)")
@@ -240,6 +308,53 @@ class LiveView(QWidget):
         # Energy is the shared x-axis for both plots -- panning/zooming one moves the other, so
         # the same energy slice is easy to compare across both discriminators.
         self.plot_psd.setXLink(self.plot_fci)
+
+    HEATMAP_XBINS = 120
+    HEATMAP_YBINS = 60
+    """A 2D histogram over at most MAX_POINTS (20,000) events at this bin count is a few hundred
+    microseconds to a couple of milliseconds with numpy -- cheap enough to recompute on every
+    batch while heatmap view is active, same cadence as the scatter plot's own setData()."""
+
+    @staticmethod
+    def _heatmap_lut() -> np.ndarray:
+        return pg.colormap.get("viridis").getLookupTable(0.0, 1.0, 256)
+
+    def _on_heatmap_toggled(self, checked: bool) -> None:
+        self.scatter_fci.setVisible(not checked)
+        self.scatter_psd.setVisible(not checked)
+        self.heatmap_fci.setVisible(checked)
+        self.heatmap_psd.setVisible(checked)
+        # Whichever representation was just hidden stops being updated in add_events() (see
+        # there), so it can be stale by however much accumulated while the other one was active --
+        # refresh it now, on the switch, rather than leaving it stale until the next batch happens
+        # to arrive.
+        if checked:
+            self._update_heatmaps()
+        else:
+            self.scatter_fci.setData(self._energy, self._fci)
+            self.scatter_psd.setData(self._energy, self._psd)
+
+    def _update_heatmaps(self) -> None:
+        if not self._energy:
+            return
+        energy = np.asarray(self._energy, dtype=np.float64)
+        x_min, x_max = float(energy.min()), float(energy.max())
+        if x_max <= x_min:
+            x_max = x_min + 1.0
+        for values, img in ((self._fci, self.heatmap_fci), (self._psd, self.heatmap_psd)):
+            hist, _, _ = np.histogram2d(
+                energy, np.asarray(values, dtype=np.float64),
+                bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
+                range=[[x_min, x_max], [0.0, 1.0]],
+            )
+            img.setImage(hist, autoLevels=True)
+            img.setRect(QRectF(x_min, 0.0, x_max - x_min, 1.0))
+
+    def get_accumulated_events(self) -> tuple[list[int], list[float], list[float]]:
+        """(energy, fci, psd) parallel lists for whatever is currently plotted -- the FoM wizard's
+        "live session data" source. Returns copies: the caller must not be able to corrupt this
+        view's own buffers by mutating what it gets back."""
+        return list(self._energy), list(self._fci), list(self._psd)
 
     def _on_start(self) -> None:
         if self.confirm_start is not None and not self.confirm_start():
@@ -274,6 +389,10 @@ class LiveView(QWidget):
         self._last_stats = None
         self.scatter_fci.setData([], [])
         self.scatter_psd.setData([], [])
+        self.heatmap_fci.clear()
+        self.heatmap_psd.clear()
+        self.fci_stats.clear_rate_history()
+        self.psd_stats.clear_rate_history()
         self._refresh_side_panels()
 
     def add_events(self, events: list[AcqEvent]) -> None:
@@ -297,8 +416,11 @@ class LiveView(QWidget):
             del self._fci[:overflow]
             del self._psd[:overflow]
 
-        self.scatter_fci.setData(self._energy, self._fci)
-        self.scatter_psd.setData(self._energy, self._psd)
+        if self.chk_heatmap.isChecked():
+            self._update_heatmaps()
+        else:
+            self.scatter_fci.setData(self._energy, self._fci)
+            self.scatter_psd.setData(self._energy, self._psd)
 
         self._rate_samples.append((time.monotonic(), self._total_events))
         self._refresh_side_panels()

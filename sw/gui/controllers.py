@@ -14,7 +14,9 @@ from PySide6.QtWidgets import QFileDialog, QMessageBox
 import config
 from acquisition_worker import AcquisitionWorker
 from csv_logger import CsvLogger, TraceCsvLogger
-from fci_api import FciClient, FciTransport, list_matching_ports
+from fci_api import FciClient, FciError, FciTransport, list_matching_ports
+from ui.calibration_wizard import CalibrationWizard
+from ui.fom_wizard import FomWizard
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ class AppController(QObject):
         self.view.scope_view.start_clicked.connect(self.scope_start)
         self.view.scope_view.stop_clicked.connect(self.scope_stop)
         self.view.scope_view.single_clicked.connect(self.scope_single)
+        self.view.scope_view.calibrate_clicked.connect(self.open_calibration_wizard)
+        self.view.live_view.fom_wizard_clicked.connect(self.open_fom_wizard)
 
     # ---------------------------------------------------------------------------- port discovery
 
@@ -264,6 +268,25 @@ class AppController(QObject):
     def scope_single(self, n: int) -> None:
         if self.worker is not None:
             self.worker.request_trace(n)
+
+    def open_calibration_wizard(self) -> None:
+        if self.config_client is None:
+            return
+        dlg = CalibrationWizard(self.config_client, self.view)
+        if dlg.exec() != CalibrationWizard.DialogCode.Accepted:
+            return
+        try:
+            dlg.apply_to_device()
+        except FciError as e:
+            logger.warning(f"calibration apply failed: {e}")
+            QMessageBox.warning(self.view, "Apply Failed", f"Could not write trigger config: {e}")
+            return
+        self.view.scope_view.trigger_config.refresh()
+
+    def open_fom_wizard(self) -> None:
+        dlg = FomWizard(self.config_client, self.worker, self.view.live_view.get_accumulated_events,
+                         self.view)
+        dlg.exec()
 
     # -------------------------------------------------------------------------------------- misc
 

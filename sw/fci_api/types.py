@@ -132,7 +132,10 @@ class PsdConfig:
     baseline_ref: int
     """Signed pedestal trim, -32768..32767. 0 is correct when fed by the baseline restorer."""
     watermark: int
-    """Interrupt threshold, 0..32. 0 disables."""
+    """Interrupt threshold, 0..32. 0 disables. As of this firmware build, has no observable effect
+    on GUI-visible behavior: no ISR is registered for psd_core's watermark interrupt line ($RB/$RV
+    already drain the result FIFO by polling on every request instead), which is also why the
+    fci_api/GUI configuration panel does not expose this field."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +150,8 @@ class FciConfig:
     watermark: int | None
     """Interrupt threshold, 0..32; 0 disables. None if the FCI result path (fci_sink) is not
     present in the loaded bitstream -- that build has no watermark index at all (index 4 does not
-    exist; `$SF 4`/`$GF 4` get `!XX 1` from the device), not merely an unset value."""
+    exist; `$SF 4`/`$GF 4` get `!XX 1` from the device), not merely an unset value. Also has no
+    observable effect even where present -- see PsdConfig.watermark's docstring."""
 
 
 @dataclass(frozen=True, slots=True)

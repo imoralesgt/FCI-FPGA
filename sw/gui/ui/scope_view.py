@@ -4,6 +4,15 @@ and redraws (like a real scope's run mode); "Single" grabs and holds exactly one
 writes anything to disk -- this view is for live setup, not for recording (see
 CLI_documentation.md section 2.6, $RT).
 
+There used to be a separate "Samples" spinbox here controlling the `n` argument to $RT. That was
+misleading: $RT's `n` only CAPS how many samples of the trigger's last completed background
+capture get returned (Bringup_CaptureTrace() in firmware) -- it does not re-arm a new capture at
+that depth. The trace's actual length is entirely governed by the Trigger's own Depth register
+(TRIGGER_FIELDS below, embedded in this same view), so asking $RT for more than Depth currently
+holds can never return more than Depth. Every request here now simply asks for the firmware's own
+max (TRACE_MAX_SAMPLES) so this cap is never the limiting factor -- change Depth, not a second
+"Samples" control, to actually get a longer or shorter trace.
+
 All controls for this view live inside ScopeView itself, not in MainWindow -- nothing here needs
 anything from outside this widget except the client (set_client(), for the embedded Trigger config
 form) and the events fed in via show_trace().
@@ -13,17 +22,18 @@ from __future__ import annotations
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from fci_api import FciClient, TraceResult
 
-from .config_panel import SubsystemPanel, TRIGGER_FIELDS
+from .config_panel import TRACE_MAX_SAMPLES, SubsystemPanel, TRIGGER_FIELDS
 
 
 class ScopeView(QWidget):
     start_clicked = Signal(int)  # requested sample count
     stop_clicked = Signal()
     single_clicked = Signal(int)  # requested sample count
+    calibrate_clicked = Signal()
 
     def __init__(self):
         super().__init__()
@@ -39,16 +49,6 @@ class ScopeView(QWidget):
 
         ctrl_box = QGroupBox("Oscilloscope Controls")
         ctrl_layout = QHBoxLayout(ctrl_box)
-        ctrl_layout.addWidget(QLabel("Samples:"))
-        self.spin_samples = QSpinBox()
-        self.spin_samples.setRange(1, 2048)
-        # Defaults well below the max: read_raw_trace() in firmware (bringup.c) blocks on an
-        # untimed-out FSL read with no watchdog, a known, pre-existing hang risk that gets more
-        # likely to be hit the larger a single capture request is. 512 is a safe, useful default
-        # for eyeballing pulse shape/trigger placement; the max stays available for whoever
-        # explicitly needs the full depth and accepts that risk.
-        self.spin_samples.setValue(512)
-        ctrl_layout.addWidget(self.spin_samples)
 
         self.btn_start = QPushButton("Start")
         self.btn_stop = QPushButton("Stop")
@@ -60,6 +60,10 @@ class ScopeView(QWidget):
         ctrl_layout.addWidget(self.btn_start)
         ctrl_layout.addWidget(self.btn_stop)
         ctrl_layout.addWidget(self.btn_single)
+
+        self.btn_calibrate = QPushButton("Calibrate Threshold...")
+        self.btn_calibrate.clicked.connect(self.calibrate_clicked.emit)
+        ctrl_layout.addWidget(self.btn_calibrate)
 
         self.lbl_status = QLabel("No trace captured yet")
         ctrl_layout.addWidget(self.lbl_status, stretch=1)
@@ -97,7 +101,7 @@ class ScopeView(QWidget):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_single.setEnabled(False)
-        self.start_clicked.emit(self.spin_samples.value())
+        self.start_clicked.emit(TRACE_MAX_SAMPLES)
 
     def _on_stop(self) -> None:
         self._running = False
@@ -108,7 +112,7 @@ class ScopeView(QWidget):
 
     def _on_single(self) -> None:
         self.lbl_status.setText("Capturing...")
-        self.single_clicked.emit(self.spin_samples.value())
+        self.single_clicked.emit(TRACE_MAX_SAMPLES)
 
     def _on_trigger_config_changed(self, cfg) -> None:
         self.set_trigger_level(cfg.threshold)
@@ -122,6 +126,7 @@ class ScopeView(QWidget):
         self.btn_start.setEnabled(enabled)
         self.btn_single.setEnabled(enabled)
         self.btn_stop.setEnabled(enabled and self._running)
+        self.btn_calibrate.setEnabled(enabled)
 
     def set_trigger_level(self, threshold: int | None) -> None:
         """Updates the horizontal dashed reference line. None hides it (e.g. while disconnected,

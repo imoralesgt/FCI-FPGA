@@ -211,7 +211,11 @@ TRIGGER_FIELDS = [
           tooltip="Trigger on the signal crossing threshold upward (checked) or downward."),
     Field("delay", "Delay (samples)", 2, 256,
           tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
-    Field("depth", "Depth (samples)", 1, 2048, tooltip="Capture depth: samples per trace."),
+    Field("depth", "Depth (samples)", 1, 2048,
+          tooltip="Capture depth: samples per trace -- this is what the oscilloscope actually "
+                  "reads back, regardless of what $RT is asked for. Large values raise the risk "
+                  "of hitting a known firmware hang (an untimed-out FSL read in read_raw_trace()) "
+                  "-- prefer a few hundred samples unless you specifically need the full depth."),
 ]
 
 BLR_FIELDS = [
@@ -228,18 +232,27 @@ BLR_FIELDS = [
           tooltip="Live gate-open flag (read-only)."),
 ]
 
+TRACE_MAX_SAMPLES = 2048
+"""Matches the Trigger's own Depth field's hardware max (trigger_core's MAX_DEPTH). A gate can
+never usefully extend past the captured trace itself, so this -- not the register's raw 16-bit
+width -- is the field's real ceiling."""
+
 PSD_FIELDS = [
-    Field("pre_trigger", "Pre-trigger", 0, 65535,
+    Field("pre_trigger", "Pre-trigger", 0, TRACE_MAX_SAMPLES,
           tooltip="Must equal the oscilloscope's trigger Delay -- kept in sync automatically."),
-    Field("pre_gate", "Pre-gate", 0, 65535,
-          tooltip="Samples before the trigger where gate integration begins."),
-    Field("short_gate", "Short gate", 0, 65535, tooltip="Short-gate integration length (samples)."),
-    Field("long_gate", "Long gate", 0, 65535,
-          tooltip="Long-gate integration length (samples); should cover the full pulse."),
+    Field("pre_gate", "Pre-gate", 0, TRACE_MAX_SAMPLES,
+          tooltip="Samples before the trigger where gate integration begins. Cannot exceed the "
+                  "trace length."),
+    Field("short_gate", "Short gate", 0, TRACE_MAX_SAMPLES,
+          tooltip="Short-gate integration length (samples). Cannot exceed the trace length."),
+    Field("long_gate", "Long gate", 0, TRACE_MAX_SAMPLES,
+          tooltip="Long-gate integration length (samples); should cover the full pulse. Cannot "
+                  "exceed the trace length."),
     Field("baseline_ref", "Baseline ref", -32768, 32767,
           tooltip="Signed pedestal trim; 0 when fed by the baseline restorer."),
-    Field("watermark", "Watermark", 0, 32,
-          tooltip="FIFO interrupt threshold (events); 0 disables the interrupt."),
+    # Watermark deliberately not exposed here: this firmware build's ISR table has no handler for
+    # its interrupt line, and $RB/$RV already drain the FIFO by polling on every request, so the
+    # field has no observable effect -- see PsdConfig.watermark's docstring in fci_api/types.py.
 ]
 
 FCI_FIELDS = [
@@ -247,8 +260,7 @@ FCI_FIELDS = [
     Field("psa_l_hi", "PSA_l high", 0, 512, tooltip="PSA_l high FFT bin index."),
     Field("psa_w_lo", "PSA_w low", 0, 512, tooltip="PSA_w low FFT bin index."),
     Field("psa_w_hi", "PSA_w high", 0, 512, tooltip="PSA_w high FFT bin index."),
-    Field("watermark", "Watermark", 0, 32, optional=True, settable_when_none=False,
-          tooltip="FIFO interrupt threshold (events); 0 disables. Absent on some bitstreams."),
+    # Watermark deliberately not exposed here -- same reasoning as PSD_FIELDS above.
 ]
 
 VGA_FIELDS = [
