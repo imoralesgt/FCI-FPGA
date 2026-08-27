@@ -359,22 +359,106 @@ static void start_raw_trace_pipeline(void) {
  * below-baseline sample as ~65000 and turn the noise statistics into nonsense. */
 static s16 g_trace[RAW_TRACE_MAX_SAMPLES];
 
+/* A stalled MM2S transfer needs axi_dma_1 reset and its S2MM side (the continuous background
+ * raw-trace capture, serviced by service_dma1_event()) re-armed, or the next capture would just
+ * stall again with nothing left driving it. Deliberately does NOT call Intc_Init() again the way
+ * start_raw_trace_pipeline() does at startup: that call resets IER wholesale, which would silently
+ * disable axi_dma_0's own S2MM interrupt (added afterward, separately, via Intc_EnableAdditional()
+ * in start_result_pipeline()) as a side effect. The ISR for this bit is already registered and
+ * enabled from startup -- a plain reset plus re-arm is everything a stalled channel needs.
+ *
+ * Global interrupts are held off for the duration: service_dma1_event() (the ISR) also touches
+ * axi_dma_1's registers and g_raw_write_buf. A stale/pending completion from before the reset
+ * firing mid-sequence here -- e.g. between the reset and the re-arm -- would have the ISR and this
+ * foreground code writing the same DMA registers concurrently, which is exactly the kind of
+ * undefined, corrupted engine state that could produce a worse hang than the one being recovered
+ * from. This function runs for at most ~2 register writes and one bounded poll (Dma_ResetCore),
+ * not a meaningful latency hit to anything else interrupts serve. */
+static void recover_raw_trace_pipeline(void) {
+  microblaze_disable_interrupts();
+
+  if (!Dma_ResetCore(AXI_DMA_1_BASEADDR)) {
+    xil_printf("  [FAIL] recover_raw_trace_pipeline: Dma_ResetCore (axi_dma_1) timed out\r\n");
+    microblaze_enable_interrupts();
+    return;
+  }
+
+  u32 depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
+  if (depth == 0 || depth > RAW_TRACE_MAX_SAMPLES)
+    depth = RAW_TRACE_MAX_SAMPLES;
+
+  g_raw_write_buf = RAW_TRACE_BUF_A;
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+
+  microblaze_enable_interrupts();
+}
+
+/* ~75 MHz AXI/CPU clock (cli.c's own timestamp comment), a handful of cycles per spin -- generous
+ * relative to normal streaming (~20-40 us per prior measurement), while still bounding the wait to
+ * a fraction of a second when a transfer has genuinely stalled rather than merely being slow. Not
+ * a precisely measured cycle count, just comfortably on the generous side of both. */
+#define RAW_TRACE_FSL_TIMEOUT_ITERS 2000000
+
+/* Non-blocking "test get" (the MicroBlaze tget instruction, which sets the carry flag rather than
+ * blocking when no data is available) with a bounded retry count, instead of a plain blocking
+ * getfslx. Returns 1 with *out_word set on success, 0 if the stream never delivered a word within
+ * the timeout.
+ *
+ * The tget and the carry-flag read are ONE inline asm block, not fsl.h's separate tgetfslx() +
+ * fsl_isinvalid() macros called back to back: those are two independent asm volatile statements
+ * with no stated dependency between them, so the compiler is free to insert other code between
+ * them (e.g. a register spill) that clobbers the carry flag before it's read -- especially at any
+ * optimization level above -O0. A single asm block with both instructions inside, and nothing
+ * else, is the only way to guarantee nothing executes between them. */
+static int fsl1_get_timeout(u32 *out_word) {
+  u32 word, invalid, spins = 0;
+  do {
+    asm volatile ("tget\t%0,rfsl1\n\taddic\t%1,r0,0" : "=d" (word), "=d" (invalid));
+  } while (invalid && ++spins < RAW_TRACE_FSL_TIMEOUT_ITERS);
+  if (invalid)
+    return 0;
+  *out_word = word;
+  return 1;
+}
+
 /* Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace. Kept separate from
- * printing so calibrate_threshold() can analyse a trace without dumping it over the UART. */
-static void read_raw_trace(u32 buf_addr, u32 depth) {
+ * printing so calibrate_threshold() can analyse a trace without dumping it over the UART.
+ *
+ * Returns 1 on success, 0 if the FSL stream stalled -- in which case g_trace's contents are
+ * whatever was read so far, not meaningful, and axi_dma_1 has already been reset and re-armed for
+ * the background capture pipeline (recover_raw_trace_pipeline()) before returning.
+ *
+ * This used to be a single unconditional blocking getfslx() per word. That blocking read has no
+ * software-visible in-flight state and cannot be timed out once issued to the CPU pipeline -- if
+ * the stream ever stalled (observed on real hardware: applying a new oscilloscope Depth of 1024
+ * triggered it, not only large values as previously assumed), the CPU stalled on that single
+ * instruction forever, taking the whole MicroBlaze down with it -- including the CLI's own command
+ * loop. No client reconnect could recover from this, because the firmware itself was stuck
+ * mid-instruction, not merely unresponsive; only a power cycle did. The bounded poll below detects
+ * a stall and aborts the transfer instead of hanging. */
+static int read_raw_trace(u32 buf_addr, u32 depth) {
   DmaMm2s_ArmTransfer(AXI_DMA_1_BASEADDR, buf_addr, depth * 2);
   u32 copied = 0;
   while (copied < depth) {
     u32 word;
-    getfslx(word, 1, FSL_DEFAULT);
+    if (!fsl1_get_timeout(&word)) {
+      xil_printf("  [FAIL] read_raw_trace: FSL stream 1 stalled after %d/%d samples\r\n",
+                 (int)copied, (int)depth);
+      recover_raw_trace_pipeline();
+      return 0;
+    }
     g_trace[copied++] = (s16)(word & 0xFFFF);
     if (copied < depth)
       g_trace[copied++] = (s16)((word >> 16) & 0xFFFF);
   }
+  return 1;
 }
 
 static void print_raw_trace(u32 buf_addr, u32 depth) {
-  read_raw_trace(buf_addr, depth);
+  if (!read_raw_trace(buf_addr, depth)) {
+    xil_printf("RAW,0\r\n");
+    return;
+  }
 
   xil_printf("RAW,%d\r\n", depth);
   for (u32 i = 0; i < depth; i++)
@@ -387,8 +471,20 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
  * and waiting for one: a $RT that blocked until the next trigger would stall the command interface
  * for however long the source takes to produce an event, which at background rates is seconds. */
 int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
-  u32 addr = g_raw_ready_buf;
-  u32 depth = g_raw_ready_depth;
+  /* g_raw_ready_buf/g_raw_ready_depth are two separate volatile variables, updated together (but
+   * not atomically from this reader's point of view) by service_dma1_event() -- the ISR -- every
+   * time a capture completes. Confirmed on real hardware: a threshold that triggers near-
+   * continuously (e.g. 0, parked at the noise band) hangs the whole device within the first few
+   * $RT calls, while a sparse threshold at the identical depth/delay survives many calls cleanly
+   * -- exactly the signature of the ISR firing between these two reads often enough to matter only
+   * at high trigger rates. A torn read hands read_raw_trace() an address from one capture paired
+   * with the depth from a different, later one, which is undefined for it. Snapshotting both with
+   * interrupts held off makes them consistent with each other. */
+  u32 addr, depth;
+  microblaze_disable_interrupts();
+  addr = g_raw_ready_buf;
+  depth = g_raw_ready_depth;
+  microblaze_enable_interrupts();
 
   if (addr == 0 || depth == 0 || out_buf == 0 || out_count == 0)
     return 0;
@@ -399,7 +495,8 @@ int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
 
   /* Reads straight into g_trace, this file's own static storage -- see cli.h's CliTraceFn comment
    * for why the caller gets a pointer into it rather than a copy. */
-  read_raw_trace(addr, depth);
+  if (!read_raw_trace(addr, depth))
+    return 0;  /* stalled -- $RT reports this the same as "no capture pending" */
   *out_buf = g_trace;
   *out_count = depth;
   return 1;
@@ -604,7 +701,11 @@ static int calibrate_threshold(void) {
   u32 depth = g_raw_ready_depth;
   if (depth > BASELINE_SAMPLES) /* only the pre-trigger region is guaranteed quiet */
     depth = BASELINE_SAMPLES;
-  read_raw_trace(g_raw_ready_buf, g_raw_ready_depth);
+  if (!read_raw_trace(g_raw_ready_buf, g_raw_ready_depth)) {
+    xil_printf("  [FAIL] read_raw_trace stalled while reading the calibration capture\r\n");
+    g_fail_count++;
+    return 0;
+  }
 
   /* Signed throughout: with the baseline restored to zero the mean is near 0 and can legitimately
    * be negative, so an unsigned accumulator would wrap on the first below-zero sample. */
@@ -813,7 +914,10 @@ static void test_vga_fine_bisect(void) {
     }
 
     u32 depth = g_raw_ready_depth;
-    read_raw_trace(g_raw_ready_buf, depth);
+    if (!read_raw_trace(g_raw_ready_buf, depth)) {
+      xil_printf("  [INFO] read_raw_trace stalled at this gain -- skipping\r\n");
+      continue;
+    }
 
     u32 stat_n = (depth > BASELINE_SAMPLES) ? BASELINE_SAMPLES : depth;
     s32 sum = 0;
@@ -900,9 +1004,10 @@ static void test_encoding_fold_demo(void) {
   if (g_raw_event_count == count_before) {
     xil_printf("  [INFO] no event reached %d within ~10s -- gain still too low to reach the fold\r\n",
                select);
+  } else if (!read_raw_trace(g_raw_ready_buf, g_raw_ready_depth)) {
+    xil_printf("  [INFO] read_raw_trace stalled -- skipping demo\r\n");
   } else {
     u32 depth = g_raw_ready_depth;
-    read_raw_trace(g_raw_ready_buf, depth);
 
     u32 peak = 0, peak_idx = 0, crossings = 0;
     for (u32 i = 0; i < depth; i++) {
