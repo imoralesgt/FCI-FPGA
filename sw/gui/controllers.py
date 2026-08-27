@@ -9,11 +9,11 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QObject, QTimer, Slot
-from PySide6.QtWidgets import QFileDialog
+from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 import config
 from acquisition_worker import AcquisitionWorker
-from csv_logger import CsvLogger
+from csv_logger import CsvLogger, TraceCsvLogger
 from fci_api import FciClient, FciTransport, list_matching_ports
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,7 @@ class AppController(QObject):
         self.config_client: FciClient | None = None
         self.worker: AcquisitionWorker | None = None
         self.csv_logger: CsvLogger | None = None
+        self.scope_csv_logger: TraceCsvLogger | None = None
 
         self.is_connected = False
         self._expect_connection = False
@@ -47,6 +48,9 @@ class AppController(QObject):
         self.view.btn_refresh_ports.clicked.connect(self.scan_ports)
         self.view.btn_connect.clicked.connect(self.toggle_connection)
         self.view.btn_browse_dir.clicked.connect(self.browse_csv_dir)
+        self.view.chk_record.toggled.connect(self.on_record_toggled)
+        self.view.live_view.confirm_start = self._confirm_and_maybe_record
+        self.view.scope_view.confirm_start = self._confirm_and_maybe_record
         self.view.live_view.start_clicked.connect(self.start_acquisition)
         self.view.live_view.stop_clicked.connect(self.stop_acquisition)
         self.view.scope_view.start_clicked.connect(self.scope_start)
@@ -90,10 +94,9 @@ class AppController(QObject):
         self.worker = AcquisitionWorker(self.transport, config.BATCH_POLL_INTERVAL_MS / 1000.0,
                                          config.STATS_POLL_INTERVAL_MS / 1000.0)
         self.worker.batch_received.connect(self.on_batch_received)
-        self.worker.trace_received.connect(self.view.scope_view.show_trace)
+        self.worker.trace_received.connect(self.on_trace_received)
         self.worker.stats_received.connect(self.view.live_view.update_stats)
         self.worker.connection_changed.connect(self.on_connection_changed)
-        self.worker.acquisition_state_changed.connect(self.on_acquisition_state_changed)
         self.worker.error_occurred.connect(self.on_error)
 
         self.view.btn_connect.setText("Connecting...")
@@ -138,13 +141,24 @@ class AppController(QObject):
             self.view.btn_connect.setEnabled(True)
             self.view.set_connected_controls_enabled(True)
             self.view.config_panel.set_client(self.config_client)
-            self._refresh_scope_trigger_level()
+            self.view.live_view.set_client(self.config_client)
+            self.view.scope_view.set_client(self.config_client)
         else:
             self.view.set_connected_controls_enabled(False)
             self.view.config_panel.set_client(None)
+            self.view.live_view.set_client(None)
             self.view.live_view.set_controls_enabled(False)
+            self.view.scope_view.set_client(None)
             self.view.scope_view.set_trigger_level(None)
+            # Closes out any in-progress recording session directly, without touching the Record
+            # checkbox itself -- it's a lasting preference (armed by default), not something a
+            # disconnect should reset, so it stays exactly as the user left it for next time.
+            if self.csv_logger is not None:
+                logger.info(f"Recording stopped by disconnect ({self.csv_logger.event_count} "
+                            f"events logged).")
             self.csv_logger = None
+            self.scope_csv_logger = None
+            self.view.set_recording_active(False)
             self.worker = None
             self.transport = None
             self.config_client = None
@@ -182,25 +196,64 @@ class AppController(QObject):
         if self.worker is not None:
             self.worker.request_stop_acquisition()
 
-    @Slot(bool)
-    def on_acquisition_state_changed(self, enabled: bool) -> None:
-        if enabled:
-            self.view.live_view.clear()
-            self.csv_logger = CsvLogger(Path(self.view.txt_csv_dir.text()))
-            logger.info(f"CSV logging to {self.csv_logger.path}")
-        else:
-            self.csv_logger = None
-
     @Slot(list)
     def on_batch_received(self, events) -> None:
         self.view.live_view.add_events(events)
         if self.csv_logger is not None:
             self.csv_logger.append_many(events)
 
+    @Slot(object)
+    def on_trace_received(self, trace) -> None:
+        self.view.scope_view.show_trace(trace)
+        if self.scope_csv_logger is not None and trace is not None:
+            self.scope_csv_logger.append(trace)
+
+    # ---------------------------------------------------------------------------------- recording
+
+    def on_record_toggled(self, checked: bool) -> None:
+        """The Record checkbox is a standing preference (armed by default), not itself the
+        trigger for writing files -- that happens in _ensure_recording_session(), gated behind
+        the confirmation shown when Start is actually pressed. Unchecking it, though, closes any
+        session already in progress immediately: turning Record off must always mean "stop
+        writing now", not "stop next time Start happens to be pressed"."""
+        if not checked and self.csv_logger is not None:
+            logger.info(f"Recording stopped ({self.csv_logger.event_count} events logged).")
+            self.csv_logger = None
+            self.scope_csv_logger = None
+            self.view.set_recording_active(False)
+
+    def _confirm_and_maybe_record(self) -> bool:
+        """Consulted by LiveView/ScopeView before their Start button does anything. Returns
+        whether Start should proceed at all -- declining the recording warning cancels the whole
+        Start action, not just recording, since the warning is framed as "Start will begin
+        recording" rather than as a separate, skippable prompt."""
+        if not self.view.chk_record.isChecked():
+            return True
+        reply = QMessageBox.question(
+            self.view,
+            "Start Acquisition",
+            "Recording is enabled -- starting will begin writing data to CSV "
+            f"({self.view.txt_csv_dir.text()}).\n\nContinue?",
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Ok,
+        )
+        if reply != QMessageBox.StandardButton.Ok:
+            return False
+        self._ensure_recording_session()
+        return True
+
+    def _ensure_recording_session(self) -> None:
+        if self.csv_logger is not None:
+            return  # already recording (e.g. Stop then Start again) -- keep using the same files
+        out_dir = Path(self.view.txt_csv_dir.text())
+        self.csv_logger = CsvLogger(out_dir)
+        self.scope_csv_logger = TraceCsvLogger(out_dir)
+        self.view.set_recording_active(True)
+        logger.info(f"Recording started: {self.csv_logger.path}, {self.scope_csv_logger.path}")
+
     # ---------------------------------------------------------------------------------- scope
 
     def scope_start(self, n: int) -> None:
-        self._refresh_scope_trigger_level()
         if self.worker is not None:
             self.worker.request_scope_start(n)
 
@@ -209,30 +262,8 @@ class AppController(QObject):
             self.worker.request_scope_stop()
 
     def scope_single(self, n: int) -> None:
-        self._refresh_scope_trigger_level()
         if self.worker is not None:
             self.worker.request_trace(n)
-
-    def _refresh_scope_trigger_level(self) -> None:
-        """Fetches the current trigger threshold directly (not routed through the worker -- see
-        AcquisitionWorker's docstring for why config reads are the one thing allowed to bypass it)
-        and pushes it to the scope view's dashed reference line.
-
-        Called once per Start/Single click rather than once per displayed frame: the threshold
-        rarely changes mid-session, and re-fetching it on every continuous-scope frame would add a
-        second round trip alongside every $RT for no benefit most of the time.
-        """
-        if self.config_client is None:
-            return
-        try:
-            threshold = self.config_client.get_trigger().threshold
-        except Exception as e:
-            # Deliberately broad: transact() can raise a raw pyserial exception (not just
-            # FciError) if the link drops mid-call, and this is a best-effort UI refresh, not a
-            # critical path -- worst case the dashed line stays at its last known value.
-            logger.warning(f"could not read trigger threshold for the scope line: {e}")
-            return
-        self.view.scope_view.set_trigger_level(threshold)
 
     # -------------------------------------------------------------------------------------- misc
 

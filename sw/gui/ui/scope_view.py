@@ -5,7 +5,8 @@ writes anything to disk -- this view is for live setup, not for recording (see
 CLI_documentation.md section 2.6, $RT).
 
 All controls for this view live inside ScopeView itself, not in MainWindow -- nothing here needs
-anything from outside this widget except the events fed in via show_trace()/set_trigger_level().
+anything from outside this widget except the client (set_client(), for the embedded Trigger config
+form) and the events fed in via show_trace().
 """
 
 from __future__ import annotations
@@ -14,7 +15,9 @@ import pyqtgraph as pg
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget
 
-from fci_api import TraceResult
+from fci_api import FciClient, TraceResult
+
+from .config_panel import SubsystemPanel, TRIGGER_FIELDS
 
 
 class ScopeView(QWidget):
@@ -25,6 +28,10 @@ class ScopeView(QWidget):
     def __init__(self):
         super().__init__()
         self._running = False
+        self.confirm_start = None
+        """Optional callable, injected by the controller: () -> bool. See LiveView's identical
+        attribute for why -- consulted only by Start (continuous run), not Single, matching what
+        was actually asked for."""
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -58,6 +65,11 @@ class ScopeView(QWidget):
         ctrl_layout.addWidget(self.lbl_status, stretch=1)
         layout.addWidget(ctrl_box)
 
+        self.trigger_config = SubsystemPanel("Trigger Configuration", TRIGGER_FIELDS,
+                                              "get_trigger", "set_trigger")
+        self.trigger_config.config_changed.connect(self._on_trigger_config_changed)
+        layout.addWidget(self.trigger_config)
+
         self.plot_widget = pg.PlotWidget(title="Raw trace (signed ADC codes)")
         self.plot_widget.setLabel("bottom", "sample index")
         self.plot_widget.setLabel("left", "ADC code")
@@ -79,6 +91,8 @@ class ScopeView(QWidget):
     # ---- internal button handlers: local enable/disable state, then tell the controller ----
 
     def _on_start(self) -> None:
+        if self.confirm_start is not None and not self.confirm_start():
+            return
         self._running = True
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
@@ -95,6 +109,12 @@ class ScopeView(QWidget):
     def _on_single(self) -> None:
         self.lbl_status.setText("Capturing...")
         self.single_clicked.emit(self.spin_samples.value())
+
+    def _on_trigger_config_changed(self, cfg) -> None:
+        self.set_trigger_level(cfg.threshold)
+
+    def set_client(self, client: FciClient | None) -> None:
+        self.trigger_config.set_client(client)
 
     def set_controls_enabled(self, enabled: bool) -> None:
         if not enabled and self._running:

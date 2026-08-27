@@ -1,5 +1,11 @@
-"""Configuration tab: one group box per subsystem (trigger/BLR/PSD/FCI/VGA/shaper), each a thin
-form over the matching fci_api get_*()/set_*() pair.
+"""Subsystem config field/panel machinery, plus the Configuration tab itself.
+
+`SubsystemPanel` and the per-subsystem `Field` lists are the shared building block: the Trigger
+panel lives inside ScopeView (scope_view.py), and the FCI/PSD panels live inside LiveView's
+acquisition frames (live_view.py) -- both import from here rather than duplicating this class, per
+the same one-place-per-fact reasoning as the field lists themselves. This module's own
+`ConfigPanel` tab holds only the subsystems that don't have a more specific home: Baseline
+Restorer, VGA, and Pulse Shaper.
 
 Calls fci_api directly from the GUI thread (not routed through AcquisitionWorker) -- this is the
 one deliberate exception the approved plan calls out: FciTransport's RLock is exactly what makes
@@ -17,8 +23,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
+from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -26,12 +33,13 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from fci_api import FciClient, FciError
+
+from .slider_spin import SliderSpinField
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +53,10 @@ class Field:
     maximum: int = 65535
     is_bool: bool = False
     read_only: bool = False
+    tooltip: str = ""
+    """Labels are kept short so the slider next to them keeps most of the panel's width -- a long
+    descriptive phrase used to be baked into the label itself; that detail now lives here instead,
+    shown on hover rather than eating horizontal space every field row has to pay for."""
     optional: bool = False
     """True if the value can be None. Two genuinely different reasons a field is None, both
     handled here but NOT the same:
@@ -58,24 +70,41 @@ class Field:
     settable_when_none: bool = True
 
 
-class _SubsystemPanel(QGroupBox):
-    def __init__(self, title: str, fields: list[Field], get_fn: Callable[[], Any],
-                 set_fn: Callable[..., None]):
+class SubsystemPanel(QGroupBox):
+    """One subsystem's Refresh/Apply form. Owns its own client reference (set_client()) rather
+    than being handed bound get/set callables by a parent container -- this is what lets the same
+    class live inside ConfigPanel, LiveView, or ScopeView interchangeably, each just calling
+    set_client() on whichever panels it holds when a connection comes up or drops.
+    """
+
+    config_changed = Signal(object)
+    """Emitted with the freshly read dataclass on every successful refresh() (on connect, on the
+    user's own Refresh click, and again after a successful Apply). Lets an embedding view (e.g.
+    ScopeView's trigger dashed line) stay in sync without polling this panel itself."""
+
+    def __init__(self, title: str, fields: list[Field], get_name: str, set_name: str):
         super().__init__(title)
         self._fields = fields
-        self._get_fn = get_fn
-        self._set_fn = set_fn
+        self._get_name = get_name
+        self._set_name = set_name
+        self._client: FciClient | None = None
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
 
         grid = QGridLayout(self)
+        grid.setColumnStretch(0, 0)
+        grid.setColumnStretch(1, 1)
         for row, f in enumerate(fields):
-            grid.addWidget(QLabel(f.label + ":"), row, 0)
+            lbl = QLabel(f.label + ":")
+            if f.tooltip:
+                lbl.setToolTip(f.tooltip)
+            grid.addWidget(lbl, row, 0)
             if f.is_bool:
                 w = QCheckBox()
             else:
-                w = QSpinBox()
-                w.setRange(f.minimum, f.maximum)
+                w = SliderSpinField(f.minimum, f.maximum)
+            if f.tooltip:
+                w.setToolTip(f.tooltip)
             w.setEnabled(not f.read_only)
             grid.addWidget(w, row, 1)
             self._controls[f.name] = w
@@ -92,6 +121,14 @@ class _SubsystemPanel(QGroupBox):
         self.lbl_status.setStyleSheet("color: #c0392b;")
         grid.addWidget(self.lbl_status, btn_row + 1, 0, 1, 2)
 
+        self.set_controls_enabled(False)
+
+    def set_client(self, client: FciClient | None) -> None:
+        self._client = client
+        self.set_controls_enabled(client is not None)
+        if client is not None:
+            self.refresh()
+
     def set_controls_enabled(self, enabled: bool) -> None:
         self.btn_refresh.setEnabled(enabled)
         self.btn_apply.setEnabled(enabled)
@@ -99,14 +136,16 @@ class _SubsystemPanel(QGroupBox):
             self._controls[f.name].setEnabled(enabled and not f.read_only)
 
     def refresh(self) -> None:
+        if self._client is None:
+            return
         try:
-            cfg = self._get_fn()
+            cfg = getattr(self._client, self._get_name)()
         except FciError as e:
             # Non-blocking by design: refresh() runs automatically on every connect (via
-            # ConfigPanel.set_client() -> refresh_all()), not only from this panel's own button, so
-            # a transient failure here must never be able to stop and wait for a user click -- a
-            # modal QMessageBox in this path previously froze the whole application on exactly that
-            # sequence (a read failing during the automatic post-connect refresh).
+            # set_client()), not only from this panel's own button, so a transient failure here
+            # must never be able to stop and wait for a user click -- a modal QMessageBox in this
+            # path previously froze the whole application on exactly that sequence (a read failing
+            # during the automatic post-connect refresh).
             logger.warning(f"{self.title()}: refresh failed: {e}")
             self.lbl_status.setText(f"Read failed: {e}")
             return
@@ -130,6 +169,7 @@ class _SubsystemPanel(QGroupBox):
                 w.setChecked(bool(value))
             else:
                 w.setValue(int(value))
+        self.config_changed.emit(cfg)
 
     def apply(self) -> None:
         if self._last is None:
@@ -157,7 +197,7 @@ class _SubsystemPanel(QGroupBox):
         if not kwargs:
             return
         try:
-            self._set_fn(**kwargs)
+            getattr(self._client, self._set_name)(**kwargs)
         except FciError as e:
             logger.warning(f"{self.title()}: apply failed: {e}")
             self.lbl_status.setText(f"Write failed: {e}")
@@ -165,65 +205,79 @@ class _SubsystemPanel(QGroupBox):
 
 
 TRIGGER_FIELDS = [
-    Field("threshold", "Threshold (signed ADC code)", -32768, 32767),
-    Field("rising", "Rising edge", is_bool=True),
-    Field("delay", "Pre-trigger delay (samples)", 2, 256),
-    Field("depth", "Capture depth (samples)", 1, 2048),
+    Field("threshold", "Threshold", -32768, 32767,
+          tooltip="Signed ADC code the live signal must cross to fire a capture."),
+    Field("rising", "Rising edge", is_bool=True,
+          tooltip="Trigger on the signal crossing threshold upward (checked) or downward."),
+    Field("delay", "Delay (samples)", 2, 256,
+          tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
+    Field("depth", "Depth (samples)", 1, 2048, tooltip="Capture depth: samples per trace."),
 ]
 
 BLR_FIELDS = [
-    Field("shift", "Shift k (tau = 2^k samples)", 0, 15),
-    Field("gate_thr", "Gate threshold", 0, 16383),
-    Field("holdoff", "Hold-off (samples)", 0, 4095),
-    Field("bypass", "Bypass", is_bool=True),
-    Field("hold", "Hold", is_bool=True),
-    Field("baseline", "Baseline (live, read-only)", -32768, 32767, read_only=True),
-    Field("gate_open", "Gate open (live, read-only)", is_bool=True, read_only=True),
+    Field("shift", "Shift k", 0, 15, tooltip="Baseline restorer time constant: tau = 2^k samples."),
+    Field("gate_thr", "Gate threshold", 0, 16383,
+          tooltip="Deviation from baseline (counts) that opens the restorer's gate."),
+    Field("holdoff", "Hold-off", 0, 4095,
+          tooltip="Samples to hold the gate closed after a pulse (samples)."),
+    Field("bypass", "Bypass", is_bool=True, tooltip="Disable baseline restoration entirely."),
+    Field("hold", "Hold", is_bool=True, tooltip="Freeze the baseline estimate."),
+    Field("baseline", "Baseline (RO)", -32768, 32767, read_only=True,
+          tooltip="Live baseline estimate (read-only)."),
+    Field("gate_open", "Gate open (RO)", is_bool=True, read_only=True,
+          tooltip="Live gate-open flag (read-only)."),
 ]
 
 PSD_FIELDS = [
-    Field("pre_trigger", "Pre-trigger (must equal trigger delay)", 0, 65535),
-    Field("pre_gate", "Pre-gate (samples)", 0, 65535),
-    Field("short_gate", "Short gate (samples)", 0, 65535),
-    Field("long_gate", "Long gate (samples)", 0, 65535),
-    Field("baseline_ref", "Baseline reference (signed)", -32768, 32767),
-    Field("watermark", "Watermark (0 disables)", 0, 32),
+    Field("pre_trigger", "Pre-trigger", 0, 65535,
+          tooltip="Must equal the oscilloscope's trigger Delay -- kept in sync automatically."),
+    Field("pre_gate", "Pre-gate", 0, 65535,
+          tooltip="Samples before the trigger where gate integration begins."),
+    Field("short_gate", "Short gate", 0, 65535, tooltip="Short-gate integration length (samples)."),
+    Field("long_gate", "Long gate", 0, 65535,
+          tooltip="Long-gate integration length (samples); should cover the full pulse."),
+    Field("baseline_ref", "Baseline ref", -32768, 32767,
+          tooltip="Signed pedestal trim; 0 when fed by the baseline restorer."),
+    Field("watermark", "Watermark", 0, 32,
+          tooltip="FIFO interrupt threshold (events); 0 disables the interrupt."),
 ]
 
 FCI_FIELDS = [
-    Field("psa_l_lo", "PSA_l low bin", 0, 512),
-    Field("psa_l_hi", "PSA_l high bin", 0, 512),
-    Field("psa_w_lo", "PSA_w low bin", 0, 512),
-    Field("psa_w_hi", "PSA_w high bin", 0, 512),
-    Field("watermark", "Watermark (0 disables)", 0, 32, optional=True, settable_when_none=False),
+    Field("psa_l_lo", "PSA_l low", 0, 512, tooltip="PSA_l low FFT bin index."),
+    Field("psa_l_hi", "PSA_l high", 0, 512, tooltip="PSA_l high FFT bin index."),
+    Field("psa_w_lo", "PSA_w low", 0, 512, tooltip="PSA_w low FFT bin index."),
+    Field("psa_w_hi", "PSA_w high", 0, 512, tooltip="PSA_w high FFT bin index."),
+    Field("watermark", "Watermark", 0, 32, optional=True, settable_when_none=False,
+          tooltip="FIFO interrupt threshold (events); 0 disables. Absent on some bitstreams."),
 ]
 
 VGA_FIELDS = [
-    Field("fine_gain_milli", "Fine gain (milli-units, 1500 = x1.50)", 1, 60000),
-    Field("coarse_gain_milli", "Coarse gain (milli-units, 6000 = x6.00)", 1, 60000),
-    Field("fine_dac_code", "Fine DAC raw code", 0, 4095, optional=True),
+    Field("fine_gain_milli", "Fine gain", 1, 60000, tooltip="Milli-units; 1500 = x1.50."),
+    Field("coarse_gain_milli", "Coarse gain", 1, 60000, tooltip="Milli-units; 6000 = x6.00."),
+    Field("fine_dac_code", "Fine DAC code", 0, 4095, optional=True, tooltip="Raw DAC code."),
 ]
 
 SHAPER_FIELDS = [
-    Field("peaking", "Peaking time (samples)", 0, 65535),
-    Field("gap", "Gap time (samples)", 0, 65535),
-    Field("decay", "Decay / pole-zero (samples)", 0, 65535),
+    Field("peaking", "Peaking time", 0, 65535, tooltip="Peaking time (samples)."),
+    Field("gap", "Gap time", 0, 65535, tooltip="Gap time (samples)."),
+    Field("decay", "Decay", 0, 65535, tooltip="Decay / pole-zero time constant (samples)."),
     Field("enable", "Enable", is_bool=True),
 ]
 
 
 class ConfigPanel(QWidget):
-    """Constructed with no client (MainWindow builds all tabs upfront, disabled, before any
+    """The subsystems with no more specific home: Baseline Restorer, VGA, Pulse Shaper. Trigger
+    lives in ScopeView and FCI/PSD live in LiveView, each right beside the view their parameters
+    actually affect -- see this module's own docstring.
+
+    Constructed with no client (MainWindow builds all tabs upfront, disabled, before any
     connection exists -- matching the reference GUI's pattern). Call set_client() once a
-    connection is established; every subsystem panel's get/set calls are bound through small
-    lambdas that close over self._client, so they pick up whatever client is current at call
-    time rather than needing the widgets rebuilt on reconnect.
+    connection is established.
     """
 
     def __init__(self):
         super().__init__()
-        self._client: FciClient | None = None
-        self.panels: list[_SubsystemPanel] = []
+        self.panels: list[SubsystemPanel] = []
 
         outer = QVBoxLayout(self)
         scroll = QScrollArea()
@@ -232,47 +286,24 @@ class ConfigPanel(QWidget):
         inner_layout = QVBoxLayout(inner)
 
         specs = [
-            ("Trigger", TRIGGER_FIELDS, "get_trigger", "set_trigger"),
             ("Baseline Restorer", BLR_FIELDS, "get_blr", "set_blr"),
-            ("PSD", PSD_FIELDS, "get_psd", "set_psd"),
-            ("FCI", FCI_FIELDS, "get_fci", "set_fci"),
             ("VGA", VGA_FIELDS, "get_vga", "set_vga"),
             ("Pulse Shaper (may be absent from this bitstream)", SHAPER_FIELDS,
              "get_shaper", "set_shaper"),
         ]
         for title, fields, get_name, set_name in specs:
-            panel = _SubsystemPanel(
-                title,
-                fields,
-                get_fn=self._bind(get_name),
-                set_fn=self._bind(set_name),
-            )
+            panel = SubsystemPanel(title, fields, get_name, set_name)
             self.panels.append(panel)
             inner_layout.addWidget(panel)
         inner_layout.addStretch(1)
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)
-        self.set_controls_enabled(False)
-
-    def _bind(self, method_name: str) -> Callable[..., Any]:
-        def call(*args, **kwargs):
-            if self._client is None:
-                raise RuntimeError(f"{method_name}() called with no client connected")
-            return getattr(self._client, method_name)(*args, **kwargs)
-
-        return call
 
     def set_client(self, client: FciClient | None) -> None:
-        self._client = client
-        self.set_controls_enabled(client is not None)
-        if client is not None:
-            self.refresh_all()
+        for panel in self.panels:
+            panel.set_client(client)
 
     def set_controls_enabled(self, enabled: bool) -> None:
         for panel in self.panels:
             panel.set_controls_enabled(enabled)
-
-    def refresh_all(self) -> None:
-        for panel in self.panels:
-            panel.refresh()
