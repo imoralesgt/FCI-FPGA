@@ -74,6 +74,12 @@ static void reply_err(int code) { xil_printf("!XX %d\n", code); }
 static void reply_ack(const char *c) { xil_printf("!%c%c\n", c[0], c[1]); }
 static void reply_open(const char *c) { xil_printf("!%c%c", c[0], c[1]); }
 static void reply_val(s32 v) { xil_printf(" %d", v); }
+/* For fields that are unsigned by nature -- trigger_core's free-running cycle-counter timestamp,
+ * and the monotonic event/error counters in AcqStats -- rather than genuinely signed quantities
+ * like a threshold or a charge integral. %d on a u32 whose top bit is set prints as a large
+ * negative number even though the value is a perfectly ordinary, non-negative count: caught live
+ * on trigger_core's timestamp, which at 75 MHz crosses 2^31 about every 28.6 seconds. */
+static void reply_val_u(u32 v) { xil_printf(" %u", v); }
 static void reply_close(void) { xil_printf("\n"); }
 
 static void reply_one(const char *c, s32 v) {
@@ -481,8 +487,8 @@ static int h_rv(const char *c, const s32 *a, int n) {
   }
   reply_open(c);
   reply_val(1);
-  reply_val((s32)(u32)(ev.timestamp & 0xFFFFFFFFu));
-  reply_val((s32)(u32)(ev.timestamp >> 32));
+  reply_val_u((u32)(ev.timestamp & 0xFFFFFFFFu));
+  reply_val_u((u32)(ev.timestamp >> 32));
   reply_val((s32)ev.psa_l);
   reply_val((s32)ev.psa_w);
   reply_val((s32)ev.fci_scaled);
@@ -527,12 +533,12 @@ static int h_rs(const char *c, const s32 *a, int n) {
   reply_close();
   return 0;
 #else
-  reply_val((s32)g_stats.paired);
-  reply_val((s32)g_stats.dropped_fci);
-  reply_val((s32)g_stats.dropped_psd);
-  reply_val((s32)g_stats.fci_overflows);
-  reply_val((s32)g_stats.psd_overflows);
-  reply_val((s32)g_stats.fci_framing_errors);
+  reply_val_u(g_stats.paired);
+  reply_val_u(g_stats.dropped_fci);
+  reply_val_u(g_stats.dropped_psd);
+  reply_val_u(g_stats.fci_overflows);
+  reply_val_u(g_stats.psd_overflows);
+  reply_val_u(g_stats.fci_framing_errors);
   reply_close();
   return 0;
 #endif

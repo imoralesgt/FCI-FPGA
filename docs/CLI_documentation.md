@@ -78,7 +78,7 @@ Returns one event matched across the FCI and PSD result FIFOs by its hardware ti
 | field | description |
 |---|---|
 | `valid` | 1 if an event follows; 0 if none was pending; −1 if the result path is not present in the loaded bitstream. No further values follow 0 or −1. |
-| `ts_lo`, `ts_hi` | 64-bit event timestamp, low word first |
+| `ts_lo`, `ts_hi` | 64-bit event timestamp, low word first, **unsigned decimal** |
 | `psa_l`, `psa_w` | FCI window accumulators |
 | `fci` | FCI ratio × 10 000 |
 | `energy_short`, `energy_long` | PSD gate integrals, signed |
@@ -99,6 +99,8 @@ if that result path is not present in the loaded bitstream.
 ### 2.3 Read statistics (`$RS`)
 
 `!RS <paired> <dropped_fci> <dropped_psd> <ovf_fci> <ovf_psd> <framing_errors>`
+
+All six fields are **unsigned decimal** counters, except that any field reads the literal value −1 when the result path is not present (see above) — that −1 is signed and is the one exception to this section.
 
 | field | description |
 |---|---|
