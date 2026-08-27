@@ -59,6 +59,12 @@ lifetime average would stay skewed by however long acquisition sat paused, and w
 slowly after a real rate change. A short window tracks the current rate and naturally settles to
 0 while paused, with no separate pause-awareness needed."""
 
+RATE_MIN_DT_S = 0.25
+"""Below this much elapsed span between the oldest retained sample and now, LiveView._rate_hz_for()
+reports 0 rather than count/dt -- a bit more than one batch poll interval (config.py's 200 ms), so
+the very first batch after any gap (fresh Start, or resuming after the window emptied during a
+Stop) doesn't get divided by a near-zero dt and read as a spurious spike."""
+
 ENERGY_REGION_FALLBACK = (0.0, 1.0)
 """Where a discriminator's LinearRegionItem starts if its LLD/ULD cut gets enabled before any
 event has arrived yet (nothing real to anchor a range to). Replaced the moment there's data: see
@@ -213,8 +219,14 @@ class LiveView(QWidget):
         self._total_events = 0
         self._excluded_events = 0
         self._rate_samples: deque[tuple[float, int]] = deque()
-        """(wall_clock_time, cumulative total_events) pairs within RATE_WINDOW_S, oldest first --
-        see RATE_WINDOW_S's docstring for why this is a sliding window, not a lifetime average."""
+        """(monotonic_time, energy_long) once per event within RATE_WINDOW_S, oldest first (all
+        events in the same batch share that batch's arrival time -- the granularity add_events()
+        actually receives data at). Per-EVENT, not a running cumulative count like this used to
+        be: the displayed rate is now AND-ed with each discriminator's own LLD/ULD cut
+        (_rate_hz_for()), and a cut can change (drag, enable/disable) after events already
+        arrived, which a plain endpoint-difference counter can't be filtered against
+        retroactively -- recomputing the count from raw per-event records on every read can. See
+        RATE_WINDOW_S's docstring for why this is a sliding window, not a lifetime average."""
         self._last_stats: Stats | None = None
         self.confirm_start = None
         """Optional callable, injected by the controller: () -> bool. Consulted before Start does
@@ -505,6 +517,7 @@ class LiveView(QWidget):
     def add_events(self, events: list[AcqEvent]) -> None:
         if not events:
             return
+        now = time.monotonic()
         for e in events:
             if e.energy_long <= 0:
                 self._excluded_events += 1
@@ -513,6 +526,7 @@ class LiveView(QWidget):
             self._fci.append(e.fci)
             self._psd.append(e.psd)
             self._total_events += 1
+            self._rate_samples.append((now, e.energy_long))
         # _total_events is a true cumulative count, independent of the sliding-window trim below
         # -- it must NOT be derived from len(self._energy), or it would silently stop counting
         # (or even go backwards) once MAX_POINTS starts discarding the oldest plotted points.
@@ -524,26 +538,40 @@ class LiveView(QWidget):
             del self._psd[:overflow]
 
         self._refresh_plots()
-
-        self._rate_samples.append((time.monotonic(), self._total_events))
         self._refresh_side_panels()
 
-    def _current_rate_hz(self) -> float:
-        # Pruned here, against the live clock, rather than only when a new event arrives: the
-        # periodic stats poll (update_stats(), roughly every couple seconds regardless of run
-        # state) calls this too, which is what lets the displayed rate decay towards 0 once events
-        # stop -- pruning only inside add_events() would leave a frozen, stale rate forever once
-        # nothing new is coming in.
+    def _rate_hz_for(self, controls: "_ControlsPanel", region: pg.LinearRegionItem) -> float:
+        """Rate of events passing this discriminator's CURRENT LLD/ULD cut (or the raw rate, if
+        its cut is disabled) -- matches the same AND-with-the-cut treatment as the plot, "Events
+        plotted", and recording. Pruned against the live clock, rather than only when a new event
+        arrives: the periodic stats poll (update_stats(), roughly every couple seconds regardless
+        of run state) calls this too, which is what lets the displayed rate decay towards 0 once
+        events stop -- pruning only inside add_events() would leave a frozen, stale rate forever
+        once nothing new is coming in."""
         now = time.monotonic()
         cutoff = now - RATE_WINDOW_S
         while len(self._rate_samples) > 1 and self._rate_samples[0][0] < cutoff:
             self._rate_samples.popleft()
         if not self._rate_samples or now - self._rate_samples[0][0] > RATE_WINDOW_S:
             return 0.0
-        t0, n0 = self._rate_samples[0]
-        t1, n1 = self._rate_samples[-1]
-        dt = t1 - t0
-        return (n1 - n0) / dt if dt > 0 else 0.0
+        dt = now - self._rate_samples[0][0]
+        if dt < RATE_MIN_DT_S:
+            # The first batch after any gap (a fresh Start, or resuming after Stop long enough
+            # for the window to have emptied out) has every retained sample clustered within one
+            # poll interval of "now" -- there is no older sample left to anchor a stable dt
+            # against. Dividing that batch's count by a near-zero dt would report a spurious
+            # spike (tens of thousands of Hz) instead of the real rate; read as "not enough
+            # history yet" and report 0 until the window has actually accumulated some span,
+            # same as the empty-window case above.
+            return 0.0
+        if controls.chk_cut_enabled.isChecked():
+            lo, hi = region.getRegion()
+            energies = np.fromiter((e for _, e in self._rate_samples), dtype=np.float64,
+                                    count=len(self._rate_samples))
+            count = int(np.count_nonzero((energies >= lo) & (energies <= hi)))
+        else:
+            count = len(self._rate_samples)
+        return count / dt
 
     def update_stats(self, stats: Stats) -> None:
         self._last_stats = stats
@@ -556,15 +584,17 @@ class LiveView(QWidget):
         dropped_psd = s.dropped_psd if s else 0
         overflow_fci = s.overflow_fci if s else 0
         overflow_psd = s.overflow_psd if s else 0
-        rate = self._current_rate_hz()
-        # "Events plotted" reflects each discriminator's OWN LLD/ULD cut, not the shared total --
-        # it's meant to match what that plot is actually showing right now.
+        # Both "Events plotted" and the rate reflect each discriminator's OWN LLD/ULD cut, not a
+        # shared total -- meant to match what that plot (and, for the rate, that plot's slice of
+        # the recorded stream) is actually showing right now.
         energy = np.asarray(self._energy, dtype=np.float64)
         fci_shown = int(self._mask_for(self.fci_controls, self.fci_energy_region, energy).sum())
         psd_shown = int(self._mask_for(self.psd_controls, self.psd_energy_region, energy).sum())
+        fci_rate = self._rate_hz_for(self.fci_controls, self.fci_energy_region)
+        psd_rate = self._rate_hz_for(self.psd_controls, self.psd_energy_region)
         self.fci_stats.update_counts(
-            fci_shown, rate, self._excluded_events, paired, dropped_fci, overflow_fci
+            fci_shown, fci_rate, self._excluded_events, paired, dropped_fci, overflow_fci
         )
         self.psd_stats.update_counts(
-            psd_shown, rate, self._excluded_events, paired, dropped_psd, overflow_psd
+            psd_shown, psd_rate, self._excluded_events, paired, dropped_psd, overflow_psd
         )
