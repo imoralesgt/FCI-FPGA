@@ -219,6 +219,11 @@ class LiveView(QWidget):
     REDRAW_HZ = 10
     """Plot repaint rate, deliberately decoupled from the batch arrival rate. See add_events()."""
 
+    MAX_PLOT_POINTS = 4000
+    """Upper bound on points actually handed to setData() per redraw. Independent of MAX_POINTS,
+    which bounds what is RETAINED; this bounds what is DRAWN. See _refresh_plots() for why the
+    redraw budget is an acquisition-integrity concern and not just a frame-rate one."""
+
     def __init__(self):
         super().__init__()
         self._energy: list[int] = []
@@ -481,6 +486,20 @@ class LiveView(QWidget):
             if heatmap:
                 self._update_heatmap(e, v, img)
             else:
+                # Decimated. This runs on the GUI thread and holds the GIL for its whole duration,
+                # which starves the acquisition thread of scheduling -- and at 4 Mbaud the host
+                # serial buffer overflows in tens of milliseconds, silently dropping bytes. That
+                # was not a cosmetic problem: a dropped byte misaligns the binary $RQ frame onto a
+                # payload byte, and since almost every field's high byte is zero the reader lands
+                # on 0x00 and rejects the frame. Redraw cost was corrupting acquisition.
+                #
+                # Plotting every point was never worth it anyway: MAX_POINTS is 20,000 against a
+                # few hundred thousand device pixels, so most overdraw is invisible. Stride keeps
+                # the visible distribution while bounding the work.
+                if len(e) > self.MAX_PLOT_POINTS:
+                    step = len(e) // self.MAX_PLOT_POINTS + 1
+                    e = e[::step]
+                    v = v[::step]
                 scatter.setData(e, v)
 
     def _update_heatmap(self, energy: np.ndarray, values: np.ndarray, img: pg.ImageItem) -> None:

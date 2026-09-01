@@ -13,6 +13,7 @@ matters rather than restated on every method:
 
 from __future__ import annotations
 
+import logging
 import struct
 
 from .exceptions import FciNotPresentError, FciProtocolError
@@ -39,6 +40,9 @@ def _bool(token: str) -> bool:
 def _opt_int(token: str) -> int | None:
     v = int(token)
     return None if v == -1 else v
+
+
+logger = logging.getLogger(__name__)
 
 
 class FciClient:
@@ -162,6 +166,11 @@ class FciClient:
         Raises FciProtocolError on a checksum or framing failure -- see transact_framed().
         """
         rec_size, records = self._t.transact_framed("RQ", n)
+        truncated = getattr(self._t, "_last_frame_truncated", None)
+        if truncated:
+            # Reported, not raised: the records that did arrive are good, and losing them too
+            # would turn partial loss into total loss. The caller decides whether the rate matters.
+            logger.warning("$RQ: %s", truncated)
         if rec_size != 24:
             raise FciProtocolError(f"$RQ: expected 24-byte records, device reports {rec_size}")
         out: list[AcqEvent] = []

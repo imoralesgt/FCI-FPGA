@@ -26,12 +26,22 @@ from .exceptions import (
     FciUnknownCommandError,
 )
 
-BAUDRATE = 921_600
+BAUDRATE = 4_000_000
+"""MUST match the rate firmware programs -- see fpga/ublaze_sw/uart.h's UART_BAUD_HZ.
+
+921600 was the axi_uartlite ceiling (a fixed choice list in that IP, not a computed range). The
+axi_uart16550 that replaced it takes its baud from a runtime divisor over a 64 MHz external clock,
+where divisor 1 gives exactly 4 Mbaud and divisor 2 exactly 2 Mbaud -- both also generated exactly
+by the FT2232H, so neither end accumulates sampling error. Set this back to 921_600 for an older
+axi_uartlite bitstream; there is no negotiation, a mismatch just reads as line noise."""
+
 DEFAULT_TIMEOUT_S = 1.0
-"""Generous relative to measured hardware: round trips run ~16 ms in practice (dominated by the
-USB-serial adapter's own latency timer, not the link), and the largest reply this protocol can
-produce (`$RB`'s full 32-event batch) is on the order of 3 KB, ~30 ms to transmit at 921600 baud.
-This is margin, not a tuned budget -- see the project log's CLI throughput measurements."""
+"""Generous relative to measured hardware. Round trips are dominated by the USB-serial adapter's
+own latency timer (16 ms by default and NOT safe to assume reconfigurable -- the instrument has to
+work on an off-the-shelf host), not by the link. The largest reply this protocol can produce is a
+full 1024-event batch: ~50 KB in ASCII `$RB`, ~26 KB in binary `$RQ`, so ~250 ms and ~130 ms
+respectively at 2 Mbaud. This is margin, not a tuned budget -- see the project log's throughput
+measurements."""
 
 
 def find_port(vid_hex: str = "0403", pid_hex: str = "6010") -> str | None:
@@ -72,6 +82,10 @@ class FciTransport:
     longer-lived object, which works identically since __enter__/__exit__ just call them too.
     """
 
+    DRAIN_READ_TIMEOUT_S = 0.02
+    """Per-read timeout while draining. Short so an already-quiet line costs one of these, not the
+    port's full operating timeout."""
+
     RESYNC_DRAIN_S = 0.15
     """How long to keep reading and discarding after a failed transaction before issuing the next
     command. Must exceed the USB latency timer (typically 16 ms on FTDI) so that bytes already in
@@ -86,6 +100,9 @@ class FciTransport:
         self._needs_resync = False
         """Set while the last transaction did not complete cleanly; makes the next one drain
         first. See transact()."""
+        self._last_frame_truncated: str | None = None
+        """Set by transact_framed() when a binary frame desynced mid-stream and was returned
+        short. Read it after a call to distinguish 'the FIFO was empty' from 'we lost the rest'."""
 
     @property
     def is_open(self) -> bool:
@@ -124,6 +141,32 @@ class FciTransport:
     toggles DTR/RTS, which the adapter can present as a framing error and deliver as a stray NUL;
     observed both as a prefix inside the first reply and, on the binary path, as a line of its own
     (`b'\\x00\\n'`). Bounded so a genuinely silent device still times out rather than spinning."""
+
+    def _drain(self) -> None:
+        """Reads and discards until the line goes quiet, before issuing the next command.
+
+        Uses a SHORT per-read timeout and only asks for bytes that have actually arrived.
+        `read(n)` blocks until it has n bytes or the port timeout expires, so draining with
+        `read(4096)` against the normal multi-second timeout stalled for that whole timeout
+        whenever fewer than 4096 bytes were left -- exactly the case a drain is for. Meanwhile the
+        device carried on streaming the remainder of the abandoned frame, so the resync made the
+        desync worse and delayed the next command by seconds.
+
+        The bound matters because after a truncated binary frame the device may still be sending
+        up to a full batch (a 1024-record $RQ frame is 25.6 kB, ~64 ms at 4 Mbaud), and none of it
+        is wanted.
+        """
+        saved = self._ser.timeout
+        try:
+            self._ser.timeout = self.DRAIN_READ_TIMEOUT_S
+            deadline = time.monotonic() + self.RESYNC_DRAIN_S
+            while time.monotonic() < deadline:
+                pending = self._ser.in_waiting
+                if not self._ser.read(pending if pending else 1):
+                    break  # quiet: nothing arrived within DRAIN_READ_TIMEOUT_S
+        finally:
+            self._ser.timeout = saved
+        self._ser.reset_input_buffer()
 
     def _read_reply_line(self, request: str) -> bytes:
         """Reads one reply line, skipping stray NUL-only or empty lines. See MAX_BLANK_LINES."""
@@ -174,11 +217,7 @@ class FciTransport:
             # issuing the next command. Only on the failure path: this costs nothing in normal
             # operation, where the flag is never set.
             if self._needs_resync:
-                deadline = time.monotonic() + self.RESYNC_DRAIN_S
-                while time.monotonic() < deadline:
-                    if not self._ser.read(4096):
-                        break
-                self._ser.reset_input_buffer()
+                self._drain()
                 self._needs_resync = False
 
             # Assume failure until a well-formed reply has been parsed; every raise below leaves
@@ -250,11 +289,7 @@ class FciTransport:
             if not self.is_open:
                 raise FciProtocolError(f"transport for {self.port} is not open")
             if self._needs_resync:
-                deadline = time.monotonic() + self.RESYNC_DRAIN_S
-                while time.monotonic() < deadline:
-                    if not self._ser.read(4096):
-                        break
-                self._ser.reset_input_buffer()
+                self._drain()
                 self._needs_resync = False
             self._needs_resync = True
 
@@ -308,10 +343,23 @@ class FciTransport:
                         )
                     break
                 else:
-                    raise FciProtocolError(
-                        f"{request!r}: unexpected frame tag {tag[0]:#04x} after "
-                        f"{len(records)} records"
+                    # A dropped byte on the host (buffer overrun at high baud) misaligns the
+                    # frame, and because nearly every field's high byte is zero the reader lands
+                    # on 0x00. Keep what was decoded rather than discarding the batch: the records
+                    # already read are intact -- corruption starts at the misalignment point, not
+                    # before it -- and throwing away 500 good events because the 501st byte was
+                    # lost turns a partial-loss problem into a total-loss one.
+                    #
+                    # The frame cannot be trusted from here, so the trailer's count and checksum
+                    # are never seen; the transport stays marked for resync and the next call
+                    # drains before issuing its command. The loss IS reported, via the returned
+                    # count being short of what the device sent -- silence would be worse.
+                    self._last_frame_truncated = (
+                        f"frame desync after {len(records)} records (tag {tag[0]:#04x}); "
+                        f"remainder of this batch discarded"
                     )
+                    return rec_size, records
 
         self._needs_resync = False
+        self._last_frame_truncated = None
         return rec_size, records
