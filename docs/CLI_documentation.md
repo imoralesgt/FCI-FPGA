@@ -123,8 +123,8 @@ calling `$RV` observes a value that cannot move. `$RC` is the field to poll for 
 
 ### 2.5 Read Batch (`$RB`)
 
-`$RB [n]` — pops up to `n` paired events (default and maximum 32) in one request, stopping early if
-the FIFO empties.
+`$RB [n]` — pops up to `n` paired events (default and maximum 1024, the result FIFO's depth) in one
+request, stopping early if the FIFO empties. The maximum was 32 before 2026-09-01.
 
 `!RB [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd] ... <count>`
 
@@ -137,6 +137,66 @@ including 0; a batch of zero simply means nothing was pending, not an error.
 one. On a link where round-trip latency dominates over per-event data volume, this raises the
 achievable event rate roughly in proportion to `n`; it does not by itself reach a rate limited by
 the link's raw round-trip count. The reply is `!RB -1` if the FCI result path is not present in the loaded bitstream, matching `$RV`.
+
+Measured cost: **49.4 bytes per event**, capping readout at ~1871 events/s at 921600 baud. Use
+`$RQ` where throughput matters; `$RB` remains the readable, scriptable form and is unchanged.
+
+### 2.5b Read Batch, binary (`$RQ`)
+
+`$RQ [n]` — identical semantics to `$RB` (pops up to `n` paired events, default and maximum 1024,
+stops early if the FIFO empties), in a binary frame of **25 bytes per event** instead of 49.4. That
+roughly doubles the readout ceiling, to ~3686 events/s at 921600 baud.
+
+**Use a large `n`.** The FTDI adapter's latency timer defaults to 16 ms and must be assumed
+unconfigurable — an off-the-shelf host, no root, no udev rule. It delays only the final partial USB
+packet, so a big reply pays it once and batch size amortises it:
+
+| batch | ASCII `$RB` | binary `$RQ` |
+|---|---|---|
+| 32 | 965/s | 1297/s |
+| 128 | 1513/s | 2524/s |
+| 512 | 1763/s | 3306/s |
+| **1024** | 1813/s | **3486/s** |
+
+At full depth `$RQ` reaches 95% of the link ceiling with the timer left alone. Asking for the
+maximum is free when little is pending, since the device stops early; the ~294 ms transaction only
+occurs with a full FIFO, when draining fast matters more than command latency.
+
+```
+!RQ <bytes_per_event>\n          ASCII header; bytes_per_event is 24
+0xA5 <24 bytes>                  one per event, repeated
+...
+0x5A <u16 count> <u32 checksum>  end tag; little-endian
+```
+
+Each 24-byte record is six little-endian 32-bit words, matching the MicroBlaze build's byte order:
+
+| offset | field | type |
+|---|---|---|
+| 0 | `ts_lo` | u32 |
+| 4 | `ts_hi` | u32 |
+| 8 | `psa_l` | u32 |
+| 12 | `psa_w` | u32 |
+| 16 | `energy_short` | s32 |
+| 20 | `energy_long` | s32 |
+
+The checksum is a plain additive sum of every payload byte (the trailer itself excluded), truncated
+to 32 bits. **Verify it.** A corrupted ASCII reply fails to parse and is obvious; a corrupted binary
+frame is indistinguishable from real measurements and would enter a dataset silently.
+
+**`fci` and `psd` are not transmitted.** Both are exact functions of the fields above
+(`fci = psa_l/psa_w`, `psd = (energy_long - energy_short)/energy_long`); checked against 120,000
+live events, they agreed with the values `$RB` sends to the last digit of its 1e-4 quantum. Sending
+them would spend 8 of every 32 bytes carrying nothing the host cannot derive, and would let the two
+disagree. Hosts should compute them, applying firmware's own guard that `psd` is undefined when
+`energy_long <= 0`.
+
+The frame is self-delimiting rather than length-prefixed because firmware cannot know the count
+until the FIFO runs dry, and staging a batch to find out would not fit in its remaining RAM.
+
+Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream. Firmware older
+than 2026-09-01 answers `!XX 0` (unknown command); hosts wanting to work with both should fall back
+to `$RB`.
 
 ### 2.6 Read Trace (`$RT`)
 

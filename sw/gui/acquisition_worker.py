@@ -19,11 +19,20 @@ import threading
 from PySide6.QtCore import QThread, Signal
 
 from fci_api import AcqEvent, FciClient, FciError, FciTransport, TraceResult
+from fci_api.exceptions import FciUnknownCommandError
 
-RB_MAX_BATCH = 32
-"""Events one $RB can return. Fixed by the hardware result FIFO's depth (result_fifo.vhd's
-FIFO_DEPTH generic), and matched by cli.c's own RB_MAX_BATCH -- a full batch therefore means the
-FIFO was saturated, not that the request was simply satisfied."""
+RB_MAX_BATCH = 1024
+"""Events one batch request may return, matching cli.c's RB_MAX_BATCH and the result FIFO depth.
+
+Sized for the FTDI latency timer at its 16 ms DEFAULT, because the instrument has to work on any
+host without root or a udev rule. The timer only delays the final partial USB packet, so a large
+reply pays it once and batch size amortises it: with the binary $RQ encoding, batch 32 gives
+~1300 ev/s and batch 1024 gives ~3486 ev/s against a 3686 ev/s link ceiling. Tuning the timer to
+1 ms then adds almost nothing, which is the point -- it must not be a deployment requirement.
+
+Asking for the maximum is free when little is pending: the device stops early once the FIFO
+empties. The long transaction only happens when the FIFO is genuinely full, which is when
+draining it fast matters more than command latency."""
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +65,8 @@ class AcquisitionWorker(QThread):
         self._scope_n = 2048
         self._start_acq_request = threading.Event()
         self._stop_acq_request = threading.Event()
+        self._binary_batch = True
+        """Whether to use the binary $RQ path; cleared permanently if the device rejects it."""
         self._batch_poll_suspended = threading.Event()
         """Set while the FoM sweep worker needs exclusive use of $RB for its own grid-point event
         collection. Without this, this worker's own unconditional per-iteration read_batch() call
@@ -156,7 +167,7 @@ class AcquisitionWorker(QThread):
             # A short batch means we drained it, so fall back to the idle period.
             poll_wait = self._poll_interval_s
             if not self._batch_poll_suspended.is_set():
-                events = self._safe_call(self._client.read_batch, "read_batch")
+                events = self._safe_call(self._read_events, "read_batch")
                 if events is not _FAILED and events:
                     self.batch_received.emit(events)
                     if len(events) >= RB_MAX_BATCH:
@@ -170,6 +181,25 @@ class AcquisitionWorker(QThread):
 
             self._stop_event.wait(poll_wait)
             stats_countdown -= max(poll_wait, 0.001)
+
+    def _read_events(self) -> list[AcqEvent]:
+        """Reads one batch, preferring the binary $RQ and falling back to ASCII $RB.
+
+        $RQ roughly halves the bytes per event (25 vs 49.4), which matters because the link is the
+        binding constraint once the FTDI latency timer is set to 1 ms. The fallback exists because
+        $RQ needs firmware built after 2026-09-01: against an older bitstream it answers
+        "unknown command", and the client should degrade to the slower path rather than deliver no
+        events at all. Probed once, then remembered -- retrying a command the device has already
+        rejected, once per poll, would waste a round trip on every iteration.
+        """
+        if self._binary_batch:
+            try:
+                return self._client.read_batch_binary(RB_MAX_BATCH)
+            except FciUnknownCommandError:
+                logger.info("$RQ not supported by this firmware; using ASCII $RB "
+                            "(about half the throughput)")
+                self._binary_batch = False
+        return self._client.read_batch(min(RB_MAX_BATCH, 32))
 
     def _shutdown(self) -> None:
         """Runs on every exit from the loop, clean or not. Each step is independently guarded:

@@ -18,7 +18,13 @@ import time
 import serial
 import serial.tools.list_ports
 
-from .exceptions import FciParamError, FciProtocolError, FciTimeoutError, FciUnknownCommandError
+from .exceptions import (
+    FciNotPresentError,
+    FciParamError,
+    FciProtocolError,
+    FciTimeoutError,
+    FciUnknownCommandError,
+)
 
 BAUDRATE = 921_600
 DEFAULT_TIMEOUT_S = 1.0
@@ -113,6 +119,27 @@ class FciTransport:
     def __exit__(self, *exc_info) -> None:
         self.close()
 
+    MAX_BLANK_LINES = 4
+    """How many empty/NUL-only lines to skip while looking for a reply header. Opening the port
+    toggles DTR/RTS, which the adapter can present as a framing error and deliver as a stray NUL;
+    observed both as a prefix inside the first reply and, on the binary path, as a line of its own
+    (`b'\\x00\\n'`). Bounded so a genuinely silent device still times out rather than spinning."""
+
+    def _read_reply_line(self, request: str) -> bytes:
+        """Reads one reply line, skipping stray NUL-only or empty lines. See MAX_BLANK_LINES."""
+        for _ in range(self.MAX_BLANK_LINES + 1):
+            raw = self._ser.readline()
+            if not raw.endswith(b"\n"):
+                raise FciTimeoutError(
+                    f"no complete reply to {request!r} within {self.timeout}s (got {raw!r})"
+                )
+            if raw.lstrip(b"\x00").strip():
+                return raw
+        raise FciProtocolError(
+            f"only blank/NUL lines in reply to {request!r} after "
+            f"{self.MAX_BLANK_LINES} attempts"
+        )
+
     def transact(self, code: str, *args: int) -> list[str]:
         """Sends `$<code> arg0 arg1 ...\\n`, blocks for the matching `!<code> ...\\n` reply, and
         returns the tokens after the echoed code. Raises FciUnknownCommandError/FciParamError for
@@ -161,12 +188,7 @@ class FciTransport:
             self._ser.write((request + "\n").encode("ascii"))
             self._ser.flush()
 
-            raw = self._ser.readline()
-            if not raw.endswith(b"\n"):
-                raise FciTimeoutError(
-                    f"no complete reply to {request!r} within {self.timeout}s "
-                    f"(got {raw!r})"
-                )
+            raw = self._read_reply_line(request)
 
             # A freshly-opened connection has occasionally been observed to prepend one or two
             # stray NUL bytes to the very first reply, still within this same line -- a
@@ -200,3 +222,96 @@ class FciTransport:
 
         self._needs_resync = False
         return tokens[1:]
+
+    # ---- binary framed transactions ($RQ) -------------------------------------------------
+    RQ_TAG_EVENT = 0xA5
+    RQ_TAG_END = 0x5A
+
+    def transact_framed(self, code: str, *args: int) -> tuple[int, list[bytes]]:
+        """Sends `$<code> ...` and reads a self-delimiting BINARY frame, for $RQ.
+
+        Frame (see cli.c's h_rq): an ASCII header `!<code> <bytes_per_event>\n`, then a sequence of
+        0xA5-tagged fixed-size records, terminated by a 0x5A tag followed by a u16 count and a u32
+        additive checksum, both little-endian.
+
+        Self-delimiting rather than length-prefixed because firmware cannot know the count until it
+        has drained the FIFO, and staging the batch to find out would not fit in its remaining RAM.
+
+        The checksum is verified here and a mismatch raises FciProtocolError, marking the transport
+        for resync. That matters more than it would for ASCII: a corrupted binary frame is otherwise
+        indistinguishable from valid measurements, whereas every desync this protocol has hit so far
+        announced itself by failing to parse.
+        """
+        if len(code) != 2:
+            raise ValueError(f"command code must be exactly two characters, got {code!r}")
+        request = " ".join([f"${code}", *(str(int(a)) for a in args)])
+
+        with self._lock:
+            if not self.is_open:
+                raise FciProtocolError(f"transport for {self.port} is not open")
+            if self._needs_resync:
+                deadline = time.monotonic() + self.RESYNC_DRAIN_S
+                while time.monotonic() < deadline:
+                    if not self._ser.read(4096):
+                        break
+                self._ser.reset_input_buffer()
+                self._needs_resync = False
+            self._needs_resync = True
+
+            self._ser.write((request + "\n").encode("ascii"))
+            self._ser.flush()
+
+            head = self._read_reply_line(request)
+            tokens = head.lstrip(b"\x00").decode("ascii", errors="replace").split()
+            if not tokens or tokens[0] != f"!{code}":
+                raise FciProtocolError(f"reply {head!r} does not echo {request!r}")
+            if len(tokens) == 2 and tokens[1] == "-1":
+                raise FciNotPresentError(f"${code}: result path not present in this bitstream")
+            try:
+                rec_size = int(tokens[-1])
+            except ValueError:
+                raise FciProtocolError(f"bad header for {request!r}: {head!r}") from None
+            if not 1 <= rec_size <= 256:
+                raise FciProtocolError(f"implausible record size {rec_size} for {request!r}")
+
+            records: list[bytes] = []
+            checksum = 0
+            while True:
+                tag = self._ser.read(1)
+                if len(tag) != 1:
+                    raise FciTimeoutError(
+                        f"frame for {request!r} truncated after {len(records)} records"
+                    )
+                if tag[0] == self.RQ_TAG_EVENT:
+                    rec = self._ser.read(rec_size)
+                    if len(rec) != rec_size:
+                        raise FciTimeoutError(
+                            f"record {len(records)} of {request!r} truncated "
+                            f"({len(rec)}/{rec_size} bytes)"
+                        )
+                    checksum = (checksum + sum(rec)) & 0xFFFFFFFF
+                    records.append(rec)
+                elif tag[0] == self.RQ_TAG_END:
+                    trailer = self._ser.read(6)
+                    if len(trailer) != 6:
+                        raise FciTimeoutError(f"trailer for {request!r} truncated")
+                    count = int.from_bytes(trailer[:2], "little")
+                    want_sum = int.from_bytes(trailer[2:], "little")
+                    if count != len(records):
+                        raise FciProtocolError(
+                            f"{request!r}: trailer says {count} records, read {len(records)}"
+                        )
+                    if want_sum != checksum:
+                        raise FciProtocolError(
+                            f"{request!r}: checksum mismatch over {count} records "
+                            f"(device {want_sum:#010x}, computed {checksum:#010x})"
+                        )
+                    break
+                else:
+                    raise FciProtocolError(
+                        f"{request!r}: unexpected frame tag {tag[0]:#04x} after "
+                        f"{len(records)} records"
+                    )
+
+        self._needs_resync = False
+        return rec_size, records

@@ -13,6 +13,8 @@ matters rather than restated on every method:
 
 from __future__ import annotations
 
+import struct
+
 from .exceptions import FciNotPresentError, FciProtocolError
 from .transport import FciTransport
 from .types import (
@@ -140,6 +142,46 @@ class FciClient:
                 f"({len(body) / 8:.1f} events' worth)"
             )
         return [self._parse_event(body[i * 8 : (i + 1) * 8]) for i in range(count)]
+
+    def read_batch_binary(self, n: int = 1024) -> list[AcqEvent]:
+        """`$RQ [n]`. Same events as read_batch(), in a binary frame roughly half the size.
+
+        ASCII costs a measured 49.4 bytes per event; this costs 25 (24 payload + 1 frame tag),
+        which at 921600 baud moves the readout ceiling from ~1871 to ~3686 events/s. With the FTDI
+        latency timer at 1 ms the link runs at ~98% utilisation, so bytes on the wire are the
+        binding constraint and encoding is the only lever left short of a higher baud rate (which
+        needs a bitstream rebuild -- axi_uartlite's C_BAUDRATE is synthesis-time).
+
+        `fci` and `psd` are RECOMPUTED here rather than transmitted. Both are exact functions of
+        the other fields, verified against 120,000 live events to agree with the values firmware
+        used to send to the last digit of their 1e-4 wire quantum, so sending them would have cost
+        8 of every 32 bytes to carry nothing new -- and would have created a way for the two to
+        disagree. The 1e-4 quantisation firmware applied is NOT reproduced: these come back at full
+        float precision, so values may differ from read_batch()'s in the fifth decimal.
+
+        Raises FciProtocolError on a checksum or framing failure -- see transact_framed().
+        """
+        rec_size, records = self._t.transact_framed("RQ", n)
+        if rec_size != 24:
+            raise FciProtocolError(f"$RQ: expected 24-byte records, device reports {rec_size}")
+        out: list[AcqEvent] = []
+        for rec in records:
+            ts_lo, ts_hi, psa_l, psa_w = struct.unpack_from("<4I", rec, 0)
+            es, el = struct.unpack_from("<2i", rec, 16)
+            out.append(
+                AcqEvent(
+                    timestamp=(ts_hi << 32) | ts_lo,
+                    psa_l=psa_l,
+                    psa_w=psa_w,
+                    fci=(psa_l / psa_w) if psa_w else 0.0,
+                    energy_short=es,
+                    energy_long=el,
+                    # Matches firmware's own guard: a non-positive long-gate integral makes the
+                    # ratio undefined, and 0.0 is the documented sentinel for that.
+                    psd=((el - es) / el) if el > 0 else 0.0,
+                )
+            )
+        return out
 
     def read_pending(self) -> Pending:
         """`$RN`. See Pending's docstring for why only the FCI side can be None here."""
