@@ -107,7 +107,8 @@ class AppController(QObject):
         self.transport = FciTransport(port)
         self.config_client = FciClient(self.transport)
         self.worker = AcquisitionWorker(self.transport, config.BATCH_POLL_INTERVAL_MS / 1000.0,
-                                         config.STATS_POLL_INTERVAL_MS / 1000.0)
+                                         config.STATS_POLL_INTERVAL_MS / 1000.0,
+                                         config.BATCH_POLL_BUSY_MS / 1000.0)
         self.worker.batch_received.connect(self.on_batch_received)
         self.worker.trace_received.connect(self.on_trace_received)
         self.worker.stats_received.connect(self.view.live_view.update_stats)

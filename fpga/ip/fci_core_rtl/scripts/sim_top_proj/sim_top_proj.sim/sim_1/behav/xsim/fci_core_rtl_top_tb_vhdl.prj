@@ -1,0 +1,13 @@
+# compile vhdl design source files
+vhdl xil_defaultlib  \
+"../../../../../../ip/xfft_2048/sim/xfft_2048.vhd" \
+"../../../../../../src/fci_core_pkg.vhd" \
+"../../../../../../src/bin_accumulator.vhd" \
+"../../../../../../src/fci_axi4lite_regs.vhd" \
+"../../../../../../src/sample_framer.vhd" \
+"../../../../../../src/result_fifo.vhd" \
+"../../../../../../src/fci_core_rtl_top.vhd" \
+"../../../../../../tb/fci_core_rtl_top_tb.vhd" \
+
+# Do not sort compile order
+nosort

@@ -4,12 +4,17 @@
  * See acquisition.h.
  */
 
-/* This file is inert until fci_sink is present in the block design. It stays in the project either
- * way, so that adding the core is a block-design change plus a BSP regeneration with no source
- * files to add or remove -- but referencing a base address the hardware does not export would
- * break the build for a BD that is otherwise perfectly valid. */
-#include "xparameters.h"
-#ifdef XPAR_FCI_SINK_0_BASEADDR
+/* This file is inert unless the bitstream delivers FCI results through a FIFO-backed register
+ * window (fci_sink, or the merged RTL core that absorbed it). It stays in the project either way,
+ * so that adding the core is a block-design change plus a BSP regeneration with no source files to
+ * add or remove -- but referencing a base address the hardware does not export would break the
+ * build for a BD that is otherwise perfectly valid.
+ *
+ * Keyed on registers.h's FCI_RESULT_VIA_FCI_SINK rather than on a raw XPAR symbol: this file
+ * silently compiling to nothing is invisible until the link fails somewhere else entirely, so the
+ * condition must be the shared one that tracks the hardware, not a local copy of it. */
+#include "registers.h"
+#if FCI_RESULT_VIA_FCI_SINK
 
 #include "acquisition.h"
 
@@ -134,13 +139,22 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   stats->paired++;
 
   /* Sticky flags are polled here rather than in their own pass: this is the one place that runs
-   * once per event no matter how the caller structures its loop. */
+   * once per event no matter how the caller structures its loop.
+   *
+   * These are LATCHED (0 or 1), not counted. The hardware flags are sticky and clearable only by
+   * clear_i, which also flushes the FIFO -- so counting distinct overflow episodes is impossible
+   * without throwing away buffered events, and incrementing per event instead made the figure
+   * meaningless: once the flag ever set, every subsequent event bumped it, so the reported
+   * "overflow" always came out exactly equal to "paired" (measured 1653/1653 live, and 37586/37586
+   * in earlier GUI captures -- a number that looks alarming and carries no information). A latched
+   * 1 says "the FIFO overflowed at least once this run", which is all the hardware can actually
+   * tell us. Use the event-rate and paired counts to judge how much was lost. */
   if (Psd_Overflowed(PSD_CORE_BASEADDR))
-    stats->psd_overflows++;
+    stats->psd_overflows = 1;
   if (FciSink_Overflowed(FCI_SINK_BASEADDR))
-    stats->fci_overflows++;
+    stats->fci_overflows = 1;
   if (FciSink_FramingError(FCI_SINK_BASEADDR))
-    stats->fci_framing_errors++;
+    stats->fci_framing_errors = 1;
 
   return 1;
 }
@@ -181,4 +195,4 @@ void Acq_PrintStats(const AcqStats *stats) {
              stats->fci_overflows, stats->fci_framing_errors);
 }
 
-#endif /* XPAR_FCI_SINK_0_BASEADDR */
+#endif /* FCI_RESULT_VIA_FCI_SINK */

@@ -1323,11 +1323,462 @@ calibration, just computed over the CLI instead of raw MMIO.
 
 ---
 
+## 8g. FCI had no discrimination power at all — a fixed-point precision floor in the HLS core
+
+With a DD neutron generator running (plenty of thermal neutrons, the ideal condition for measuring
+real separation), FCI produced **no gamma/neutron separation whatsoever**, at any window setting:
+the paper's own `psa_l` 1–25 / `psa_w` 1–90, half those, and several narrower pairs all gave one
+broad unimodal blob. PSD, computed from the *same events on the same hardware*, worked fine.
+
+### What the data actually said
+
+The GUI shows it before any analysis does. Same events, same energy axis, one panel above the
+other — PSD resolves the Li-6 thermal-capture peak near `energy_long` ≈ 3e6 into a tight
+horizontal ellipse, while FCI smears the identical events over most of its vertical range:
+
+![FCI vs PSD on the same events: PSD's Li-6 cluster is tight, FCI's is a broad smear](images/gui-fci-vs-psd-li6-smear.png)
+
+Quantitatively, cutting the Li-6 band (`energy_long` 2.7e6–3.2e6) out of three separate recordings
+taken that morning under the DD generator, each at a different window setting:
+
+| run | windows (`psa_l` / `psa_w`) | FCI cv | PSD cv | FCI/PSD |
+|---|---|---|---|---|
+| `dd_0001` | 1–25 / 1–90 (the paper's) | 14.6% | 0.112% | 130× |
+| `dd_0002` | 0–5 / 0–500 (widest tried) | 27.3% | 0.101% | 271× |
+| `dd_0005` | 1–10 / 1–20 (narrowest tried) | **11.6%** | 0.101% | 114× |
+
+PSD holds 0.10% across all three. FCI is two orders of magnitude noisier on the same events, and
+its *best* setting is still 100× worse. Widening `psa_w` by 25× (`dd_0002`) made it worse, not
+better — which is the point: a window choice cannot add information that isn't in the number.
+
+![The widest window setting tried, and FCI is still a featureless block](images/gui-fci-wide-window-no-help.png)
+
+**Correction to an earlier figure.** This section previously quoted "PSD cv 1.8%, FCI cv 42%" from
+a single 32,544-event run (`dd_0004`). That run is contaminated: split into time quartiles, Q1 has
+`psa_w` mean 518k and PSD cv 2.42%, while Q2–Q4 have `psa_w` ≈ 136k and PSD cv 0.10% — the window
+was changed part-way through recording, so the quoted spread mixed two configurations plus a
+settling period, overstating the case on both sides. The conclusion is unchanged and the table
+above replaces it. Use `dd_0001`/`dd_0002`/`dd_0005` for any acceptance comparison; `dd_0004` is
+not a clean single-configuration dataset.
+
+### The decisive test: float arithmetic on the same pulses
+
+The comparison above shows FCI is noisy but not *why*. Recomputing FCI in double precision from
+the raw 2048-sample traces recorded alongside those events (`dd_0001_scope_traces.csv`, 84 traces
+in the Li-6 band) isolates arithmetic from algorithm — same pulses, same windows, same definition
+of the ratio, only the numerics differ:
+
+| | FCI cv in the Li-6 band |
+|---|---|
+| hardware (HLS core, 1024-pt) | **14.6%** |
+| float, 1024-pt, windows as configured | **1.59%** |
+| float, 2048-pt, windows doubled | **0.82%** |
+
+The algorithm is sound and the pulses carry the information: in float, FCI resolves the capture
+peak about as sharply as PSD does. Roughly a factor of 9 is lost to the deployed core's fixed-point
+arithmetic alone, and the move to 2048 points buys another factor of 2 on top. This is both the
+proof that the rewrite targets the real defect and the **quantitative prediction to test after
+reflashing**: FCI cv in the Li-6 band should land near 0.8–1.6%, not 11–27%.
+
+### One thing checked and *not* explained
+
+The live FoM optimizer reported FCI FoM values of 0.72–0.91 during this session, which looks like
+FCI working. It is not evidence of that. The double-Gaussian fit locks onto a very narrow
+component (peak 1 FWHM 0.0093 against peak 2's 0.0800, an 8.6× disparity) and FoM = S/(FWHM₁+FWHM₂)
+is inflated by the narrow term. The obvious explanation — value pile-up from coarse quantization —
+was tested and **disproved**: `psa_l`/`psa_w` take ~15,000 distinct values among ~18,000 events,
+with a median step of 6–34 LSB across a 10⁵–10⁶ range. The sums are finely resolved but noisy, so
+the failure mode is error *magnitude*, not too few levels. What the narrow component actually is
+remains unexplained (a fit artifact on a 402-event histogram is plausible but untested). Treat the
+live FoM number as unreliable for FCI until the new core is in silicon.
+
+### Root cause: `ap_ufixed<18,2>`, and why BFP made it fatal here
+
+`fci_core.hpp:50` accumulated each FFT bin's magnitude into an `ap_ufixed<18,2>` — 16 fractional
+bits. Combined with `block_floating_point` scaling, whose single per-frame exponent is set by the
+**largest** bin, that is a precision floor that lands exactly where this detector's information
+lives. This pulse's τ ≈ 1.4 µs puts its spectral corner near bin 2–3 (§7), so the low bins are
+enormous and everything in `psa_w`'s wide window sits far down the frame's dynamic range — below
+where 16 fractional bits can still represent it. The discrimination signal was being quantized
+away before firmware ever saw it.
+
+Two hypotheses were tested and discarded first, both worth recording so they aren't re-run:
+**window retuning** (swept offline across `psa_l_hi` 1–300 × `psa_w_hi` 20–500 — no setting
+recovers it) and a **τ-based trace classification** that appeared to show a clean bimodal split
+until the "slow" population turned out to be the baseline restorer's own settling tail
+(τ ≈ 200–300 samples against the detector's real ~70), not a second physical population. The
+second is a good example of a measurement artifact that looked exactly like the sought-after
+signal.
+
+### The replacement: hand-written VHDL at 2048 points
+
+`fpga/rtl/fci_core_rtl/` replaces the HLS core outright, instantiating Xilinx's `xfft` LogiCORE
+directly. Transform length **1024 → 2048** at this board's real 50 Msps, halving bin spacing to
+~24.4 kHz and putting more resolution where the corner actually is (window 40.96 µs).
+
+- `bin_accumulator.vhd` sums full-width 17-bit magnitudes into 32-bit unsigned accumulators — no
+  fractional truncation anywhere. The scale is arbitrary but identical for both windows, and FCI
+  is their ratio, so only the precision ever mattered.
+- Output ordering is **bit-reversed**, undone by a wire reversal in the accumulator rather than
+  paying the FFT IP ~1 RAMB36 for a reorder buffer — worth having on a device at ~81% BRAM.
+- `fci_sink` is **merged in**, not kept downstream. It only existed because an HLS core cannot
+  expose a FIFO-backed register window; hand-written RTL can. Its own header had anticipated
+  exactly this. One BD cell, one base address, and firmware's `FciSink_*` accessors work unchanged.
+- `sample_framer.vhd` carries each frame's timestamp *around* the FFT in a small queue rather than
+  a single held register: the FFT is pipelined deeply enough that frame N's result emerges while
+  N+1 is still being fed in, so a single register would hand out the wrong event's timestamp.
+- The `ap_ctrl_hs` start/auto-restart handshake is gone — the RTL core free-runs.
+
+### Verified against real detector traces, and one methodology trap
+
+`bin_accumulator_tb` passes 9/9 at `FFT_LENGTH=2048`. The integration testbench
+(`fci_core_rtl_top_tb`) drives the fully assembled core — framer, the real FFT IP, accumulator,
+FIFO, AXI4-Lite — with **real 2048-sample traces captured under the DD generator**, in preference
+to `data/fci_verification_set.csv` (2048 samples at the paper's 100 Msps is a different window
+duration and bin mapping than 2048 at 50 Msps) and in preference to a synthetic tone, which is too
+sparse and symmetric to expose a wrong bin mapping.
+
+The trap, hit and recorded: comparing **absolute** `psa_l`/`psa_w` against a float reference fails
+on correct hardware. Block floating point scales every frame by its own exponent — measured 2^8 for
+strong pulses, 2^4 for weak — which the core deliberately discards because it cancels in the
+ratio. Only `psa_l/psa_w` is scale-invariant, and that is what the testbench checks; on the
+operating-regime traces it agrees with the float reference to **<1%**.
+
+A second, purely mechanical bug in these testbenches is worth recording because it cost real
+machine time: both drove their clock with an unconditional `clk <= not clk after CLK_PERIOD/2`,
+which schedules an event every half period *forever*. The pass/fail summary printed correctly, but
+`run all` could never return, so every invocation left an `xsimk` kernel spinning at 100% CPU —
+five orphans accumulated, one of them for three days, and `close_project` does not reap them
+because `launch_simulation` starts the kernel as a separate socket-attached process. Both
+testbenches now gate the clock on a `sim_done` signal raised after the summary, and
+`run_sim_top.tcl` calls `close_sim -force` before `close_project`. Verified: the run now prints
+`Exiting xsim` and returns 0 instead of hanging.
+
+### The first silicon run was dead, and it was the framer trusting the producer's TLAST
+
+The reworked bitstream came up with the whole acquisition chain frozen: zero triggers at any
+threshold (400, 100, even 0, against zero-centred noise where 0 should fire continuously), `$RT`
+returning no trace, PSD frozen, FCI at zero — and **no overflows, drops, or framing errors
+anywhere**. Nothing overflowing while nothing moves is a stalled stream, not a mis-set threshold.
+`blr_core` meanwhile reported a live, updating baseline (−6371, −6365, −6359), so the ADC path was
+fine and the break was downstream of it.
+
+Cause: `trigger_core`'s registers reset to **threshold=0, polarity=falling, depth=0**, and
+`clamp_depth_minus_1(0)` yields a **one-beat capture**. On `blr_core`'s zero-centred output a
+falling zero crossing occurs within microseconds of configuration — long before MicroBlaze boots
+and writes a sane depth. `sample_framer` forwarded that TLAST verbatim to an FFT built for exactly
+2048 beats, which raises `event_tlast_unexpected` and **halts the IP's data input channel**.
+`s_axis_data_tready` then stays low permanently, and because `axis_broadcaster_0` is lockstep that
+freezes `psd_core` and `axi_dma_1` too, so `trigger_core` never re-arms. The instrument was dead
+before firmware ran, every power-on.
+
+The retired HLS core was immune because it framed internally from its own counter and ignored the
+incoming TLAST — a load-bearing property that was not obvious as one, and was dropped in the
+rewrite without noticing.
+
+`sample_framer` now owns the FFT frame boundary instead of trusting the producer: TLAST on beat
+2048 and nowhere else, a short capture zero-padded up to length, a long one's surplus beats
+accepted and discarded so the producer never stalls, and the timestamp latched on the frame's first
+real beat (TUSER is meaningless during padding). Padding rather than dropping is deliberate: a
+dropped partial frame would leave the FFT mid-frame and let the *next* event silently complete it,
+merging two events into one result — a wrong number is worse than a zero-padded one.
+
+**The verification lesson is the more useful half.** The integration testbench passed 9/9 against
+real detector traces while the instrument was completely dead, because it only ever drove
+well-formed 2048-beat frames. It tested the algorithm and never the interface contract. It now
+drives a one-beat capture *first*, in the same order hardware sees it, and asserts that a result
+still appears — with the malformed frame ahead of the real traces, a regression halts the FFT and
+fails every check that follows rather than one.
+
+### The real reason nothing triggered: the DMA interrupt was wired to a bit nobody watched
+
+The framer fix above was necessary but was **not** why the reworked bitstream produced no events.
+That was an off-by-one between the block design and its own BSP.
+
+`fci_bd.tcl` connects `axi_dma_1/s2mm_introut` to `microblaze_0_xlconcat/In5`, and leaves **In4
+unconnected** — a hole left by removing the HLS `fci_core_0`'s interrupt and `fci_sink_0`. An
+unconnected `xlconcat` input ties to 0, so INTC bit 4 can never assert. The BSP nevertheless
+generated `XPAR_..._AXI_DMA_1_S2MM_INTROUT_INTR = 4` and `_MASK = 0x10`, numbering connected
+sources sequentially and ignoring the gap, so both generated macros were off by one and firmware
+enabled the wrong bit.
+
+The boot diagnostics settle it arithmetically, with no inference required:
+
+| reading | meaning |
+|---|---|
+| `S2MM_DMASR = 0x1002` | bit 1 Idle + bit 12 IOC_Irq — a trace **completed** |
+| `ISR = 0x2C` | bits 2, 3, **5** — the DMA line asserting on bit 5, where the BD wired it |
+| `IER = 0x10` | bit 4 — the bit the BSP named |
+| `IPR = 0x2C & 0x10 = 0` | matches the reported `IPR = 0`: never delivered |
+
+So the DMA finished a trace, raised its line, and nobody was listening. The ISR never ran, S2MM was
+never re-armed, and because `axis_broadcaster_0` is lockstep that stalled `psd_core` and
+`fci_core` too and left `trigger_core` permanently un-armed — **zero triggers at any threshold or
+any polarity**, which is exactly what a sweep across ±400 in both directions had shown.
+
+`registers.h` carries an explicit override (vector 5) with the BD reference. The proper fix is to
+move `s2mm_introut` to In4 at the next bitstream build so there is no gap and the BSP's own
+numbering becomes correct, then delete the override.
+
+**Two lessons worth keeping.** First, "read the vector ID from the generated `xparameters.h` rather
+than hardcoding it" — the rule this file states a few lines above the override — is not sufficient
+protection: the generated value itself was wrong, and deriving from a broken source is still wrong.
+Second, a black-box CLI sweep spent a long time on thresholds and polarity while the firmware's own
+boot self-test named the fault in one line; the `[DIAG]` register dump should be the *first* thing
+consulted when the chain is dead, not the last.
+
+### Precision is worst at BOTH ends of the energy range
+
+Measured FCI agreement against the float reference, across the traces the integration test drives:
+
+| energy (`energy_long`) | FCI error |
+|---|---|
+| 4.9e4 | ~12% |
+| 6.0e5 | ~4% |
+| 1.1e6 | 0.48% |
+| **2.4e6 – 2.9e6** (Li-6 peak) | **0.24 – 1.09%** |
+| 4.7e6 | 2.98% |
+
+Best in the middle, worse at both ends, for two different reasons. Low energy is ordinary
+quantization — a small signal uses few bits. High energy is block floating point working as
+designed: a higher-amplitude frame is downscaled harder to avoid overflow, so fewer significant
+bits survive into the 16-bit output (visible directly in the raw sums — `psa_w` *falls* from 69178
+to 29441 as energy rises from 1.1e6 to 4.7e6). The naive expectation that a bigger pulse gives a
+better measurement is wrong here.
+
+This lands well for the instrument: the Li-6 capture peak sits in the best region, at a precision
+comparable to PSD's own 1.8% cv there. If high-energy FCI ever proves precision-limited in
+practice, the lever is the FFT's `input_width`/`output_width` — raised together, since BFP
+requires them equal — at a resource cost this device, already at ~81% LUT/BRAM, may not have room
+for. Not taken pre-emptively.
+
+### Confirmed on hardware: the new core's FCI tracks PSD, the old one did not
+
+An 8.3 h overnight run on 2026-08-31 with the CLYC-SiPM detector and the new bitstream/firmware
+(`~/datasets/cosmics-CLYC/`) gave **448,803 events at 15 Hz** plus **190,637 raw 2048-sample
+traces** — the first dataset from the VHDL core in silicon.
+
+**The acceptance test had to change, and it is worth saying why rather than quietly substituting
+one.** The §8g plan was to re-measure FCI's cv inside the Li-6 capture peak. Cosmics produce
+essentially no neutrons, so there is no capture peak to measure: the PSD distribution is cleanly
+**unimodal** (single peak, and only 373 of 372,433 events sit below its 0.1st percentile). This run
+therefore **cannot demonstrate gamma/neutron separation at all**, and no FoM computed from it would
+mean anything. That still needs a neutron source.
+
+What it *can* test is whether the FCI datapath carries real pulse-shape information, because FCI
+and PSD are two independent measurements of the same physical quantity — how fast the pulse decays.
+A working FCI must track PSD; the precision-floor diagnosis says the old core's could not.
+
+![FCI vs PSD, new VHDL core against the old HLS core](images/fci-psd-correlation-new-vs-old.png)
+
+| core | run | n | Pearson r | Spearman |
+|---|---|---|---|---|
+| **new VHDL, 2048-pt** | cosmics | 372,433 | **+0.815** | **+0.855** |
+| old HLS, 1024-pt | dd_0001 | 9,095 | +0.306 | +0.232 |
+| old HLS, 1024-pt | dd_0005 | 15,874 | **−0.035** | +0.064 |
+
+The right-hand panel is the old core's signature: a vertical smear at fixed PSD, FCI varying with no
+relation to it — the discrimination signal quantized away, exactly as the `ap_ufixed<18,2>`
+diagnosis predicted. The left panel is a single correlated band.
+
+A second, independent check — the hardware's FCI distribution against a float reference computed
+from the raw traces with the same windows and the same `|Re|+|Im|` definition:
+
+| | p5 | p25 | median | p75 | p95 | IQR |
+|---|---|---|---|---|---|---|
+| hardware | 0.5850 | 0.6856 | 0.7416 | 0.7829 | 0.8258 | 0.0973 |
+| float reference | 0.6265 | 0.7210 | 0.7768 | 0.8195 | 0.8655 | 0.0985 |
+
+**IQR ratio 0.988** — the hardware adds essentially no spread of its own, which is precisely what
+the old core failed to do. (The −0.035 median offset is expected: the float path re-estimates each
+baseline from the trace's own pre-trigger samples, and the trace log is a subsample of the events.)
+
+![Offline FCI/PSD analysis: pulse shape, energy spectrum, PSD distribution, hardware vs float FCI](images/offline-fci-psd-analysis.png)
+
+**Window optimisation.** Sweeping `psa_l`/`psa_w` over the recorded pulses and scoring by agreement
+with PSD, the best is `psa_l` 1–18 / `psa_w` 1–150 at r = 0.637 — statistically indistinguishable
+from the paper's own 1–25 / 1–90 at r = 0.631. **The paper's windows are already near-optimal for
+this detector; the earlier belief that they were mismatched was an artefact of the broken core**
+(see [[measured-pulse-shape]], whose window-tuning advice is superseded).
+
+**Two caveats on the comparison.** The runs used different sources (cosmics vs DD generator), so
+this is not a controlled A/B; a correlation moving from −0.03 to +0.82 is far too large to be a
+source effect, but it is not a single-variable experiment. And correlation with PSD demonstrates
+that FCI carries shape information, not that it separates neutrons — that claim still requires a
+neutron source.
+
+**Two things the raw traces surfaced that are not about FCI.** Signal-to-noise is low in absolute
+terms: median amplitude 799 against baseline σ ≈ 51, i.e. ~15σ, and with calibration at 8σ the
+threshold lands at ~63% of the median pulse height so most of the spectrum cannot trigger. This was
+first written up as a ~6× *regression* against an earlier recorded amplitude of 4086 at σ 42; that
+comparison should not be relied on, because the same earlier record's decay constant turned out to
+be wrong by 3.5× (see below), so its amplitude figure is not trustworthy either. The operational
+problem — threshold sitting too close to the median pulse — stands on its own measurement.
+With calibration at 8σ the threshold lands at ~63% of the median pulse height, so most of the
+spectrum cannot trigger. Separately, **1.4% of traces saturate at the 14-bit rail** (amplitude
+≈ 14,700). Both distort the energy spectrum and should be resolved before the neutron-source
+measurement. The averaged pulse also shows a small notch at sample ~100, at the trigger point,
+which has not been explained.
+
+### FCI window limits at 2048 points / 50 Msps, and what the paper's windows translate to
+
+Both systems use a 2048-point transform, but at different sample rates, so bin indices are not
+transferable — only frequencies are:
+
+| | this system | paper |
+|---|---|---|
+| sample rate | 50 MHz | 100 MHz |
+| bin spacing | **24.414 kHz** | 48.828 kHz |
+| max usable bin (Nyquist) | **1024 = 25 MHz** | 1024 = 50 MHz |
+| window duration | **40.96 µs** | 20.48 µs |
+
+`psa_*_hi` is hard-bounded at **1024**; above Nyquist a real signal's spectrum merely mirrors. Half
+the sample rate at the same transform length buys 2× finer resolution and 2× longer window at the
+cost of the 25–50 MHz band — a band this instrument has nothing in, since the front end is
+band-limited to ~0.47 MHz by the 740 ns rise. The trade is favourable on all three counts.
+
+Same FFT length at half the rate means **the paper's bins double**:
+
+| | paper's bins | frequency | this system's bins |
+|---|---|---|---|
+| `psa_l` | 1–25 | 1.221 MHz | **1–50** |
+| `psa_w` | 1–90 | 4.395 MHz | **1–180** |
+
+Verified on the paper's own labelled Zenodo set (`data/fci_verification_set.csv`, 100 gamma +
+100 neutron), scoring the real objective — FoM = |μ_n − μ_γ| / (FWHM_n + FWHM_γ):
+
+| windows (paper bins) | band | FoM |
+|---|---|---|
+| published 1–25 / 1–90 | 1.221 / 4.395 MHz | 0.9996 |
+| optimum on that data, 1–21 / 1–72 | 1.025 / 3.516 MHz | **1.0507** |
+
+So the published windows are within 5% of optimal, and the optimum translates to **`psa_l` 1–42,
+`psa_w` 1–144** here. Either way this instrument should run roughly **double** the bin numbers it is
+running today (1–25 / 1–90), which are the paper's *bin indices* rather than its *frequencies* and
+so cover only half the intended band.
+
+**Same detector, different digitizer.** The paper used a commercial CAEN unit; this instrument uses
+a custom digitizer that **inverts the signal polarity**, so the Zenodo traces go DOWN from baseline
+while this one's go UP. That is why trigger polarity is RISING here. It has no effect on any result
+above: FCI and PSD are both invariant to a global sign flip — verified bit-for-bit across all 200
+labelled events, FoM identical to four decimals — because FCI sums |Re|+|Im| (negating the signal
+negates the spectrum, leaving the magnitude sum unchanged) and PSD is a ratio of two integrals that
+both flip. It matters only for time-domain extraction: taking `max()` on the raw CAEN traces finds
+noise rather than the pulse, which produced one round of nonsense rise/decay figures here before
+being caught.
+
+**A correction, and the reason it matters methodologically.** An earlier pass optimised the windows
+by *correlation with PSD* on the unlabelled cosmics run, and concluded the opposite: that the
+optimum sat at ~0.5 MHz, below the paper's, supposedly because this detector's pulse was slower.
+Both halves were wrong. The pulse is not slower — measured identically, this detector gives
+τ 4.86 µs / rise 740 ns against the paper's τ 5.09 µs / 750 ns (gamma) and 4.82 µs / 800 ns
+(neutron); the τ ≈ 1.4 µs previously on record was simply a bad measurement. And agreement with PSD
+is a *proxy*, not the discrimination objective: maximising it does not maximise separation, and here
+it pointed the wrong way. Optimise on labelled data against FoM, or not at all.
+
+### FCI resolves more tightly than PSD, and the margin widens at low energy
+
+Measured 2026-09-01 with a **Co-60 source** at the detector, running the FoM-optimal windows
+translated to this sample rate (`psa_l` 1–42, `psa_w` 1–144; PSD gates short 70 / long 150
+samples): **120,000 events at 1005 events/s**, which also confirms the readout model below.
+
+**What a gamma-only source can and cannot show.** Co-60 emits no neutrons, so there is exactly one
+population and a gamma/neutron FoM cannot be measured. What it measures directly is FoM's
+*denominator* — how tightly each discriminant clusters for a single known population — as a
+function of energy. Combining that with the class separation Δμ taken from the paper's labelled set
+gives a *predicted* FoM. That is an extrapolation, not a measurement.
+
+![FCI vs PSD discriminant width and predicted FoM versus energy, Co-60](images/fci-vs-psd-resolution-co60.png)
+
+| energy_long | FCI σ | PSD σ | predicted FoM (FCI / PSD) | ratio |
+|---|---|---|---|---|
+| 49.6k–97.3k | **0.0348** | 0.0700 | 0.398 / 0.182 | **2.19×** |
+| 155k–218k | 0.0119 | 0.0166 | 1.166 / 0.767 | 1.52× |
+| 383k–469k | 0.0073 | 0.0104 | 1.904 / 1.227 | 1.55× |
+| 706k–885k | 0.0059 | 0.0077 | 2.333 / 1.651 | 1.41× |
+
+FCI is tighter than PSD in **every** energy bin, and the margin grows as energy falls — 1.4× at the
+top of the range, 2.2× at the bottom. That is the expected behaviour if FCI degrades more
+gracefully than gate integration when there is less charge to work with, and it is consistent with
+the low-energy PSD pathology already documented in §8d.
+
+A useful consistency check on the extrapolation: the live Co-60 gamma median lands at FCI 0.896
+against the labelled set's gamma mean of 0.876 (2% apart) and PSD 0.731 against 0.788 (7%), across
+two different digitizers and sample rates.
+
+**Four caveats, none of them small.** σ_n ≈ σ_g is assumed and unverified — no neutrons here. Δμ is
+imported from a different instrument. The energy axis is uncalibrated `energy_long`. And on the
+labelled set the two classes are nearly energy-disjoint (gamma median 14.7k, neutron median 133k),
+so its own overall FoM figures — FCI 1.051 vs PSD 0.778 with *both* discriminants fairly optimised
+— partly measure energy separation rather than pulse shape. **None of this substitutes for a
+neutron-source measurement**, which remains the outstanding experiment. What it does establish is
+that FCI's resolution advantage is real, measured on this hardware, and largest exactly where the
+claim said it would be.
+
+### Throughput is readout-bound, and 15 kcps was never a host-side number
+
+Observed live rate topped out at **147 events/s** (scope off) and 107 (scope on), against a
+"15 kcps design target". Measured on hardware 2026-09-01:
+
+| quantity | measured |
+|---|---|
+| `$RB` round trip (32 events) | **28.85 ms** — 17.4 ms wire + 11.4 ms fixed overhead |
+| wire cost per event | **50.2 bytes** |
+| GUI poll period / max batch | 200 ms / 32 → **160 events/s ceiling** |
+| flat-out polling | **955 events/s** |
+| rate the FPGA was actually producing | **~970 events/s** |
+| ASCII ceiling at 921600 baud | **1836 events/s** |
+
+Three separate things were conflated:
+
+1. **The 147/s was the GUI.** `BATCH_POLL_INTERVAL_MS = 200` with `$RB` capped at 32 events gives
+   exactly 5 × 32 = 160/s. `RB_MAX_BATCH` is 32 because `result_fifo`'s `FIFO_DEPTH` is 32 — a
+   hardware fact, not a protocol choice. Scope-on drops it to 107 because the same worker thread
+   issues a `$RT` per iteration.
+2. **15 kcps was the FPGA core's internal processing capacity**, from the HLS core's cosim
+   Interval of 3249 cycles. It was never a host readout rate and the two were never comparable.
+   The RTL core free-runs and exceeds it.
+3. **The link is the real end-to-end ceiling.** At 50.2 bytes/event, 921600 baud allows 1836
+   events/s. Reaching 15 kcps in this ASCII format would need **7.5 Mbaud**.
+
+Fixed: the worker now polls adaptively — immediately after any batch that comes back *full* (proof
+the FIFO saturated and events are being dropped), falling back to 200 ms once a batch comes back
+short, so an idle instrument costs what it did before.
+
+Deepening the result FIFO is worth doing and helps more than it first appears, because fixed
+overhead is 40% of each round trip:
+
+| FIFO / batch | projected |
+|---|---|
+| 32 (today) | 1110 events/s |
+| 64 | 1383 |
+| 128 | 1578 |
+| 256 | 1697 |
+
+That approaches the 1836/s ASCII ceiling and no further. Beyond it the link itself has to change:
+3 Mbaud gives ~5977/s ASCII, and a binary encoding (~32 B/event) gives ~2880/s at 921600 or
+~9375/s at 3 Mbaud — the only combination that puts 15 kcps in reach.
+
+**A statistic that was lying.** `Acq_PopPaired` incremented `psd_overflows`/`fci_overflows` once
+per event whenever the hardware's *sticky* overflow flag was set — so after the first overflow
+ever, every subsequent event bumped it and the reported figure came out exactly equal to `paired`
+(1653/1653 live; 37586/37586 in earlier GUI captures). The flag is clearable only by `clear_i`,
+which also flushes the FIFO, so counting episodes is impossible without discarding data. These are
+now **latched 0/1** — "overflowed at least once this run", which is all the hardware can report.
+
+---
+
 ## 9. Current state
 
-- `fci_core` and `trigger_core` built, verified, packaged; `trigger_core` testbench **8/8**
-- `blr_core` (**12/12**), `psd_core` (**16/16**) and `fci_sink` (**11/11**) built, verified,
-  packaged into `fpga/ip/` — and **integrated in the block design and running on hardware** (§8b)
+- `trigger_core` built, verified, packaged; testbench **8/8**
+- **`fci_core` replaced by hand-written VHDL at 2048 points** (§8g), absorbing `fci_sink`: the HLS
+  core's `ap_ufixed<18,2>` bin magnitude was quantizing the discrimination signal away entirely
+  (FCI cv 42% vs PSD 1.8% on the same 32,544 live events). `bin_accumulator` **9/9** at 2048;
+  integration testbench drives the assembled core with real DD-generator traces. **Built and
+  simulated, NOT yet on hardware** — bitstream not rebuilt, so the fix is unconfirmed in silicon
+- `blr_core` (**12/12**), `psd_core` (**16/16**) built, verified, packaged into `fpga/ip/` — and
+  **integrated in the block design and running on hardware** (§8b). `fci_sink` (**11/11**) is
+  retired as a separate IP, its role merged into the new `fci_core` (§8g)
 - **The spectroscopy chain works end to end**: BLR → trigger → broadcaster → {FCI, PSD, raw DMA},
   with both discriminators computed on the same events and paired by the in-band timestamp
 - Two clock domains: 50 MHz sample rate, 75 MHz CPU and consumers; UART at **921600 baud** (§8b)
@@ -1368,11 +1819,14 @@ batch had to be reverted):
   in order: run with `blr_core` bypassed (`ctrl` bit 0) to confirm or kill the BLR-gate hypothesis in
   a single acquisition, then sweep `gate_thr` to see whether the crossover energy tracks it.
   **Not** `baseline_ref` — a constant offset is arithmetically incapable of producing this.
-- **`fci_core_rtl`** — the VHDL replacement for the HLS core is partly built: `fci_core_pkg.vhd`
-  and `bin_accumulator.vhd` (**9/9**, `FFT_LENGTH` generic, default 1024, bit-reversed indexing)
-  and `fci_axi4lite_regs.vhd` (configurable windows at 0x00–0x0C) exist. **Still to do:** the top
-  level instantiating `xfft`, the IP-generation script, and a testbench against
-  `data/fci_verification_set.csv`.
+- ~~**`fci_core_rtl`** — the VHDL replacement for the HLS core is partly built.~~ **RTL done
+  (§8g):** top level, `sample_framer`, `xfft` generation/packaging scripts, and an integration
+  testbench against real DD-generator traces all exist and pass in simulation. **Remaining, and
+  it is the load-bearing part:** rebuild the block design against the new IP (remove `fci_core_0`
+  + `fci_sink_0`, add `fci_core_rtl_0` at the freed `0x00030000`, rewire
+  `axis_broadcaster_0/M02_AXIS`), regenerate the BSP so `XPAR_FCI_CORE_RTL_0_BASEADDR` exists,
+  synthesize (**check utilization — already ~81.6% LUT / 81% BRAM and a 2048-point FFT costs more
+  than a 1024-point one; this is a genuine fit risk**), then reflash and re-measure the §8g table.
 - **`prepare_dataset.py`: apply the ÷5 to the ROOT path** so measured data lands at 100 Msps
   (§8e), averaging each group of 5 samples rather than subsampling. Until then, measured ROOT
   events are 5× too fast to compare against the reference set — and nothing about the output looks

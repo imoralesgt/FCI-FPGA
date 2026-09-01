@@ -212,7 +212,9 @@ TRIGGER_FIELDS = [
     Field("delay", "Delay (samples)", 2, 256,
           tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
     Field("depth", "Depth (samples)", 1, 2048,
-          tooltip="Capture length -- also used to compute FCI/PSD."),
+          tooltip="Capture length -- also used to compute FCI/PSD. Must stay at 2048 to match "
+                  "fci_core's FFT length; a shorter capture desyncs its framing against real "
+                  "event boundaries instead of failing loudly."),
 ]
 
 BLR_FIELDS = [
@@ -253,10 +255,12 @@ PSD_FIELDS = [
 ]
 
 FCI_FIELDS = [
-    Field("psa_l_lo", "PSA_l low", 0, 512, tooltip="PSA_l low FFT bin index."),
-    Field("psa_l_hi", "PSA_l high", 0, 512, tooltip="PSA_l high FFT bin index."),
-    Field("psa_w_lo", "PSA_w low", 0, 512, tooltip="PSA_w low FFT bin index."),
-    Field("psa_w_hi", "PSA_w high", 0, 512, tooltip="PSA_w high FFT bin index."),
+    # Upper bound is the Nyquist bin of the 2048-point transform. Bin spacing is 50 Msps / 2048 =
+    # ~24.4 kHz, so bin k is k * 24.4 kHz.
+    Field("psa_l_lo", "PSA_l low", 0, 1024, tooltip="PSA_l low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_l_hi", "PSA_l high", 0, 1024, tooltip="PSA_l high FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_w_lo", "PSA_w low", 0, 1024, tooltip="PSA_w low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_w_hi", "PSA_w high", 0, 1024, tooltip="PSA_w high FFT bin index (~24.4 kHz per bin)."),
     # Watermark deliberately not exposed here -- same reasoning as PSD_FIELDS above.
 ]
 

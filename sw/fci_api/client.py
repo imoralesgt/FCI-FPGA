@@ -13,7 +13,7 @@ matters rather than restated on every method:
 
 from __future__ import annotations
 
-from .exceptions import FciNotPresentError
+from .exceptions import FciNotPresentError, FciProtocolError
 from .transport import FciTransport
 from .types import (
     AcqEvent,
@@ -121,8 +121,24 @@ class FciClient:
         tokens = self._t.transact("RB", n)
         if len(tokens) == 1 and tokens[0] == "-1":
             raise FciNotPresentError("$RB: FCI result path not present in this bitstream")
-        count = int(tokens[-1])
+        # Validated rather than int()'d directly. A desynced line (two replies glued together
+        # after a host stall, e.g. '... 12690!AE') otherwise raises a bare ValueError out of the
+        # library, which is not an FciError and so escaped the GUI worker's handler and killed the
+        # acquisition thread outright. A framing problem is exactly what FciProtocolError is for,
+        # and raising it also marks the transport for resync.
+        try:
+            count = int(tokens[-1])
+        except (ValueError, IndexError):
+            raise FciProtocolError(
+                f"$RB reply has no valid trailing count -- last token {tokens[-1]!r}; "
+                f"likely two replies merged after a stalled read"
+            ) from None
         body = tokens[:-1]
+        if count < 0 or len(body) < count * 8:
+            raise FciProtocolError(
+                f"$RB reply claims {count} events but carries {len(body)} value tokens "
+                f"({len(body) / 8:.1f} events' worth)"
+            )
         return [self._parse_event(body[i * 8 : (i + 1) * 8]) for i in range(count)]
 
     def read_pending(self) -> Pending:

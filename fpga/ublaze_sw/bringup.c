@@ -35,6 +35,14 @@
 
 static int g_fail_count = 0;
 
+/* Trigger capture depth, in samples. HARD INTERFACE CONSTRAINT, not a tuning knob: fci_core's FFT
+ * transforms exactly this many samples per event (FFT_LENGTH in fci_core_rtl_top.vhd), and
+ * psd_core's gates are placed within the same frame. trigger_core streams exactly `depth` beats
+ * per capture, so a mismatch either desyncs fci_core's framing against real event boundaries or
+ * hangs the pipeline outright. Previously the bare literal 1024 in three places; promoted to a
+ * named constant when the transform moved to 2048 so the next change is one edit, not a grep. */
+#define CAPTURE_DEPTH 2048
+
 static void check_u32(const char *name, u32 expected, u32 actual) {
   if (expected == actual) {
     xil_printf("  [PASS] %s = 0x%08x\r\n", name, actual);
@@ -67,8 +75,8 @@ static void test_trigger_core(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, 100);
   check_u32("delay", 100, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET));
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
-  check_u32("depth", 1024, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET));
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
+  check_u32("depth", CAPTURE_DEPTH, Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET));
 
   /* Polarity RISING. An earlier comment here claimed falling, on the strength of an oscilloscope
    * check of the ANALOG pulse -- but what matters is the digitized polarity after the front end's
@@ -76,8 +84,8 @@ static void test_trigger_core(void) {
    * baseline (baseline ~1873, peaks ~5900). The scope observation was one inversion earlier.
    *
    * Threshold PARKED at full scale on the way out, which is the important part. Until
-   * start_fci_core_realtime() and start_raw_trace_pipeline() have both run, neither
-   * axis_broadcaster_0 consumer can accept a beat -- and because the broadcaster is lockstep, a
+   * start_raw_trace_pipeline() has run, the raw-trace axis_broadcaster_0 consumer cannot accept a
+   * beat -- and because the broadcaster is lockstep, a
    * trigger firing in that window leaves capture_engine stuck in STREAM holding beat 0. Leaving a
    * live threshold here (this test writes 0x1234 = 4660, which real pulses cross every time) makes
    * that a race against however long the I2C in test_vga_dac() happens to take. With RISING
@@ -87,16 +95,20 @@ static void test_trigger_core(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_THRESHOLD_OFFSET, 16383);
 }
 
-/* fci_sink replaces axi_dma_0 on fci_core's result path. Auto-derived from the block design's own
- * XPAR symbol rather than hand-set: a hand-set switch is exactly the kind of thing that silently
- * stops matching the hardware the moment the BD changes and nobody remembers to flip it back --
- * which is precisely what happened here once already (see docs/log/README.md, the Bringup_Init
- * split). Deriving it removes that failure mode instead of trusting nobody forgets again. */
-#ifdef XPAR_FCI_SINK_0_BASEADDR
-#define FCI_RESULT_VIA_FCI_SINK 1
-#else
-#define FCI_RESULT_VIA_FCI_SINK 0
-#endif
+/* A FIFO-backed result register window replaces axi_dma_0 on fci_core's result path. Auto-derived
+ * from the block design's own XPAR symbols rather than hand-set: a hand-set switch is exactly the
+ * kind of thing that silently stops matching the hardware the moment the BD changes and nobody
+ * remembers to flip it back -- which happened here once already (see docs/log/README.md, the
+ * Bringup_Init split).
+ *
+ * Deriving it is necessary but was not sufficient: this originally keyed on XPAR_FCI_SINK_0_BASEADDR
+ * alone, and when fci_sink was merged INTO the FCI core that symbol vanished, silently selecting
+ * the axi_dma_0 path against a BD that no longer has an axi_dma_0 -- a build error rather than
+ * silent wrong behaviour only because the globals it wanted had also been compiled out. The lesson
+ * is that a derived switch must key on what the new hardware HAS, not on what the old hardware was
+ * called, which is what FCI_CORE_HAS_RESULT_FIFO does (see registers.h). */
+/* FCI_RESULT_VIA_FCI_SINK now comes from registers.h -- see the comment there for why it is
+ * defined once centrally rather than re-derived in each file that needs it. */
 
 static void test_blr_core(void) {
   xil_printf("-- blr_core registers --\r\n");
@@ -129,13 +141,15 @@ static void test_fci_sink(void) {
 }
 #endif
 
+/* The RTL core free-runs: it has no ap_start/auto_restart handshake to program (the HLS core's
+ * ap_ctrl_hs is gone with it), so this is now purely a register read/write check. It processes
+ * whatever frames arrive on its stream and pushes each result into its own FIFO. */
 static void test_fci_core(void) {
   xil_printf("-- fci_core @ 0x%08x --\r\n", FCI_CORE_BASEADDR);
 
-  u32 idle = Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_AP_CTRL_OFFSET) & FCI_CORE_AP_CTRL_IDLE;
-  xil_printf("  [INFO] ap_idle = %d (expect 1: core not yet started)\r\n", idle ? 1 : 0);
-
-  /* PSA window bounds matching the values already verified in fci_core_tb.cpp. */
+  /* Bin indices now run 0..2047 (2048-point transform); these bounds are the historical defaults
+   * and are known to be mismatched to this detector's pulse -- retuned at runtime over $SF, not
+   * here. See the project log. */
   Xil_Out32(FCI_CORE_BASEADDR + FCI_CORE_PSA_L_LO_OFFSET, 1);
   check_u32("psa_l_lo", 1, Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_PSA_L_LO_OFFSET));
 
@@ -147,12 +161,6 @@ static void test_fci_core(void) {
 
   Xil_Out32(FCI_CORE_BASEADDR + FCI_CORE_PSA_W_HI_OFFSET, 90);
   check_u32("psa_w_hi", 90, Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_PSA_W_HI_OFFSET));
-
-  /* auto_restart only, not ap_start -- starting here would stall the dataflow region waiting on
-   * trigger_core's AXI-Stream, which stays silent without a live ADC trigger. */
-  Xil_Out32(FCI_CORE_BASEADDR + FCI_CORE_AP_CTRL_OFFSET, FCI_CORE_AP_CTRL_AUTO_RESTART);
-  check_u32("ap_ctrl (auto_restart)", FCI_CORE_AP_CTRL_AUTO_RESTART,
-            Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_AP_CTRL_OFFSET) & FCI_CORE_AP_CTRL_AUTO_RESTART);
 }
 
 static void test_vga_dac(void) {
@@ -171,12 +179,11 @@ static void test_vga_dac(void) {
            VgaDac_SetGainCoarse(AD8330_DEFAULT_GAIN_COARSE_LINEAR));
 }
 
-/* raw28 is a Q12.16 ap_ufixed<28,12> value (see fci_core.hpp): value = raw / 2^16. Printed by
- * hand since xil_printf has no floating-point support. */
-static void print_psa(const char *label, u32 raw28) {
-  u32 int_part = raw28 >> 16;
-  u32 frac_part = ((raw28 & 0xFFFFu) * 10000u) / 65536u;
-  xil_printf("  %s = %d.%04d (raw=0x%08x)\r\n", label, int_part, frac_part, raw28);
+/* PSA sums are plain 32-bit unsigned magnitude accumulations now (bin_accumulator.vhd), not the
+ * HLS core's Q12.16 ap_ufixed<28,12> -- so there is no fractional part to decode and the old
+ * >>16 / &0xFFFF split would have printed a meaningless number against the new format. */
+static void print_psa(const char *label, u32 raw) {
+  xil_printf("  %s = %u (0x%08x)\r\n", label, raw, raw);
 }
 
 /* Confirmed ~30 events/s background rate at this location (Poisson): P(catch an event within
@@ -189,13 +196,9 @@ static void print_psa(const char *label, u32 raw28) {
  * + cosmics) runs at a few Hz at most, where 2s is not a safe margin. */
 #define DMA_POLL_ITERS_10S (DMA_POLL_ITERS_200MS * 50)
 
-/* auto_restart + ap_start together (test_fci_core() above only set auto_restart, deliberately not
- * starting it without a live trigger source). Called once before calibrate_threshold()/
- * test_dma_s2mm(), both of which need it already running. */
-static void start_fci_core_realtime(void) {
-  Xil_Out32(FCI_CORE_BASEADDR + FCI_CORE_AP_CTRL_OFFSET,
-            FCI_CORE_AP_CTRL_AUTO_RESTART | FCI_CORE_AP_CTRL_START);
-}
+/* start_fci_core_realtime() is gone: it wrote the HLS core's ap_start/auto_restart bits, and the
+ * RTL core that replaced it free-runs -- it has no start handshake at all, so there is nothing to
+ * kick off before calibrate_threshold()/test_dma_s2mm(). */
 
 /* --- Raw-trace capture (axi_dma_1), continuously interrupt-driven from as early in main() as
  * possible -- see start_raw_trace_pipeline() for why this can't wait until "someone actually
@@ -724,7 +727,7 @@ static int calibrate_threshold(void) {
   xil_printf("-- threshold calibration (auto, %d sigma over baseline) --\r\n",
              THRESHOLD_SIGMA_MULT);
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
 
@@ -1188,7 +1191,7 @@ static void test_live_event(void) {
     g_fail_count++;
     return;
   }
-  /* FCI = PSA_l/PSA_w; both share the same Q12.16 scale factor, so it cancels in the raw-code
+  /* FCI = PSA_l/PSA_w; both share the same arbitrary magnitude scale, so it cancels in the raw
    * ratio directly -- no need to convert to physical units first. */
   u64 fci_scaled = ((u64)raw_l * 10000ULL) / raw_w;
   xil_printf("  [INFO] FCI = PSA_l/PSA_w = %d.%04d\r\n", (u32)(fci_scaled / 10000),
@@ -1228,7 +1231,7 @@ static void start_result_pipeline(void) {
 static void start_continuous_capture(void) {
   xil_printf("-- continuous interrupt-driven capture --\r\n");
 
-  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, 1024);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
   set_trigger_threshold(g_calibrated_threshold); /* see calibrate_threshold() */
@@ -1247,7 +1250,6 @@ void Bringup_Init(void) {
 #endif
   test_vga_dac();
 
-  start_fci_core_realtime();
   start_raw_trace_pipeline(); /* must be armed+interrupt-driven before any real trigger can occur
                                 * -- see its comment for why */
 #ifdef XPAR_AXI_DMA_0_BASEADDR

@@ -56,8 +56,8 @@ void FciSink_SetWatermark(u32 base, u32 level) {
 u32 FciSink_RatioScaled(const FciResult *r) {
   if (r->psa_w == 0u)
     return 0u;
-  /* Both operands share the same Q12.16 scale, so it cancels and the raw codes divide directly.
-   * 64-bit intermediate because psa_l * 10000 overflows 32 bits for any psa_l above ~429k, and
-   * psa_l runs to 2^28. */
+  /* Both operands share the same arbitrary magnitude scale, so it cancels and the raw sums divide
+   * directly. 64-bit intermediate because psa_l * 10000 overflows 32 bits for any psa_l above
+   * ~429k, and psa_l is a full 32-bit accumulation now (it was 2^28 under the old HLS core). */
   return (u32)(((u64)r->psa_l * 10000ULL) / (u64)r->psa_w);
 }

@@ -29,16 +29,12 @@
 #include "xil_printf.h"
 #include "xuartlite_l.h"
 
-/* fci_sink is not in every block design: while fci_core's results still travel over axi_dma_0 there
- * is no XPAR_FCI_SINK_0_BASEADDR, and acquisition.c compiles to nothing. registers.h guards the
- * base address the same way. The CLI stays useful in that build -- every configuration command and
- * $RT work unchanged -- and the result-path commands report their absence rather than pretending
- * the FIFO is merely empty. */
-#ifdef XPAR_FCI_SINK_0_BASEADDR
-#define CLI_HAVE_RESULTS 1
-#else
-#define CLI_HAVE_RESULTS 0
-#endif
+/* A FIFO-backed result window is not in every block design: while fci_core's results still travel
+ * over axi_dma_0 there is none, and acquisition.c compiles to nothing. The CLI stays useful in that
+ * build -- every configuration command and $RT work unchanged -- and the result-path commands
+ * report their absence rather than pretending the FIFO is merely empty. registers.h decides, so
+ * this file and acquisition.c cannot disagree about which build they are in. */
+#define CLI_HAVE_RESULTS FCI_RESULT_VIA_FCI_SINK
 
 #define CLI_LINE_MAX 96
 #define CLI_ARGS_MAX 8
@@ -287,8 +283,10 @@ static int fci_get(s32 idx, s32 *out) {
 static int fci_set(s32 idx, s32 v) {
   if (idx >= 0 && idx <= 3) {
     /* Bin indices into the FFT magnitude spectrum. The upper bound is the Nyquist bin of the
-     * 1024-point transform; the core does not range-check these itself. */
-    if (!in_range(v, 0, 512))
+     * 2048-point transform; the core does not range-check these itself. Bins above Nyquist are
+     * the mirror image of those below it for a real-valued input, so they carry no new
+     * information -- rejecting them keeps a typo from silently double-counting energy. */
+    if (!in_range(v, 0, 1024))
       return 0;
     reg_set(FCI_CORE_BASEADDR, fci_off[idx], (u32)v);
     return 1;

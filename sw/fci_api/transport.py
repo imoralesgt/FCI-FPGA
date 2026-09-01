@@ -13,6 +13,7 @@ per-request correlation id -- the next line in is always the reply to the last l
 from __future__ import annotations
 
 import threading
+import time
 
 import serial
 import serial.tools.list_ports
@@ -65,12 +66,20 @@ class FciTransport:
     longer-lived object, which works identically since __enter__/__exit__ just call them too.
     """
 
+    RESYNC_DRAIN_S = 0.15
+    """How long to keep reading and discarding after a failed transaction before issuing the next
+    command. Must exceed the USB latency timer (typically 16 ms on FTDI) so that bytes already in
+    flight when the failure happened are consumed rather than surfacing inside the next reply."""
+
     def __init__(self, port: str, baudrate: int = BAUDRATE, timeout: float = DEFAULT_TIMEOUT_S):
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self._ser: serial.Serial | None = None
         self._lock = threading.RLock()
+        self._needs_resync = False
+        """Set while the last transaction did not complete cleanly; makes the next one drain
+        first. See transact()."""
 
     @property
     def is_open(self) -> bool:
@@ -130,6 +139,25 @@ class FciTransport:
             # transaction from cascading into a permanently desynced session.
             self._ser.reset_input_buffer()
 
+            # reset_input_buffer() only discards what the OS has ALREADY buffered; it cannot
+            # cancel bytes still in flight across the USB link, which arrive afterwards and get
+            # read as part of the next reply. That is how a single timeout turns into a corrupted
+            # line like '!RB ... 12690!AE' -- the tail of one reply glued to the head of the next.
+            # So after any failed transaction, drain actively until the line goes quiet before
+            # issuing the next command. Only on the failure path: this costs nothing in normal
+            # operation, where the flag is never set.
+            if self._needs_resync:
+                deadline = time.monotonic() + self.RESYNC_DRAIN_S
+                while time.monotonic() < deadline:
+                    if not self._ser.read(4096):
+                        break
+                self._ser.reset_input_buffer()
+                self._needs_resync = False
+
+            # Assume failure until a well-formed reply has been parsed; every raise below leaves
+            # this set, so the NEXT call drains first.
+            self._needs_resync = True
+
             self._ser.write((request + "\n").encode("ascii"))
             self._ser.flush()
 
@@ -170,4 +198,5 @@ class FciTransport:
                 f"reply {line!r} does not echo the code we sent ({request!r})"
             )
 
+        self._needs_resync = False
         return tokens[1:]
