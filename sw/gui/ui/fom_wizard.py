@@ -309,7 +309,7 @@ class FomWizard(QDialog):
         """`client`/`acquisition_worker` are None when not connected -- the Optimize tab disables
         itself in that case, but Compute FoM still works (it can analyze a file, or whatever this
         session already accumulated before disconnecting). `get_live_events` is a zero-arg
-        callable returning (energy, fci, psd) parallel lists -- injected rather than importing
+        callable returning (energy, fci, psd) parallel numpy arrays -- injected rather than importing
         LiveView here, to keep this dialog's only dependency on the rest of the GUI narrow."""
         super().__init__(parent)
         self._client = client

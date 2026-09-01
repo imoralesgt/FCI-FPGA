@@ -25,6 +25,23 @@ void Uart_Init(void) {
 
   /* 8N1, and DLAB cleared in the same write. */
   XUartNs550_WriteReg(UART_BASEADDR, XUN_LCR_OFFSET, XUN_LCR_8_DATA_BITS);
+
+  /* Enable the FIFOs. NOT optional, and its absence is not a performance issue -- it is a
+   * correctness one.
+   *
+   * With the FIFOs disabled a 16550 receives into a SINGLE byte holding register, so any character
+   * arriving before firmware reads the previous one is lost to an overrun. This CLI polls the UART
+   * from the main loop, and while it is streaming a binary $RQ frame (25.6 kB, ~64 ms at 4 Mbaud)
+   * it does not poll at all. The host, being synchronous, sends the next 9-byte command as soon as
+   * it finishes reading -- straight into that window. Eight of those nine bytes were overwritten,
+   * firmware parsed the fragment, and answered !XX 0 / !XX 1.
+   *
+   * Measured before this fix: 37 rejected commands in a 240 s soak (1.1% of polls, ~2.9M events).
+   * The 16-byte RX FIFO covers the longest command this protocol defines with room to spare.
+   * Both FIFOs are reset here so nothing left over from before the baud change is delivered as
+   * data at the new rate. */
+  XUartNs550_WriteReg(UART_BASEADDR, XUN_FCR_OFFSET,
+                      XUN_FIFO_ENABLE | XUN_FIFO_RX_RESET | XUN_FIFO_TX_RESET);
 }
 
 int Uart_HasByte(void) { return XUartNs550_IsReceiveData(UART_BASEADDR) ? 1 : 0; }

@@ -1715,6 +1715,51 @@ neutron-source measurement**, which remains the outstanding experiment. What it 
 that FCI's resolution advantage is real, measured on this hardware, and largest exactly where the
 claim said it would be.
 
+### Final state: 11.4 kcps live, and what the remaining 1% actually is
+
+![Live view at 11.4 kcps: FCI and PSD vs energy, per-subsystem controls, LLD/ULD gating, rate-vs-time](images/gui-live-view-11kcps.png)
+
+Measured 2026-09-01 after the UART FIFO fix below: **11,424 events/s sustained in the GUI**,
+556,133 captured, and **zero transport errors across a 4.5 minute session** (previously every frame
+failed). Headless, without rendering, the same path reaches **12,037 ev/s** over 2.9 M events with
+zero desyncs -- essentially the modelled 12,800 ev/s ceiling for 25 B/event at 4 Mbaud.
+
+The rate-vs-time trace is now flat. It used to be a sawtooth, which was an artefact rather than a
+measurement: every event in a batch shares one host arrival timestamp, so at batch 1024 the 3 s
+rate window contained only a handful of distinct times.
+
+**The screenshot also shows the client features added this session**: per-subsystem Start/Stop/
+Reset with independent LLD/ULD gating, "Events captured" as a true cumulative tally (it previously
+reported the plot window's size and so froze at 20,000 mid-run), the rate-vs-time strip, heatmap
+toggle, FoM optimisation, and the Trigger / Configuration / File Management tabs.
+
+**The remaining `Dropped (fci) 5,339` is not a link loss.** It is `Acq_PopPaired` resynchronising:
+when the FCI and PSD FIFOs slip -- one overflowed and lost an event the other kept -- the older
+side is discarded to restore pairing. 5,339 of 523,815 is **1.02%**, and `Overflow` reads 1, which
+under the corrected latching semantics means "at least one overflow episode", not one lost event.
+At 11.4 kcps a 1024-deep FIFO fills in **90 ms**, so any scheduling gap longer than that costs
+events. Reducing it means draining faster (already near the link ceiling) or deeper FIFOs -- not a
+transport fix.
+
+### The UART FIFO bug: a correctness fault that only appears at speed
+
+`Uart_Init()` set the divisor and line control but never wrote **FCR**, leaving the 16550's FIFOs
+**disabled**. A 16550 in that state receives into a SINGLE byte holding register.
+
+The CLI polls the UART from the main loop, and while streaming a binary `$RQ` frame (25.6 kB,
+~64 ms at 4 Mbaud) it does not poll at all. The host, being synchronous, sends its next 9-byte
+command as soon as it finishes reading -- straight into that window. Eight of the nine bytes were
+overwritten and firmware parsed the fragment, answering `!XX 0` / `!XX 1`.
+
+Measured before the fix: **37 rejected commands in a 240 s soak** (1.1% of polls). After enabling
+`FCR = FIFO_ENABLE | RX_RESET | TX_RESET`: zero.
+
+Worth recording because of how it presented. The symptom was firmware rejecting a well-formed
+command, which points at the parser or the argument; the cause was an unconfigured peripheral
+register on the same side. It was also invisible at 921600 baud -- a frame took long enough, and
+the command arrived early enough, that the two never overlapped. Raising the link speed did not
+introduce the bug, it merely closed the timing gap that had been hiding it.
+
 ### Readout: 147 -> ~10,000 events/s, and the four things that actually mattered
 
 Final measured state 2026-09-01: **~10,000 events/s sustained**, 317k captured against 323k paired
@@ -1727,7 +1772,8 @@ with **36 dropped (0.011%)**. Started the day at 147 ev/s in the GUI. What each 
 | FTDI latency timer 16 -> 1 ms | 1,871 ev/s | diagnostic only; **not** a deployable fix (see below) |
 | binary `$RQ` (49.4 -> 25 B/event) | — | `fci`/`psd` dropped: exactly derivable from the other fields |
 | axi_uart16550 @ 4 Mbaud | — | UartLite caps at 921600; 16550 divides a 64 MHz `xin` |
-| batch 1024 + fixing two client bugs | **~10,000 ev/s** | |
+| batch 1024 + fixing three client bugs | ~10,000 ev/s | |
+| enabling the 16550 RX FIFO | **11,424 ev/s** | firmware; removed the last error class |
 
 **The latency timer could not be part of the answer.** Setting it to 1 ms doubled throughput, but
 the instrument has to run on an off-the-shelf host with no root and no udev rule. The property that

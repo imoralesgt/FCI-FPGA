@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 
 from PySide6.QtCore import QThread, Signal
 
@@ -46,12 +47,15 @@ class AcquisitionWorker(QThread):
     error_occurred = Signal(str)
 
     def __init__(self, transport: FciTransport, poll_interval_s: float = 0.2,
-                 stats_interval_s: float = 2.0, busy_interval_s: float = 0.0):
+                 stats_interval_s: float = 2.0, busy_interval_s: float = 0.0,
+                 scope_interval_s: float = 0.5):
         super().__init__()
         self._transport = transport
         self._client = FciClient(transport)
         self._poll_interval_s = poll_interval_s
         self._busy_interval_s = busy_interval_s
+        self._scope_interval_s = scope_interval_s
+        self._last_scope_s = 0.0
         self._stats_interval_s = stats_interval_s
 
         self._stop_event = threading.Event()
@@ -60,8 +64,10 @@ class AcquisitionWorker(QThread):
         self._scope_running = threading.Event()
         """Continuous ('Start') scope mode, distinct from _trace_request's one-shot ('Single').
         Checked every loop iteration while set, alongside the batch poll -- both are cheap enough
-        (a $RT round trip is ~30 ms even for a full 2048-sample trace) to share one iteration
-        without meaningfully slowing either down at the 200 ms default poll interval."""
+        A $RT round trip is ~30 ms for a full 2048-sample trace -- NOT cheap next to a batch poll,
+        which is why continuous scope mode is rate-limited to config.SCOPE_INTERVAL_MS rather than
+        run once per iteration. The earlier note here called it cheap; that held only while the
+        batch poll was pinned to a fixed 200 ms."""
         self._scope_n = 2048
         self._start_acq_request = threading.Event()
         self._stop_acq_request = threading.Event()
@@ -157,10 +163,17 @@ class AcquisitionWorker(QThread):
                 # benefit -- unlike request handling, there is no reason to prioritize one over
                 # the other within a single loop iteration.
 
+            # Rate-limited, and for bandwidth rather than frame rate -- see config.SCOPE_INTERVAL_MS.
+            # A one-shot "Single" capture (_trace_request above) is deliberately NOT limited: it is
+            # user-initiated and must feel immediate.
             if self._scope_running.is_set():
-                trace = self._safe_call(lambda: self._client.read_trace(self._scope_n), "read_trace")
-                if trace is not _FAILED:
-                    self.trace_received.emit(trace)
+                now = time.monotonic()
+                if now - self._last_scope_s >= self._scope_interval_s:
+                    self._last_scope_s = now
+                    trace = self._safe_call(lambda: self._client.read_trace(self._scope_n),
+                                            "read_trace")
+                    if trace is not _FAILED:
+                        self.trace_received.emit(trace)
 
             # Adaptive pacing: a FULL batch means the 32-deep hardware FIFO had more queued than
             # one request could carry, so events are actively being dropped -- poll again at once.

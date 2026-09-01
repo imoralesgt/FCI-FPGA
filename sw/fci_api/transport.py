@@ -82,6 +82,14 @@ class FciTransport:
     longer-lived object, which works identically since __enter__/__exit__ just call them too.
     """
 
+    FRAME_CHUNK_BYTES = 4096
+    """Bytes requested per read while pulling a binary frame. Large enough that one call covers
+    many records; the short timeout below is what stops it stalling when fewer remain."""
+
+    FRAME_CHUNK_TIMEOUT_S = 0.005
+    """Per-read timeout while pulling a binary frame. Bounds both the chunk size (~T x link rate)
+    and the stall at a frame's end. The port's normal timeout is restored afterwards."""
+
     DRAIN_READ_TIMEOUT_S = 0.02
     """Per-read timeout while draining. Short so an already-quiet line costs one of these, not the
     port's full operating timeout."""
@@ -309,27 +317,76 @@ class FciTransport:
             if not 1 <= rec_size <= 256:
                 raise FciProtocolError(f"implausible record size {rec_size} for {request!r}")
 
+            # Read the frame in BULK and parse from memory. The obvious loop -- read(1) for the
+            # tag, then read(rec_size) for the record -- costs two syscalls per event, i.e. 2048
+            # per 1024-record frame, and every one of them has to reacquire the GIL. A GUI redraw
+            # holding the GIL for a few milliseconds therefore delays the reader thousands of
+            # times per frame rather than once, which is why readout throughput was visibly
+            # sensitive to which plot type was on screen (a scatter redraw measured 3-5x the cost
+            # of a heatmap, and the observed rate moved ~10k -> ~12k ev/s between them). Reading in
+            # chunks cuts it to a handful of syscalls per frame.
+            #
+            # Each read asks for exactly what is still needed PLUS whatever is already waiting.
+            # Never more: read(n) blocks until it has n bytes or the port timeout expires, so
+            # optimistically asking for a round number stalls for the full timeout whenever the
+            # device sends less -- the same trap that made the resync drain take seconds.
+            buf = bytearray()
+            pos = 0
+            saved_timeout = self._ser.timeout
+            self._ser.timeout = self.FRAME_CHUNK_TIMEOUT_S
+
+            def need(k: int) -> bool:
+                nonlocal buf
+                # Block on a CHUNK, not on a byte and not on exactly-what-is-needed.
+                #
+                # The parser consumes far faster than the link delivers (400 kB/s at 4 Mbaud), so
+                # it is always waiting. The only question is whether it waits once per chunk or
+                # once per field. Per-field reads cost ~2048 syscalls per 1024-record frame, and
+                # since every one reacquires the GIL, a few-millisecond GUI redraw delays the
+                # reader thousands of times rather than once -- which is why throughput was
+                # visibly sensitive to the plot type on screen.
+                #
+                # read(n) returns when it has n bytes OR the port timeout expires, so a large n
+                # with a SHORT timeout yields "whatever arrived in T", bounded both ways: about
+                # T x 400 kB/s per call, and never stalling longer than T at the end of a frame
+                # where fewer than n bytes remain. Waiting is not wasted -- the bytes have to
+                # arrive regardless.
+                stall_budget = int(self.timeout / self.FRAME_CHUNK_TIMEOUT_S) + 1
+                while len(buf) - pos < k:
+                    chunk = self._ser.read(self.FRAME_CHUNK_BYTES)
+                    if chunk:
+                        buf.extend(chunk)
+                        continue
+                    stall_budget -= 1
+                    if stall_budget <= 0:
+                        return False  # genuinely silent for the port's whole timeout
+                return True
+
             records: list[bytes] = []
             checksum = 0
-            while True:
-                tag = self._ser.read(1)
-                if len(tag) != 1:
+            truncated = None
+            try:
+              while True:
+                if not need(1):
                     raise FciTimeoutError(
                         f"frame for {request!r} truncated after {len(records)} records"
                     )
-                if tag[0] == self.RQ_TAG_EVENT:
-                    rec = self._ser.read(rec_size)
-                    if len(rec) != rec_size:
+                tag = buf[pos]
+                pos += 1
+                if tag == self.RQ_TAG_EVENT:
+                    if not need(rec_size):
                         raise FciTimeoutError(
-                            f"record {len(records)} of {request!r} truncated "
-                            f"({len(rec)}/{rec_size} bytes)"
+                            f"record {len(records)} of {request!r} truncated"
                         )
+                    rec = bytes(buf[pos:pos + rec_size])
+                    pos += rec_size
                     checksum = (checksum + sum(rec)) & 0xFFFFFFFF
                     records.append(rec)
-                elif tag[0] == self.RQ_TAG_END:
-                    trailer = self._ser.read(6)
-                    if len(trailer) != 6:
+                elif tag == self.RQ_TAG_END:
+                    if not need(6):
                         raise FciTimeoutError(f"trailer for {request!r} truncated")
+                    trailer = bytes(buf[pos:pos + 6])
+                    pos += 6
                     count = int.from_bytes(trailer[:2], "little")
                     want_sum = int.from_bytes(trailer[2:], "little")
                     if count != len(records):
@@ -343,22 +400,18 @@ class FciTransport:
                         )
                     break
                 else:
-                    # A dropped byte on the host (buffer overrun at high baud) misaligns the
-                    # frame, and because nearly every field's high byte is zero the reader lands
-                    # on 0x00. Keep what was decoded rather than discarding the batch: the records
-                    # already read are intact -- corruption starts at the misalignment point, not
-                    # before it -- and throwing away 500 good events because the 501st byte was
-                    # lost turns a partial-loss problem into a total-loss one.
-                    #
-                    # The frame cannot be trusted from here, so the trailer's count and checksum
-                    # are never seen; the transport stays marked for resync and the next call
-                    # drains before issuing its command. The loss IS reported, via the returned
-                    # count being short of what the device sent -- silence would be worse.
-                    self._last_frame_truncated = (
-                        f"frame desync after {len(records)} records (tag {tag[0]:#04x}); "
+                    # Keep what was decoded; the next call resyncs before issuing its command.
+                    truncated = (
+                        f"frame desync after {len(records)} records (tag {tag:#04x}); "
                         f"remainder of this batch discarded"
                     )
-                    return rec_size, records
+                    break
+            finally:
+                self._ser.timeout = saved_timeout
+
+        if truncated:
+            self._last_frame_truncated = truncated
+            return rec_size, records
 
         self._needs_resync = False
         self._last_frame_truncated = None
