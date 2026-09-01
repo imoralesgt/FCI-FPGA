@@ -27,7 +27,7 @@
 #include "vga_dac.h"
 #include "xil_io.h"
 #include "xil_printf.h"
-#include "xuartlite_l.h"
+#include "uart.h"
 
 /* A FIFO-backed result window is not in every block design: while fci_core's results still travel
  * over axi_dma_0 there is none, and acquisition.c compiles to nothing. The CLI stays useful in that
@@ -856,8 +856,8 @@ void Cli_Init(void) {
 int Cli_AcquisitionEnabled(void) { return g_running; }
 
 void Cli_Poll(void) {
-  while (!XUartLite_IsReceiveEmpty(AXI_UARTLITE_BASEADDR)) {
-    char ch = (char)XUartLite_RecvByte(AXI_UARTLITE_BASEADDR);
+  while (Uart_HasByte()) {
+    char ch = Uart_GetByte();
     if (ch == '\r')
       continue; /* terminals that send CRLF */
     if (ch != '\n') {

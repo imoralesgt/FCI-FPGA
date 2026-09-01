@@ -1715,6 +1715,60 @@ neutron-source measurement**, which remains the outstanding experiment. What it 
 that FCI's resolution advantage is real, measured on this hardware, and largest exactly where the
 claim said it would be.
 
+### Readout: 147 -> ~10,000 events/s, and the four things that actually mattered
+
+Final measured state 2026-09-01: **~10,000 events/s sustained**, 317k captured against 323k paired
+with **36 dropped (0.011%)**. Started the day at 147 ev/s in the GUI. What each step was worth:
+
+| change | rate | note |
+|---|---|---|
+| starting point | 147 ev/s | GUI polled every 200 ms x 32-event cap |
+| adaptive polling | ~950 ev/s | poll again immediately after a FULL batch |
+| FTDI latency timer 16 -> 1 ms | 1,871 ev/s | diagnostic only; **not** a deployable fix (see below) |
+| binary `$RQ` (49.4 -> 25 B/event) | — | `fci`/`psd` dropped: exactly derivable from the other fields |
+| axi_uart16550 @ 4 Mbaud | — | UartLite caps at 921600; 16550 divides a 64 MHz `xin` |
+| batch 1024 + fixing two client bugs | **~10,000 ev/s** | |
+
+**The latency timer could not be part of the answer.** Setting it to 1 ms doubled throughput, but
+the instrument has to run on an off-the-shelf host with no root and no udev rule. The property that
+saved it: the timer delays only the FINAL partial USB packet, so a large reply pays the 16 ms once
+rather than per packet, and batch size amortises it. At batch 1024 the default timer costs ~5%
+instead of ~50%. Asking for the maximum is free when little is pending, because the device stops
+early once the FIFO empties.
+
+Modelled ceilings, batch 1024, default 16 ms timer:
+
+| | 921600 | 4 Mbaud |
+|---|---|---|
+| ASCII, 49.4 B/ev | 1,813 | 7,188 |
+| binary, 25 B/ev | 3,486 | **12,800** |
+
+The observed ~10,000 is 78% of that, the remainder being GUI overhead. Reaching 15 kcps from here
+needs bytes, not baud: packing `psa_*` and the energies to 24 bits and the timestamp to 48 (all fit
+the observed ranges) gives ~19 B/event and ~15,800 ev/s.
+
+**Three bugs found by pushing the link, all in code that only runs after something else failed.**
+Worth recording because each looked like a hardware problem:
+
+1. *Plot redraw was corrupting acquisition.* A 20,000-point `setData()` measured **17.1 ms** and
+   holds the GIL; the tty buffer at 400 kB/s holds ~10-20 ms. Redraws starved the reader thread,
+   the buffer overran, and bytes were lost. The tell was that the bad frame tag was **always
+   `0x00`** — never random — because nearly every field's high byte is zero, so a misaligned reader
+   lands on padding. Fixed by decimating to 4,000 plotted points (3.8 ms); `MAX_POINTS` bounds what
+   is retained, this bounds what is drawn.
+2. *A desync discarded the whole batch.* ~500 already-decoded records were thrown away because the
+   501st byte was lost. Now the good records are returned, the transport is marked for resync, and
+   the truncation is logged.
+3. *The resync drain stalled for the full port timeout.* `read(4096)` blocks until it has 4096
+   bytes **or** the timeout — precisely the case a drain is for. Seconds passed while the device
+   kept streaming the abandoned frame, so the next command interleaved with it and came back
+   `!XX 1` (ERR_PARAM). **Each desync caused the next one.** Fixed by draining with a 20 ms
+   per-read timeout against `in_waiting`; measured 20 ms in every case, formerly 5,000 ms.
+
+The third is the instructive one: the symptom (a firmware parameter error) pointed at firmware, and
+the cause was error-recovery code on the host that had never been exercised until the link was
+pushed hard enough to need it.
+
 ### Throughput is readout-bound, and 15 kcps was never a host-side number
 
 Observed live rate topped out at **147 events/s** (scope off) and 107 (scope on), against a

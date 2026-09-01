@@ -211,7 +211,10 @@ begin
   u_axi4lite_regs : entity work.axi4lite_regs
     generic map (
       C_ADDR_WIDTH => 5,
-      DATA_WIDTH   => ADC_WIDTH
+      DATA_WIDTH   => ADC_WIDTH,
+      -- Must track MAX_DEPTH: capture_engine's depth_i is clog2(MAX_DEPTH) wide, and this used to
+      -- be hardcoded to 13 inside the register file, which pinned the whole core to MAX_DEPTH=4096.
+      DEPTH_BITS   => clog2(MAX_DEPTH)
     )
     port map (
       clk_i         => clk_i,

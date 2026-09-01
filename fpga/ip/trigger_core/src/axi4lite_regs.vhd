@@ -15,7 +15,12 @@ entity axi4lite_regs is
     C_ADDR_WIDTH : integer := 5;
     -- Threshold is a SIGNED level on the restored, zero-centred sample stream, so its width must
     -- track the sample datapath rather than the ADC's own resolution.
-    DATA_WIDTH   : integer := 16
+    DATA_WIDTH   : integer := 16;
+    -- Width of depth_o, which must match what capture_engine expects for the configured MAX_DEPTH
+    -- (clog2(MAX_DEPTH)). Previously hardcoded at 13, which silently tied this core to
+    -- MAX_DEPTH=4096: any smaller value made the port narrower than this output and synthesis
+    -- failed with a width mismatch rather than anything explaining why.
+    DEPTH_BITS   : integer := 13
   );
   port (
     clk_i          : in  std_logic;
@@ -42,7 +47,7 @@ entity axi4lite_regs is
     threshold_o    : out std_logic_vector(DATA_WIDTH - 1 downto 0);
     polarity_o     : out std_logic;
     delay_o        : out std_logic_vector(8 downto 0);
-    depth_o        : out std_logic_vector(12 downto 0)
+    depth_o        : out std_logic_vector(DEPTH_BITS - 1 downto 0)
   );
 end entity axi4lite_regs;
 
@@ -81,7 +86,14 @@ begin
   threshold_o <= threshold_reg(DATA_WIDTH - 1 downto 0);
   polarity_o  <= polarity_reg(0);
   delay_o     <= delay_reg(8 downto 0);
-  depth_o     <= depth_reg(12 downto 0);
+  -- SATURATING, not truncating. capture_engine clamps anything above MAX_DEPTH down to it, but
+  -- that guard only works if an over-range value still ARRIVES as an over-range value: slicing the
+  -- low DEPTH_BITS of, say, 5000 would present 904 and quietly capture 904 samples. A depth that
+  -- disagrees with what the DMA was armed for is exactly what wedged the raw-trace pipeline once
+  -- before, so an out-of-range write is pinned to the maximum instead of wrapping.
+  depth_o <= (others => '1')
+             when unsigned(depth_reg) > to_unsigned(2 ** DEPTH_BITS - 1, 32)
+             else std_logic_vector(resize(unsigned(depth_reg), DEPTH_BITS));
 
   -- Write address/data acceptance: accept one AW+W pair at a time.
   process (clk_i)

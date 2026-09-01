@@ -267,8 +267,12 @@
 /* ---------------------------------------------------------------------------------------------
  * axi_uartlite_0
  * ------------------------------------------------------------------------------------------- */
+/* Kept only for a bitstream that still has axi_uartlite; the CLI no longer touches these -- see
+ * uart.h, which selects the driver from whichever UART the BSP actually exports. */
+#if defined(XPAR_UARTLITE_0_BASEADDR)
 #define AXI_UARTLITE_BASEADDR XPAR_UARTLITE_0_BASEADDR
 #define AXI_UARTLITE_DEVICE_ID XPAR_UARTLITE_0_DEVICE_ID
+#endif
 
 /* ---------------------------------------------------------------------------------------------
  * microblaze_0_axi_intc -- xlconcat interrupt aggregation order. As currently wired in
@@ -335,7 +339,11 @@
 #error "axi_dma_1's interrupt vector not found -- regenerate the BSP against the current BD"
 #endif
 
-#if defined(XPAR_MICROBLAZE_0_AXI_INTC_AXI_UARTLITE_0_INTERRUPT_INTR)
+/* The UART's own vector, whichever UART is fitted. Unused by firmware (the CLI polls rather than
+ * taking an interrupt) and kept only to document the vector map. */
+#if defined(XPAR_MICROBLAZE_0_AXI_INTC_AXI_UART16550_0_IP2INTC_IRPT_INTR)
+#define INTC_UARTLITE_VEC_ID XPAR_MICROBLAZE_0_AXI_INTC_AXI_UART16550_0_IP2INTC_IRPT_INTR
+#elif defined(XPAR_MICROBLAZE_0_AXI_INTC_AXI_UARTLITE_0_INTERRUPT_INTR)
 #define INTC_UARTLITE_VEC_ID XPAR_MICROBLAZE_0_AXI_INTC_AXI_UARTLITE_0_INTERRUPT_INTR
 #elif defined(XPAR_INTC_0_UARTLITE_0_VEC_ID)
 #define INTC_UARTLITE_VEC_ID XPAR_INTC_0_UARTLITE_0_VEC_ID
