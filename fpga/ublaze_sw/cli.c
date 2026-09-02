@@ -120,6 +120,8 @@ static int in_range(s32 v, s32 lo, s32 hi) { return v >= lo && v <= hi; }
 #define TRG_POLARITY 1
 #define TRG_DELAY 2
 #define TRG_DEPTH 3
+#define TRG_CFD_FRAC 4
+#define TRG_CFD_DELAY 5
 
 static int trg_get(s32 idx, s32 *out) {
   switch (idx) {
@@ -136,6 +138,12 @@ static int trg_get(s32 idx, s32 *out) {
     return 1;
   case TRG_DEPTH:
     *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_DEPTH_OFFSET) & 0x1FFFu);
+    return 1;
+  case TRG_CFD_FRAC:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_FRAC_OFFSET) & 0xFFu);
+    return 1;
+  case TRG_CFD_DELAY:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET) & 0x1Fu);
     return 1;
   default:
     return 0;
@@ -155,11 +163,31 @@ static int trg_set(s32 idx, s32 v) {
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_POLARITY_OFFSET, (u32)v);
     return 1;
   case TRG_DELAY:
-    /* The core clamps to 2..256 in hardware; rejecting here instead means a mistyped value is
-     * reported rather than silently corrected into something that still acquires. */
-    if (!in_range(v, 2, 256))
+    /* Lower bound is 4, not the hardware's 2: the CFD's own pipeline is ~3 samples deep, so with
+     * fewer pre-trigger samples than that the captured window does not contain the trigger point
+     * at all. The capture is still well-formed, but a trace whose trigger sample fell off the
+     * front is not what anyone asking for pre-trigger context wants, and it is invisible unless
+     * you go looking. The core still clamps to 2..256 in hardware; rejecting here means a
+     * mistyped value is reported rather than silently corrected into something that acquires. */
+    if (!in_range(v, 4, 256))
       return 0;
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_DELAY_OFFSET, (u32)v);
+    return 1;
+  case TRG_CFD_FRAC:
+    /* fraction = v/256. 0 would make the bipolar signal equal to the delayed sample, whose zero
+     * crossings are baseline noise; 256 would make it identically zero. */
+    if (!in_range(v, 1, 255))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_FRAC_OFFSET, (u32)v);
+    return 1;
+  case TRG_CFD_DELAY:
+    /* Also sets sensitivity, not just timing: the CFD crossing sits at a fixed n = D/(1-f) while
+     * the arming threshold is crossed later for smaller pulses, so pulses below roughly
+     * T*rise*(1-f)/D never arm in time and produce no trigger at all. A larger D lowers that
+     * floor. 0 degenerates the discriminator to (1-f)*s, which never crosses zero. */
+    if (!in_range(v, 1, 31))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET, (u32)v);
     return 1;
   case TRG_DEPTH:
     if (!in_range(v, 1, CLI_TRACE_MAX))
@@ -374,7 +402,7 @@ static int generic_set(const char *code, const s32 *a, int n, int (*set)(s32, s3
   return 0;
 }
 
-static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 4, trg_get); }
+static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 6, trg_get); }
 static int h_st(const char *c, const s32 *a, int n) { return generic_set(c, a, n, trg_set); }
 static int h_gb(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 7, blr_get); }
 static int h_sb(const char *c, const s32 *a, int n) { return generic_set(c, a, n, blr_set); }

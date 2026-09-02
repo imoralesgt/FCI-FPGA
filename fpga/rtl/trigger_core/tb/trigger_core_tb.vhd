@@ -29,6 +29,24 @@ architecture sim of trigger_core_tb is
   constant CLK_PERIOD : time    := 20 ns;
   constant MOD_VAL     : integer := 65536; -- 2**ADC_WIDTH, for the consecutive-value wrap check
 
+  -- CFD settings used by every scenario. f = 128/256 = 0.5 and D = 20 put the ramp's crossing at
+  -- s = D/(1-f) = 40, comfortably above the arming thresholds below so the pulse is always armed
+  -- BEFORE the crossing arrives -- the ordering the CFD requires (see cfd_trigger.vhd's header on
+  -- the sensitivity constraint; get it backwards and nothing triggers at all).
+  constant CFD_FRAC_V  : integer := 128;
+  constant CFD_DELAY_V : integer := 20;
+  constant CFD_CROSS_VAL : integer := 40;   -- D / (1 - f), for f = 1/2
+
+  -- Samples between the mathematical zero crossing and trigger_o going high: the delay-line read
+  -- is registered, cfd_q is registered, and trigger_o is registered. Measured in cfd_trigger_tb,
+  -- where the crossing is analytically at n = D/(1-f) = 16 and the trigger fires at 19.
+  --
+  -- It matters here because the capture is anchored to trigger_o, so the crossing SAMPLE sits
+  -- CFD_LATENCY earlier in the captured window than the pre-trigger delay alone would put it --
+  -- and if the pre-trigger delay is smaller than this, the crossing falls outside the window
+  -- entirely. That is why firmware rejects a delay below 4 (cli.c).
+  constant CFD_LATENCY : integer := 3;
+
   signal clk_i      : std_logic := '0';
   signal rstn_i     : std_logic := '0';
   -- Kept as a 14-bit stimulus signal and widened to the core's 16-bit TDATA below, so every
@@ -179,7 +197,7 @@ begin
 
     procedure run_test(
       test_name     : string;
-      threshold     : natural;
+      threshold     : integer;
       polarity      : std_logic;
       delay_v       : natural;
       depth_v       : natural;
@@ -199,6 +217,7 @@ begin
       variable cross_pos       : integer := -1;
       variable cycle_count     : integer := 0;
       variable expect_pos      : integer;
+      variable cross_target    : integer;
       -- Throughput regression (repo issue #10): with tready held high, capture_engine must
       -- present a beat EVERY cycle once streaming has started. Any idle cycle mid-stream means
       -- the read pipeline is stalling on itself again and the effective output rate has halved.
@@ -207,7 +226,10 @@ begin
       test_count <= test_count + 1;
       report "=== Test: " & test_name & " ===";
 
-      axi_write(0, threshold);
+      -- Threshold is a SIGNED level but the register write takes the raw word, so a negative
+      -- level goes out in two's complement -- exactly as firmware writes it (cli.c masks with
+      -- 0xFFFF for the same reason).
+      axi_write(0, (threshold + MOD_VAL) mod MOD_VAL);
       if polarity = '1' then
         axi_write(4, 1);
       else
@@ -215,6 +237,14 @@ begin
       end if;
       axi_write(8, delay_v);
       axi_write(12, depth_v);
+      -- CFD parameters (0x10 fraction, 0x14 delay). On a LINEAR RAMP the CFD reduces to a level
+      -- trigger at a known value: with s[n] = a + n,
+      --     cfd[n] = s[n-D] - f*s[n] = (1-f)*s[n] - D
+      -- which is zero at s = D/(1-f), independent of where the ramp started. So the ramp
+      -- stimulus still gives an exactly predictable trigger point -- just at CFD_CROSS_VAL
+      -- rather than at the threshold, which is what this test used to key on.
+      axi_write(16, CFD_FRAC_V);
+      axi_write(20, CFD_DELAY_V);
 
       -- Writing threshold/polarity live can itself look like a momentary crossing to the
       -- comparator before delay/depth catch up (e.g. reset defaults vs. the new values), firing
@@ -234,6 +264,11 @@ begin
       -- Ramp stimulus: value at step i is (threshold -/+ crossing_offset +/- i), so the live
       -- crossing happens exactly at step `crossing_offset`. crossing_offset is always well
       -- past delay_v so the delay line has a full, valid pre-trigger history by then.
+      if ascending then
+        cross_target := CFD_CROSS_VAL;
+      else
+        cross_target := (MOD_VAL - CFD_CROSS_VAL) mod MOD_VAL;  -- -CFD_CROSS_VAL, as unsigned
+      end if;
       crossing_offset := delay_v + 20;
       for i in 0 to (crossing_offset + depth_v + 64) loop
         wait until rising_edge(clk_i);
@@ -280,7 +315,9 @@ begin
               end if;
             end if;
           end if;
-          if this_val = threshold then
+          -- The CFD fires at a fixed SAMPLE VALUE on a ramp (see CFD_CROSS_VAL), not at the
+          -- threshold -- the threshold only arms it.
+          if this_val = cross_target then
             cross_pos := beats;
           end if;
           prev_val := this_val;
@@ -311,16 +348,20 @@ begin
       -- (delay_v samples of pre-trigger history, then the crossing sample itself, then
       -- post-trigger samples) -- allow a small fixed tolerance for the trigger/capture pipeline's
       -- own registered stages rather than assuming an exact hand-derived constant.
-      if cross_pos = -1 then
+      expect_pos := delay_v - CFD_LATENCY;
+      if expect_pos < 0 then
+        -- The crossing sample precedes the captured window; nothing to assert. The capture
+        -- itself is still valid and every other check above still applies.
+        report "    (crossing-position check skipped: delay_v " & integer'image(delay_v)
+               & " <= CFD latency " & integer'image(CFD_LATENCY) & ")";
+      elsif cross_pos = -1 then
         ok := false;
-        report "  FAIL: crossing value " & integer'image(threshold) & " never appeared in capture";
-      else
-        expect_pos := delay_v;
-        if abs(cross_pos - expect_pos) > 3 then
-          ok := false;
-          report "  FAIL: crossing at position " & integer'image(cross_pos) & ", expected near "
-                 & integer'image(expect_pos) & " (delay_v)";
-        end if;
+        report "  FAIL: CFD crossing value " & integer'image(cross_target)
+               & " never appeared in capture";
+      elsif abs(cross_pos - expect_pos) > 3 then
+        ok := false;
+        report "  FAIL: crossing at position " & integer'image(cross_pos) & ", expected near "
+               & integer'image(expect_pos) & " (delay_v - CFD latency)";
       end if;
 
       if ok then
@@ -352,14 +393,21 @@ begin
     rstn_i <= '1';
     wait until rising_edge(clk_i);
 
-    run_test("negative-going small", 90, '0', 4, 16, false);
-    run_test("positive-going small", 150, '1', 8, 32, true);
-    run_test("positive-going with backpressure", 150, '1', 8, 32, true, true);
-    run_test("boundary delay=2", 150, '1', 2, 16, true);
-    run_test("boundary delay=256", 356, '1', 256, 300, true);
-    run_test("boundary depth=4096", 150, '1', 4, 4096, true);
+    -- Thresholds are now BELOW the CFD crossing value (40) for ascending ramps and above its
+    -- negative for descending ones. They have to be: the threshold only ARMS the discriminator,
+    -- and if the crossing arrives first the pulse is never armed and nothing fires. The old
+    -- values (90..356) all sat above the crossing and would have produced a silent no-trigger --
+    -- the same sensitivity trap cfd_trigger.vhd's header describes.
+    run_test("negative-going small", -20, '0', 4, 16, false);
+    run_test("positive-going small", 20, '1', 8, 32, true);
+    run_test("positive-going with backpressure", 20, '1', 8, 32, true, true);
+    -- delay=4, not 2: firmware now rejects anything below the CFD's pipeline latency, because
+    -- the captured window would not contain the trigger point. 4 is the new minimum.
+    run_test("boundary delay=4 (minimum)", 20, '1', 4, 16, true);
+    run_test("boundary delay=256", 20, '1', 256, 300, true);
+    run_test("boundary depth=4096", 20, '1', 4, 4096, true);
     -- Mirrors the real system: depth 1024 with stalls the length of an fci_core frame.
-    run_test("long stall (fci_core-like), depth=1024", 150, '1', 100, 1024, true, false, true);
+    run_test("long stall (fci_core-like), depth=1024", 20, '1', 100, 1024, true, false, true);
 
     -- Reconfiguration hazard: on real hardware, reprogramming threshold/polarity while
     -- adc_data_i doesn't move produced spurious "triggered" captures full of pure baseline noise
@@ -380,13 +428,23 @@ begin
     beats_d := 0; lasts_d := 0; guard_d := 0; ok_d := true;
 
     m_axis_tready <= '0';
-    axi_write(0, 150);
+    axi_write(0, 20);
     axi_write(4, 1);
     axi_write(8, 4);
     axi_write(12, DEPTH_D);
+    axi_write(16, CFD_FRAC_V);
+    axi_write(20, CFD_DELAY_V);
 
-    adc_data_i <= ob_to_2c(100);
-    for i in 0 to 9 loop
+    -- Baseline is ZERO between steps, not a DC offset. The CFD needs it: cfd = s[n-D] - f*s[n]
+    -- rests at b*(1-f), so from a baseline of b=100 the bipolar signal never goes negative and
+    -- there is no zero crossing to find -- an earlier version of this scenario stepped 100 -> 200
+    -- and produced no triggers at all. blr_core restores the baseline to zero in the real chain,
+    -- which is exactly what makes the CFD usable there; see cfd_trigger.vhd's header.
+    --
+    -- Each step must also be held longer than the CFD delay so the delayed copy catches up and
+    -- the bipolar signal returns to rest before the next step.
+    adc_data_i <= ob_to_2c(0);
+    for i in 0 to CFD_DELAY_V + 12 loop
       wait until rising_edge(clk_i);
     end loop;
     adc_data_i <= ob_to_2c(200);            -- first crossing
@@ -394,15 +452,15 @@ begin
       wait until rising_edge(clk_i);
     end loop;
 
-    adc_data_i <= ob_to_2c(100);
-    for i in 0 to 9 loop
+    adc_data_i <= ob_to_2c(0);
+    for i in 0 to CFD_DELAY_V + 12 loop
       wait until rising_edge(clk_i);
     end loop;
     adc_data_i <= ob_to_2c(200);            -- second crossing, first trace still undrained
     for i in 0 to DEPTH_D + 20 loop
       wait until rising_edge(clk_i);
     end loop;
-    adc_data_i <= ob_to_2c(100);
+    adc_data_i <= ob_to_2c(0);
 
     m_axis_tready <= '1';
     while lasts_d < 2 and guard_d < 20 * DEPTH_D loop
@@ -447,14 +505,23 @@ begin
     axi_write(8, 4);
     axi_write(12, 16);
 
-    adc_data_i <= ob_to_2c(5000);
-    for i in 0 to 39 loop
+    -- Settle at a ZERO baseline, and hold it comfortably longer than the CFD delay before
+    -- declaring that no capture may occur.
+    --
+    -- Both parts matter. Zero because the CFD only rests at zero (see the double-buffering
+    -- scenario above). Settled because the STEP onto the baseline is itself a legitimate CFD
+    -- stimulus: an earlier version stepped to 5000 and asserted expect_no_capture 40 cycles
+    -- later, and the delayed copy was still catching up, so the resulting genuine trigger was
+    -- reported as a spurious one. The hazard under test is reconfiguration with the input held
+    -- STILL -- so the input has to actually be still, in the CFD's terms, before the test starts.
+    adc_data_i <= ob_to_2c(0);
+    for i in 0 to CFD_DELAY_V + 40 loop
       wait until rising_edge(clk_i);
     end loop;
 
     expect_no_capture <= true;
 
-    axi_write(0, 9000); -- threshold -> 9000: baseline (5000) < 9000, above settles to '0'
+    axi_write(0, 9000); -- threshold -> 9000: baseline (0) < 9000, arming settles to '0'
     for i in 0 to 9 loop
       wait until rising_edge(clk_i);
     end loop;
@@ -475,7 +542,7 @@ begin
       wait until rising_edge(clk_i);
     end loop;
 
-    axi_write(0, 16383); -- threshold 0 -> 16383: FALLING hazard (above would jump 1->0 with
+    axi_write(0, 16383); -- threshold 0 -> 16383: FALLING hazard (arming would jump 1->0 with
                           -- adc_data_i untouched)
     for i in 0 to 19 loop
       wait until rising_edge(clk_i);

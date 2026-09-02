@@ -19,7 +19,15 @@ entity trigger_core_top is
     -- double-conversion hazard to trip over, just a format this core can still accept.
     ADC_IS_2C  : boolean := false;
     MAX_DELAY  : integer := 256;
-    MAX_DEPTH  : integer := 4096
+    MAX_DEPTH  : integer := 4096;
+    -- CFD delay range. "Short" only relative to the 256-tap pre-trigger line: a useful CFD delay
+    -- is a fraction of the rise time (~37 samples at 50 Msps for this detector's 740 ns), so 32
+    -- covers the whole useful range with margin. Making it smaller saves nothing measurable --
+    -- the delay line costs one SRL per BIT LANE regardless of depth, so 8 and 32 both synthesise
+    -- to 16 SRLs and differ only as SRLC16E vs SRLC32E.
+    CFD_DLY_MAX    : integer := 32;
+    CFD_FRAC_BITS  : integer := 8;
+    CFD_ARM_WINDOW : integer := 64
   );
   port (
     clk_i  : in std_logic;
@@ -76,6 +84,8 @@ architecture rtl of trigger_core_top is
   signal polarity  : std_logic;
   signal delay_sel : std_logic_vector(clog2(MAX_DELAY) - 1 downto 0);
   signal depth     : std_logic_vector(clog2(MAX_DEPTH) - 1 downto 0);
+  signal cfd_frac  : std_logic_vector(CFD_FRAC_BITS - 1 downto 0);
+  signal cfd_delay : std_logic_vector(clog2(CFD_DLY_MAX - 1) - 1 downto 0);
 
   -- Raw ADC bus, registered with NO combinational logic in front of this flop -- confirmed against
   -- the sibling gamma-spectroscopy project (same board/ADC, same clk_adc/clk_dpp-equivalent
@@ -212,6 +222,8 @@ begin
     generic map (
       C_ADDR_WIDTH => 5,
       DATA_WIDTH   => ADC_WIDTH,
+      CFD_FRAC_BITS  => CFD_FRAC_BITS,
+      CFD_DELAY_BITS => clog2(CFD_DLY_MAX - 1),
       -- Must track MAX_DEPTH: capture_engine's depth_i is clog2(MAX_DEPTH) wide, and this used to
       -- be hardcoded to 13 inside the register file, which pinned the whole core to MAX_DEPTH=4096.
       DEPTH_BITS   => clog2(MAX_DEPTH)
@@ -239,7 +251,9 @@ begin
       threshold_o   => threshold,
       polarity_o    => polarity,
       delay_o       => delay_sel,
-      depth_o       => depth
+      depth_o       => depth,
+      cfd_frac_o    => cfd_frac,
+      cfd_delay_o   => cfd_delay
     );
 
   u_delay_line : entity work.delay_line
@@ -255,18 +269,33 @@ begin
       data_o      => delayed_data
     );
 
-  u_trigger : entity work.trigger
+  -- Constant-fraction discriminator, replacing the cross-level trigger. A cross-level trigger's
+  -- firing time depends on pulse AMPLITUDE -- a tall pulse reaches a fixed level earlier on its
+  -- rising edge than a short one -- and since the capture window is anchored to the trigger, that
+  -- walk moves the pulse around inside the frame the FFT transforms. The CFD triggers on a
+  -- feature of the pulse SHAPE instead, so its timing is amplitude-independent.
+  --
+  -- The threshold has not gone away and has not changed meaning: it still decides WHETHER an
+  -- event is real (arming the discriminator), while the zero crossing decides WHEN. Noise
+  -- rejection is therefore unchanged from the cross-level design.
+  u_trigger : entity work.cfd_trigger
     generic map (
-      DATA_WIDTH => ADC_WIDTH
+      DATA_WIDTH => ADC_WIDTH,
+      DLY_MAX    => CFD_DLY_MAX,
+      FRAC_WIDTH => CFD_FRAC_BITS,
+      ARM_WINDOW => CFD_ARM_WINDOW,
+      USE_DSP    => true
     )
     port map (
-      clk_i       => clk_i,
-      rstn_i      => rstn_i,
-      armed_i     => armed,
-      adc_data_i  => adc_data_ob,
-      threshold_i => threshold,
-      polarity_i  => polarity,
-      trigger_o   => trigger_pulse
+      clk_i           => clk_i,
+      rstn_i          => rstn_i,
+      armed_i         => armed,
+      adc_data_i      => adc_data_ob,
+      arm_threshold_i => threshold,
+      delay_i         => cfd_delay,
+      frac_i          => cfd_frac,
+      polarity_i      => polarity,
+      trigger_o       => trigger_pulse
     );
 
   u_capture_engine : entity work.capture_engine

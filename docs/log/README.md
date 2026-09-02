@@ -16,6 +16,99 @@ Real-time FPGA implementation of the **FCI (Frequency Classification Index)** al
 
 ---
 
+## 0. Scope: one datapath, two scintillator families
+
+Two published results define what this instrument is for. Neither is a hardware implementation;
+this project is the hardware implementation, and the goal is to show that **a single fixed-function
+FPGA datapath serves both an inorganic and an organic scintillator**.
+
+**The method — Morales et al., *Nucl. Eng. Technol.* 56 (2024) 745–752**
+([doi:10.1016/j.net.2023.11.013](https://doi.org/10.1016/j.net.2023.11.013)). CLYC(Ce) + SiPM
+(Scionix V12.7B30/SIP-E3-CLYC-X on an OnSemi ArrayC-60035-4P), CAEN DT5761 at 4 GS/s subsampled to
+100 MS/s. A 2048-point FFT per triggered trace, reduced to the **approximate** spectral density
+magnitude by the city-block sum |Re| + |Im| — no square root, no squaring — then two partial
+spectral areas, `PSA_l` over bins 1–25 and `PSA_w` over bins 1–90:
+
+```
+FCI = (PSA_w − PSA_l) / PSA_w
+```
+
+The DC bin is deliberately excluded, which is what gives the index its immunity to baseline offset.
+Its two practical claims are that it needs **no preprocessing** — no baseline removal, no pulse
+alignment, both of which CCM-based PSD does need — and that it classifies over the **full** energy
+range, including below the ~475 keVee neutron limit where PSD requires an energy cut to stay usable.
+The paper proposes FPGA/DSP deployment as future work and stops there.
+
+**The reach — Nakhostin, *Nucl. Instrum. Methods A* 916 (2019) 66–70**
+([doi:10.1016/j.nima.2018.11.021](https://doi.org/10.1016/j.nima.2018.11.021)). A BC501A **liquid
+organic** scintillator on a PMT, digitized at 4 GHz. The finding that matters here: although the
+pulses carry components to ~110 MHz, the *n*/γ **shape** difference lives **below ~18 MHz**, so the
+useful sampling floor — the paper's "PSD Nyquist frequency" — is **32 MHz**, not the ≥250 MHz that
+had been the standing recommendation. A frequency-domain index (power in 0–8 MHz over total power)
+holds its FoM essentially flat from 4 GHz all the way down:
+
+| method | 50–200 keVee | 200–1400 keVee |
+|---|---|---|
+| charge comparison @ 4 GHz | 0.72 ± 0.02 | 1.51 ± 0.04 |
+| charge comparison @ 250 MHz | 0.62 ± 0.03 | 1.33 ± 0.02 |
+| charge comparison @ 32 MHz | **lost entirely** | not quoted |
+| frequency domain @ 4 GHz | 0.75 ± 0.02 | 1.34 ± 0.04 |
+| **frequency domain @ 32 MHz** | **0.62 ± 0.06** | **1.31 ± 0.04** |
+
+Charge comparison is the one that collapses under down-sampling: at one sample per 31.25 ns the
+integration limits no longer land where they should, discrimination below 200 keVee is *completely*
+lost, and low-output events are dislocated to the top of the plot. The frequency-domain FoM only
+breaks below **27 MHz**. Note where the two methods cross: at 4 GHz charge comparison wins the high
+range (1.51 vs 1.34), and at 32 MHz the frequency-domain method holds 1.31 while charge comparison
+has no low-range answer at all. Frequency-domain analysis is not the better method in the abstract —
+it is the one that **survives a cheap ADC**, which is the whole reason this instrument can exist on a
+$100 board.
+
+### Why this instrument sits above both floors
+
+This design digitizes at **50 Msps** — above Nakhostin's 32 MHz organic floor, and half the 100 MS/s
+the FCI paper used for CLYC. The 2048-point transform at that rate gives 24.414 kHz bins and a
+25 MHz Nyquist (§8g), so the bands both papers care about are inside the same register range:
+
+| band | source | bin at 50 Msps | within `psa_*_hi` ≤ 1024? |
+|---|---|---|---|
+| CLYC `PSA_l` 1.03 MHz | FCI paper, retuned | 42 | yes |
+| CLYC `PSA_w` 3.52 MHz | FCI paper, retuned | 144 | yes |
+| organic band edge 8 MHz | Nakhostin optimum | 328 | yes |
+| organic shape limit 18 MHz | Nakhostin | 737 | yes |
+
+The window bounds are genuine AXI4-Lite registers, so **retuning from CLYC to an organic is a
+register write, not a rebuild**. That property was bought deliberately and at a price: §1 records
+rejecting a free-running HLS configuration worth 2–3× the throughput precisely because it turned the
+window bounds into stream ports, and the hand-written VHDL core that replaced it (§8g) kept them as
+registers for the same reason. A throughput decision made for tuning convenience turns out to be
+what makes one bitstream cover two detector families.
+
+### What this does *not* yet establish
+
+Three things are reasoned, not measured, and should be read as the open questions they are:
+
+1. **The frame is fixed at 40.96 µs and that may be the real obstacle.** `CAPTURE_DEPTH` must equal
+   `FFT_LENGTH`, which is a VHDL generic instantiating a fixed `xfft_2048` — so frame length is a
+   **rebuild**, not a register. CLYC's ~4.9 µs decay fills a useful fraction of that frame. An
+   EJ-276 or BC501A pulse, with a delayed component of tens to a few hundred ns, would occupy well
+   under 1% of it, leaving ~2000 samples of pure baseline summed into every bin. Zero-padding does
+   not destroy the spectral envelope, but the noise contribution grows with frame length while the
+   signal's does not. A shorter transform is the likely requirement for organics.
+2. **The analog front end has never been characterized above ~0.5 MHz.** The ~0.47 MHz figure on
+   record (§8g) comes from the CLYC+SiPM pulse's 740 ns rise — it describes the *signal*, not a
+   measured AFE limit. Whether the AD8330 path and whatever anti-alias filtering the carrier has
+   actually pass 8–18 MHz is unverified, and it is a hard prerequisite for the organic claim.
+3. **The two indices are relatives, not the same formula.** Nakhostin's is low-band power over total
+   power from |X|²; the FCI is `(PSA_w − PSA_l)/PSA_w` over the city-block ASDM with DC dropped.
+   Same idea — a low-frequency partial area against a total — differing in normalization, in whether
+   DC is included, and in the magnitude approximation. That the CLYC form transfers to organics is
+   the hypothesis under test, not a corollary of either paper.
+
+Everything below is the record of building the CLYC half of that and getting it to work in silicon.
+
+---
+
 ## 1. What was built
 
 ### `fci_core` — Vitis HLS
@@ -1865,6 +1958,67 @@ ever, every subsequent event bumped it and the reported figure came out exactly 
 (1653/1653 live; 37586/37586 in earlier GUI captures). The flag is clearable only by `clear_i`,
 which also flushes the FIFO, so counting episodes is impossible without discarding data. These are
 now **latched 0/1** — "overflowed at least once this run", which is all the hardware can report.
+
+---
+
+## 8h. Replacing the cross-level trigger with a CFD
+
+A level trigger fires at a time that depends on pulse AMPLITUDE -- a tall pulse reaches a fixed
+level earlier on its rising edge than a short one. The capture window is anchored to the trigger,
+so that walk moves the pulse around inside the 2048-sample frame the FFT transforms, which makes it
+a direct term in FCI's spread. `cfd_trigger.vhd` replaces `trigger.vhd` outright (no dual path).
+
+**Measured, not estimated** (`scripts/compare_trigger_area.tcl`, OOC synthesis, XC7A35T):
+
+| | LUT | FF | DSP48 | SRL | CARRY4 |
+|---|---|---|---|---|---|
+| cross-level (retired) | 22 | 17 | 0 | 0 | 4 |
+| CFD, programmable fraction | 91 | 26 | 1 | 16 | 14 |
+| CFD, fixed 1/2 fraction | 92 | 26 | 0 | 16 | 14 |
+
+About 4x the LUTs, ~0.44% of the device. Two measurement traps worth recording: `synth_design
+-generic` **silently does nothing** for these entities -- every configuration synthesised
+identically until the configs were pinned with wrapper entities (`scripts/area_wrappers.vhd`) --
+and `PRIMITIVE_GROUP == DSP` matches nothing, because a DSP48E1 is group **MULT**, which made the
+variant that does infer a multiplier look like it had none.
+
+**The property it buys**, from `tb/cfd_trigger_tb.vhd`: identical pulse shapes at amplitudes 800 to
+12000 all fire at **sample 19** -- **0 samples of walk over a 15x range**, against **9 samples** for
+a cross-level comparator on the same stimulus. The analytic result matches: for a linear rise,
+`cfd = k*((1-f)*n - D)` is zero at `n = D/(1-f)`, independent of amplitude `k`.
+
+### Three constraints, all found by testing rather than by reading
+
+1. **It requires a zero-centred baseline.** At a resting level `b` the bipolar signal sits at
+   `b*(1-f)` and never crosses zero. `blr_core` guarantees this in the real chain -- but its
+   **bypass** bit would silently stop all triggering. Documented in the CLI reference and carried
+   as a warning on the GUI's bypass control; deliberately not interlocked, since bypass is a
+   legitimate debug path for the raw ADC.
+2. **`cfd_delay` sets sensitivity, not just timing.** The crossing sits at a fixed `n = D/(1-f)`
+   while the arming threshold is crossed LATER for smaller pulses, so anything below about
+   `T*rise*(1-f)/D` never arms in time and produces **no trigger at all**, silently. The first
+   default (D=8) put that floor at **3.75x threshold** -- it would have discarded most of a cosmics
+   spectrum while looking like a dead detector. Default is now **D=24**, floor ~1.25x.
+3. **~3 samples of pipeline latency**, so the pre-trigger delay must exceed it or the trigger point
+   falls outside the captured window. Firmware now rejects `delay < 4` (was 2).
+
+### What the testbenches caught
+
+The zero-crossing direction was **inverted** in the first version -- a positive pulse needs the
+RISING crossing of `cfd`, not the falling one -- and it never fired at all. Worse, the testbench
+reported a flattering "1 sample" walk from that completely broken run, because the min/max were
+computed from uninitialised `integer'high`/`integer'low` sentinels. Both are now guarded, and the
+walk is scored against a computed cross-level baseline so a CFD that degenerated into a level
+trigger would fail rather than pass on a lucky tolerance.
+
+Two of `trigger_core_tb`'s scenarios were also driving DC baselines (100 and 5000) that a CFD
+cannot respond to -- they now use zero baselines, which is what `blr_core` actually delivers.
+
+**Not yet in silicon.** The bitstream has not been rebuilt, so the walk figure is a simulation
+result. The acceptance test is a new cosmics run compared against `cosmics_clyc_run2_0001_*` in
+`~/datasets/cosmics-CLYC/`, which was recorded with the cross-level trigger: same detector, same
+windows, one variable changed. If walk was a real term in FCI's spread, the FCI width at fixed
+energy should narrow.
 
 ---
 

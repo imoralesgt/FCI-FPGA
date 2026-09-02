@@ -20,7 +20,9 @@ entity axi4lite_regs is
     -- (clog2(MAX_DEPTH)). Previously hardcoded at 13, which silently tied this core to
     -- MAX_DEPTH=4096: any smaller value made the port narrower than this output and synthesis
     -- failed with a width mismatch rather than anything explaining why.
-    DEPTH_BITS   : integer := 13
+    DEPTH_BITS   : integer := 13;
+    CFD_FRAC_BITS  : integer := 8;
+    CFD_DELAY_BITS : integer := 5
   );
   port (
     clk_i          : in  std_logic;
@@ -47,7 +49,14 @@ entity axi4lite_regs is
     threshold_o    : out std_logic_vector(DATA_WIDTH - 1 downto 0);
     polarity_o     : out std_logic;
     delay_o        : out std_logic_vector(8 downto 0);
-    depth_o        : out std_logic_vector(DEPTH_BITS - 1 downto 0)
+    depth_o        : out std_logic_vector(DEPTH_BITS - 1 downto 0);
+
+    -- CFD parameters (0x10, 0x14). The cross-level trigger these replaced needed only a level;
+    -- a constant-fraction discriminator additionally needs the fraction it attenuates by and the
+    -- delay it compares against, and both are detector-dependent -- the useful delay scales with
+    -- the pulse rise time -- so both are runtime-programmable rather than generics.
+    cfd_frac_o     : out std_logic_vector(CFD_FRAC_BITS - 1 downto 0);
+    cfd_delay_o    : out std_logic_vector(CFD_DELAY_BITS - 1 downto 0)
   );
 end entity axi4lite_regs;
 
@@ -66,6 +75,8 @@ architecture rtl of axi4lite_regs is
   signal polarity_reg  : std_logic_vector(31 downto 0);
   signal delay_reg     : std_logic_vector(31 downto 0);
   signal depth_reg     : std_logic_vector(31 downto 0);
+  signal cfd_frac_reg  : std_logic_vector(31 downto 0);
+  signal cfd_delay_reg : std_logic_vector(31 downto 0);
 
   signal wren     : std_logic;
   signal rdata_q  : std_logic_vector(31 downto 0);
@@ -91,6 +102,15 @@ begin
   -- low DEPTH_BITS of, say, 5000 would present 904 and quietly capture 904 samples. A depth that
   -- disagrees with what the DMA was armed for is exactly what wedged the raw-trace pipeline once
   -- before, so an out-of-range write is pinned to the maximum instead of wrapping.
+  -- Saturating, for the same reason depth_o is: an over-range write must not wrap into a small
+  -- value that looks legitimate. A wrapped CFD delay would silently move the zero crossing.
+  cfd_frac_o <= (others => '1')
+                when unsigned(cfd_frac_reg) > to_unsigned(2 ** CFD_FRAC_BITS - 1, 32)
+                else std_logic_vector(resize(unsigned(cfd_frac_reg), CFD_FRAC_BITS));
+  cfd_delay_o <= (others => '1')
+                 when unsigned(cfd_delay_reg) > to_unsigned(2 ** CFD_DELAY_BITS - 1, 32)
+                 else std_logic_vector(resize(unsigned(cfd_delay_reg), CFD_DELAY_BITS));
+
   depth_o <= (others => '1')
              when unsigned(depth_reg) > to_unsigned(2 ** DEPTH_BITS - 1, 32)
              else std_logic_vector(resize(unsigned(depth_reg), DEPTH_BITS));
@@ -123,6 +143,22 @@ begin
         polarity_reg  <= (others => '0');
         delay_reg     <= (others => '0');
         depth_reg     <= (others => '0');
+        -- Reset to a WORKING CFD, not to zero and not to a token value. A fraction of 0 makes the
+        -- bipolar signal equal to the delayed sample, whose zero crossings are just baseline noise;
+        -- a delay of 0 degenerates the CFD to (1-f)*s. Neither is safe for something that can fire
+        -- the capture engine before firmware has written anything (see the power-on hazard note in
+        -- fci_core_rtl's sample_framer).
+        --
+        -- The delay ALSO sets sensitivity, which is easy to miss. The CFD zero crossing sits at a
+        -- fixed n = D/(1-f) while the arming threshold is crossed at n = T*rise/A, so a pulse
+        -- below about T*rise*(1-f)/D has its crossing arrive before arming and never triggers at
+        -- all -- silently. Measured in cfd_trigger_tb: at D=8 that cutoff is 3.75x threshold,
+        -- which would discard most of a cosmics spectrum while looking like a dead detector.
+        -- D=24 with f=0.25 puts it at ~1.25x threshold for this detector's ~37-sample rise, close
+        -- enough to the arming level that the amplitude threshold is again what limits
+        -- sensitivity -- which is the intent.
+        cfd_frac_reg  <= std_logic_vector(to_unsigned(64, 32));   -- 64/256 = 0.25
+        cfd_delay_reg <= std_logic_vector(to_unsigned(24, 32));
       elsif wren = '1' then
         case s_axi_awaddr(C_ADDR_WIDTH - 1 downto 2) is
           when "000" =>
@@ -147,6 +183,18 @@ begin
             for b in 0 to 3 loop
               if s_axi_wstrb(b) = '1' then
                 depth_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
+              end if;
+            end loop;
+          when "100" =>
+            for b in 0 to 3 loop
+              if s_axi_wstrb(b) = '1' then
+                cfd_frac_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
+              end if;
+            end loop;
+          when "101" =>
+            for b in 0 to 3 loop
+              if s_axi_wstrb(b) = '1' then
+                cfd_delay_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
               end if;
             end loop;
           when others =>
@@ -200,6 +248,8 @@ begin
           when "001" => rdata_q <= polarity_reg;
           when "010" => rdata_q <= delay_reg;
           when "011" => rdata_q <= depth_reg;
+          when "100" => rdata_q <= cfd_frac_reg;
+          when "101" => rdata_q <= cfd_delay_reg;
           when others => rdata_q <= (others => '0');
         end case;
       elsif s_axi_rready = '1' and axi_rvalid = '1' then

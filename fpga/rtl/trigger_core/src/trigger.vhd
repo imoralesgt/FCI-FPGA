@@ -1,3 +1,10 @@
+-- RETIRED 2026-09-02: replaced by cfd_trigger.vhd in trigger_core_top.
+--
+-- Kept in the tree, not deleted, because scripts/compare_trigger_area.tcl synthesises it as the
+-- area baseline for the CFD (22 LUT / 17 FF here against 91 LUT / 26 FF / 1 DSP / 16 SRL there),
+-- and because cfd_trigger_tb scores the CFD's amplitude walk against what this would have done on
+-- the same pulses. It is not instantiated by any design.
+--
 -- Cross-level trigger: watches the live (undelayed) ADC sample and produces a single-cycle
 -- trigger_o pulse when it crosses threshold_i, in the direction selected by polarity_i.
 --

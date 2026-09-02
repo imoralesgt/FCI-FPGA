@@ -206,15 +206,26 @@ class SubsystemPanel(QGroupBox):
 
 TRIGGER_FIELDS = [
     Field("threshold", "Threshold", -32768, 32767,
-          tooltip="Signed ADC code the live signal must cross to fire a capture."),
+          tooltip="Signed ADC code that ARMS the discriminator. It decides whether an event is "
+                  "real; the CFD zero crossing decides when it happened."),
     Field("rising", "Rising edge", is_bool=True,
           tooltip="Trigger on the signal crossing threshold upward (checked) or downward."),
-    Field("delay", "Delay (samples)", 2, 256,
-          tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
+    Field("delay", "Delay (samples)", 4, 256,
+          tooltip="Pre-trigger delay. Minimum 4: the CFD pipeline is ~3 samples deep, so below "
+                  "that the trigger point falls outside the captured window. Kept in sync with "
+                  "PSD's Pre-trigger automatically."),
     Field("depth", "Depth (samples)", 1, 2048,
           tooltip="Capture length -- also used to compute FCI/PSD. Must stay at 2048 to match "
                   "fci_core's FFT length; a shorter capture desyncs its framing against real "
                   "event boundaries instead of failing loudly."),
+    Field("cfd_fraction", "CFD fraction (/256)", 1, 255,
+          tooltip="Constant-fraction discriminator attenuation, as fraction/256. With the delay "
+                  "below it, sets the zero crossing at n = delay / (1 - fraction/256)."),
+    Field("cfd_delay", "CFD delay (samples)", 1, 31,
+          tooltip="CFD delay. Sets SENSITIVITY as well as timing: pulses smaller than about "
+                  "threshold x rise x (1 - fraction) / delay never arm in time and produce no "
+                  "trigger at all, silently. A larger delay lowers that floor -- the default 24 "
+                  "puts it near 1.25x threshold; 8 would put it at 3.75x."),
 ]
 
 BLR_FIELDS = [
@@ -223,7 +234,11 @@ BLR_FIELDS = [
           tooltip="Deviation from baseline (counts) that opens the restorer's gate."),
     Field("holdoff", "Hold-off", 0, 4095,
           tooltip="Samples to hold the gate closed after a pulse (samples)."),
-    Field("bypass", "Bypass", is_bool=True, tooltip="Disable baseline restoration entirely."),
+    Field("bypass", "Bypass", is_bool=True,
+          tooltip="Disable baseline restoration entirely. WARNING: this also stops the CFD "
+                  "trigger working. The discriminator needs a zero-centred baseline -- at a "
+                  "resting level b the bipolar signal sits at b(1-fraction) and never crosses "
+                  "zero -- so with the restorer bypassed there are no triggers at all."),
     Field("hold", "Hold", is_bool=True, tooltip="Freeze the baseline estimate."),
     Field("baseline", "Baseline (RO)", -32768, 32767, read_only=True,
           tooltip="Live baseline estimate (read-only)."),

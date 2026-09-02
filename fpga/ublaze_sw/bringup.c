@@ -604,6 +604,18 @@ static void report_raw_path_state(void) {
  * trigger itself fired on noise, which is exactly the situation this recovers from. */
 #define TRIGGER_DELAY 100
 
+/* CFD parameters written alongside the trigger's own, so a fresh boot always runs a known
+ * discriminator rather than inheriting whatever the register file reset to.
+ *
+ * fraction = 64/256 = 0.25 and delay = 24 put the zero crossing at n = D/(1-f) = 32 samples, and
+ * -- more importantly -- put the sensitivity floor at about 1.25x the arming threshold. That floor
+ * is the non-obvious part: the crossing sits at a FIXED sample index while the threshold is
+ * crossed later for smaller pulses, so below roughly T*rise*(1-f)/D a pulse never arms in time and
+ * produces no trigger at all, silently. At delay = 8 the floor would be 3.75x threshold, which
+ * would quietly discard most of a cosmics spectrum. See cfd_trigger.vhd's header. */
+#define CFD_FRACTION 64
+#define CFD_DELAY 24
+
 /* Pre-trigger samples included in both PSD gates. Kept here next to TRIGGER_DELAY because the gate
  * start is derived from the two together, and report_gate_scan() must use the same arithmetic
  * psd_core does or the scan would describe a different window than the one being measured. */
@@ -729,6 +741,8 @@ static int calibrate_threshold(void) {
 
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_FRAC_OFFSET, CFD_FRACTION);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_DELAY_OFFSET, CFD_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
 
   u32 band_lo, band_hi;
@@ -1233,6 +1247,8 @@ static void start_continuous_capture(void) {
 
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_FRAC_OFFSET, CFD_FRACTION);
+  Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_DELAY_OFFSET, CFD_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
   set_trigger_threshold(g_calibrated_threshold); /* see calibrate_threshold() */
 

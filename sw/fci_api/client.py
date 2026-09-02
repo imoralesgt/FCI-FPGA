@@ -242,9 +242,15 @@ class FciClient:
 
     def get_trigger(self) -> TriggerConfig:
         """`$GT` (CLI doc section 3.1)."""
-        threshold, polarity, delay, depth = self._t.transact("GT")
+        tok = self._t.transact("GT")
+        if len(tok) < 4:
+            raise FciProtocolError(f"$GT: expected at least 4 fields, got {len(tok)}: {tok!r}")
+        # Six fields since the CFD replaced the cross-level trigger; four on older firmware, which
+        # is tolerated rather than raising so a host can still talk to an older bitstream.
         return TriggerConfig(
-            threshold=int(threshold), rising=_bool(polarity), delay=int(delay), depth=int(depth)
+            threshold=int(tok[0]), rising=_bool(tok[1]), delay=int(tok[2]), depth=int(tok[3]),
+            cfd_fraction=int(tok[4]) if len(tok) > 4 else None,
+            cfd_delay=int(tok[5]) if len(tok) > 5 else None,
         )
 
     def set_trigger(
@@ -253,8 +259,13 @@ class FciClient:
         rising: bool | None = None,
         delay: int | None = None,
         depth: int | None = None,
+        cfd_fraction: int | None = None,
+        cfd_delay: int | None = None,
     ) -> None:
-        """`$ST` (CLI doc section 3.1). Only arguments given are written."""
+        """`$ST` (CLI doc section 3.1). Only arguments given are written.
+
+        `delay` has a minimum of 4, not the hardware's 2: the CFD's pipeline is ~3 samples deep,
+        so a smaller pre-trigger delay leaves the trigger point outside the captured window."""
         if threshold is not None:
             self._t.transact("ST", 0, threshold)
         if rising is not None:
@@ -263,6 +274,10 @@ class FciClient:
             self._t.transact("ST", 2, delay)
         if depth is not None:
             self._t.transact("ST", 3, depth)
+        if cfd_fraction is not None:
+            self._t.transact("ST", 4, cfd_fraction)
+        if cfd_delay is not None:
+            self._t.transact("ST", 5, cfd_delay)
 
     def get_blr(self) -> BlrConfig:
         """`$GB` (CLI doc section 3.2)."""

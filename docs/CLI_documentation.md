@@ -226,10 +226,38 @@ A get with no index returns every parameter of that subsystem in index order.
 
 | index | parameter | range | notes |
 |---|---|---|---|
-| 0 | threshold | −32768 … 32767 | signed ADC code |
-| 1 | polarity | 0 … 1 | 1 = rising crossing, 0 = falling crossing |
-| 2 | delay | 2 … 256 | pre-trigger samples |
+| 0 | threshold | −32768 … 32767 | signed ADC code; **arms** the discriminator |
+| 1 | polarity | 0 … 1 | 1 = positive-going pulses, 0 = negative-going |
+| 2 | delay | **4** … 256 | pre-trigger samples |
 | 3 | depth | 1 … 2048 | capture length in samples |
+| 4 | cfd_fraction | 1 … 255 | CFD fraction, as value/256 |
+| 5 | cfd_delay | 1 … 31 | CFD delay in samples |
+
+`$GT` returns **six** values as of 2026-09-02. Firmware predating the CFD returns four; a host that
+must work with both should treat indices 4 and 5 as optional rather than assuming the length.
+
+The trigger is a **constant-fraction discriminator**, not a cross-level comparator. A level trigger
+fires at a time that depends on pulse amplitude, and since the capture window is anchored to the
+trigger, that walk moves the pulse around inside the frame the FFT transforms. The CFD forms
+`cfd[n] = s[n-D] - f·s[n]` and triggers on its zero crossing, which for a fixed pulse shape sits at
+the same point on the leading edge regardless of height (measured: 0 samples of walk over a 15×
+amplitude range, against 9 for the level trigger it replaced).
+
+`threshold` did not change meaning — it still decides **whether** an event is real, by arming the
+discriminator. The zero crossing decides **when**.
+
+Three consequences that are not obvious from the register map:
+
+- **`cfd_delay` sets sensitivity, not just timing.** The crossing sits at a fixed
+  `n = D/(1-f)` while the threshold is crossed *later* for smaller pulses, so a pulse below roughly
+  `threshold × rise × (1-f) / D` never arms in time and produces **no trigger at all**, silently.
+  A larger delay lowers that floor: the default 24 puts it near 1.25× threshold, where 8 would put
+  it at 3.75×.
+- **`delay` has a minimum of 4**, not the hardware's 2. The CFD pipeline is ~3 samples deep, so
+  below that the trigger point falls outside the captured window.
+- **The baseline must be zero-centred.** At a resting level `b` the bipolar signal sits at
+  `b(1-f)` and never crosses zero. `blr_core` guarantees this — but setting its **bypass** bit
+  (`$SB` index 2) stops the trigger working entirely.
 
 ### 3.2 Baseline restorer (`$SB` / `$GB`)
 

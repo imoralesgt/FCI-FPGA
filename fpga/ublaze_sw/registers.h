@@ -33,6 +33,19 @@
 #define TRIGGER_CORE_DELAY_OFFSET 0x08     /* [8:0], hw-clamped to 2..256 */
 #define TRIGGER_CORE_DEPTH_OFFSET 0x0C     /* [12:0], hw-clamped to 1..4096 */
 
+/* Constant-fraction discriminator parameters. The cross-level trigger these accompany was replaced
+ * by a CFD (fpga/rtl/trigger_core/src/cfd_trigger.vhd): a level trigger's firing time depends on
+ * pulse amplitude, which walks the pulse around inside the capture window the FFT transforms.
+ *
+ * The threshold above did NOT change meaning -- it still decides whether an event is real, by
+ * arming the discriminator; these decide when it happened.
+ *
+ * Both registers saturate rather than wrap on an over-range write, and reset to a working
+ * 0.25 / 24 rather than zero -- a zero fraction or delay is not a safe power-on state for
+ * something that can fire the capture engine before firmware runs. */
+#define TRIGGER_CORE_CFD_FRAC_OFFSET 0x10  /* [7:0], fraction = value/256 */
+#define TRIGGER_CORE_CFD_DELAY_OFFSET 0x14 /* [4:0], CFD delay in samples, 0..31 */
+
 #define TRIGGER_CORE_POLARITY_RISING 0x1
 #define TRIGGER_CORE_POLARITY_FALLING 0x0
 
