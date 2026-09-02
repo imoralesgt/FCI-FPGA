@@ -2054,6 +2054,65 @@ energy should narrow.
 
 ---
 
+## 8i. The `$RQ` desync is GIL starvation, not the link
+
+447 `$RQ` frame desyncs across the 2026-09-01/02 sessions, every one reporting **tag 0x00**. The
+obvious reading — line noise at 4 Mbaud — was wrong, and so was the first hypothesis here (that the
+tty layer was delivering framing errors as `\0`, which it does when neither `IGNPAR` nor `PARMRK` is
+set). Two pieces of evidence killed it before any code was touched.
+
+**The position distribution is not memoryless.** Records decoded before the desync: min 186, max
+855, mean 458, and *bell-shaped*. Random per-byte corruption is geometric — with that mean it would
+put ~33% of failures below 186 records. Observed below 186: **zero of 447**. Whatever this was, it
+was quantity-dependent, not probabilistic.
+
+**Everything reproducible headless was clean.** Driving the board directly:
+
+| condition | result |
+|---|---|
+| greedy read, small batches (~75 rec) | 25/25 frames clean |
+| greedy read, ~1000-record batches | 20/20 clean |
+| real `FciTransport`, ~1000-record batches | 20/20 clean |
+| + concurrent `$RT`/`$RC` from a second thread | 8522 frames, 46k records, 0 desyncs |
+| + event rate raised to 12.8 kcps | 751 frames, **769k records (19 MB)**, 0 desyncs |
+
+The rate was synthesised by lowering the trigger threshold from 400 to 200 so noise self-triggers —
+15 kcps with no source needed, and reversible.
+
+**The missing variable was the GUI holding the GIL.** Adding a pure-Python busy loop standing in for
+a plot redraw reproduced it immediately and exactly: 61 desyncs in 60 s, tag 0x00 every time,
+positions 186–199, roughly one per two redraws.
+
+`TIOCGICOUNT` then settled the mechanism outright:
+
+| reader stall | desyncs / frames | `frame` | `parity` | `overrun` |
+|---|---|---|---|---|
+| 0, 5, 10, 20 ms | 0 / ~258 | 0 | 0 | **0** |
+| 40 ms | 4 / 254 | 0 | 0 | **8** |
+| 80 ms | 28 / 245 | 0 | 0 | **56** |
+
+**`frame` and `parity` are zero at every stall length** — the wire has no errors at 4 Mbaud, the
+64 MHz `xin` and the FT2232H's 12/3 MHz agree exactly, and none of this was ever a clocking problem.
+`overrun` rises in lockstep with the desyncs, two per incident. So: the reader thread stalls, the
+receiver's buffer overflows, bytes are silently dropped, frame alignment is lost, and the parser
+reads a payload byte as a tag. It reads **0x00** essentially every time because the 24-byte record is
+zero-rich — `timestamp_hi` alone is four zero bytes, and the top bytes of the PSA and energy words
+are usually zero too.
+
+**The budget, measured: a reader stall of 20 ms is safe; 40 ms is not.** A full 1024-record frame is
+25.6 kB — 64 ms of streaming at 4 Mbaud — so a redraw landing inside one has a wide window to hit.
+The cost is real: at an 80 ms stall the delivered rate fell from 13,261 to 11,381 ev/s, ~14%, because
+each desync discards the undelivered remainder of its batch.
+
+**The fix is architectural, not protocol.** No amount of buffering helps — 40 ms at 400 kB/s is 16 kB,
+larger than any tty buffer — so the options are to keep every GIL-holding operation under ~20 ms, or
+move the reader into its own **process** where the GUI's GIL cannot reach it. The second is the real
+fix and was already raised once during the throughput work. Note the transport's existing recovery is
+working correctly and is not implicated: the checksum, the resync drain, and the control-character
+rejection all did their jobs — the desyncs were detected, never silently accepted as data.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
