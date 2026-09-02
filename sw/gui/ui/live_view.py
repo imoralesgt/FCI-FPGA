@@ -408,11 +408,25 @@ class LiveView(QWidget):
         # the same energy slice is easy to compare across both discriminators.
         self.plot_psd.setXLink(self.plot_fci)
 
-    HEATMAP_XBINS = 120
-    HEATMAP_YBINS = 60
-    """A 2D histogram over the retained window at this bin count is a few hundred
-    microseconds to a couple of milliseconds with numpy -- cheap enough to recompute on every
-    batch while heatmap view is active, same cadence as the scatter plot's own setData()."""
+    HEATMAP_XBINS = 512
+    HEATMAP_YBINS = 512
+    """Raised from 120x60, which could not resolve the features this instrument exists to measure.
+
+    At YBINS=60 over a fixed 0..1 discriminant axis a bin is 0.0167 wide. The paper's gamma peak
+    has an FCI FWHM of 0.0093 -- HALF a bin -- and the PSD Li-6 capture band is ~0.0015, a tenth of
+    one. Any structure that narrow was being flattened into a single row before it could be seen.
+
+    The y range is also auto-scaled to the data now (see _update_heatmap). A fixed 0..1 axis spent
+    almost every bin on empty space: PSD lives in roughly 0.96..1.00, so 96% of the resolution went
+    where there were no events. Auto-ranging plus 512 bins puts ~19 bins across a 0.0015 FWHM
+    instead of a tenth of one.
+
+    Cost is dominated by the point count, not the bin count -- histogram2d over the full retained
+    window is ~83 ms at 1,000,000 points either way, i.e. ~8% duty at the 1 Hz redraw."""
+
+    HEATMAP_MIN_YSPAN = 0.01
+    """Floor on the auto-ranged discriminant span. Without it, a run where every event lands in a
+    very tight cluster would zoom until the display showed only quantisation structure."""
 
     @staticmethod
     def _heatmap_lut() -> np.ndarray:
@@ -541,15 +555,23 @@ class LiveView(QWidget):
         x_min, x_max = float(energy.min()), float(energy.max())
         if x_max <= x_min:
             x_max = x_min + 1.0
+        # Auto-range the discriminant axis too, not just energy. Both FCI and PSD occupy a narrow
+        # band of their 0..1 range (PSD typically ~0.96..1.00), so a fixed axis spent most of its
+        # bins on empty space and left a thin peak unresolved. Padded slightly so the extreme
+        # points are not clipped to the edge rows, and floored at a minimum span so a single
+        # cluster does not blow up to full scale.
+        y_min, y_max = float(values.min()), float(values.max())
+        pad = max((y_max - y_min) * 0.05, self.HEATMAP_MIN_YSPAN / 2.0)
+        y_min, y_max = y_min - pad, y_max + pad
         hist, _, _ = np.histogram2d(
             energy, values, bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
-            range=[[x_min, x_max], [0.0, 1.0]],
+            range=[[x_min, x_max], [y_min, y_max]],
         )
         # log1p (not log): most bins are near-empty and a few are dense, so a linear color
         # scale saturates the busy bins and makes everything else invisible; log1p(0) = 0
         # keeps empty bins mapped cleanly instead of producing -inf.
         img.setImage(np.log1p(hist), autoLevels=True)
-        img.setRect(QRectF(x_min, 0.0, x_max - x_min, 1.0))
+        img.setRect(QRectF(x_min, y_min, x_max - x_min, y_max - y_min))
 
     def get_accumulated_events(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """(energy, fci, psd) parallel numpy arrays for whatever is currently plotted -- the FoM wizard's

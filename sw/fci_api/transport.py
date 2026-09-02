@@ -247,6 +247,25 @@ class FciTransport:
             raw = raw.lstrip(b"\x00")
 
         line = raw.decode("ascii", errors="replace").strip()
+
+        # Reject control characters anywhere in the line. This protocol is printable ASCII plus
+        # the terminating newline, so a NUL or stray control byte inside a reply is corruption --
+        # and it is not caught by parsing, because str.split() does not split on NUL: a corrupted
+        # sample arrived as the single token '2866\x00' and reached int(), raising a bare
+        # ValueError out of the library. That is the wrong exception in two ways: it is not an
+        # FciError, so callers filtering on FciError let it escape (it killed the acquisition
+        # thread once), and it never marks the transport for resync, so the next call inherits the
+        # misalignment.
+        #
+        # Checked here rather than at each int() because there are a dozen such conversions across
+        # the client and every one of them has this failure mode. One choke point, and the resync
+        # flag is already set on this path.
+        bad = next((c for c in line if c < " "), None)
+        if bad is not None:
+            raise FciProtocolError(
+                f"control character {ord(bad):#04x} in reply to {request!r}: {line!r}"
+            )
+
         tokens = line.split()
         if not tokens:
             raise FciProtocolError(f"empty reply to {request!r}")
