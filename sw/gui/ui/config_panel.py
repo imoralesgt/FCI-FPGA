@@ -68,6 +68,12 @@ class Field:
         docstring), so offering it as editable would just be misleading.
     """
     settable_when_none: bool = True
+    default: int | None = None
+    """Value the control shows before any device value has been read. None means "use minimum",
+    which is right for most fields. Set it wherever the minimum is NOT a usable setting -- the CFD
+    fields are the case in point: their minima are protocol bounds, while the value that actually
+    works is the one firmware boots with (bringup.c's CFD_FRACTION / CFD_DELAY). Showing 1/256 and
+    a 1-sample delay implied a configuration that would trigger on almost nothing."""
 
 
 class SubsystemPanel(QGroupBox):
@@ -103,6 +109,8 @@ class SubsystemPanel(QGroupBox):
                 w = QCheckBox()
             else:
                 w = SliderSpinField(f.minimum, f.maximum)
+                if f.default is not None:
+                    w.setValue(f.default)
             if f.tooltip:
                 w.setToolTip(f.tooltip)
             w.setEnabled(not f.read_only)
@@ -159,10 +167,22 @@ class SubsystemPanel(QGroupBox):
                     # Not written yet this session, but a first value CAN be applied -- leave the
                     # control enabled at a sane default rather than locking it out.
                     w.setEnabled(not f.read_only)
-                    w.setChecked(False) if f.is_bool else w.setValue(f.minimum)
+                    if f.is_bool:
+                        w.setChecked(False)
+                    else:
+                        w.setValue(f.default if f.default is not None else f.minimum)
                 else:
                     # Does not exist in this bitstream; no value written here would ever apply.
                     w.setEnabled(False)
+                continue
+            if value is None:
+                # Reached only when a field the device did not report is NOT marked optional --
+                # a host/firmware schema mismatch, not a user error. Warn and skip rather than
+                # raise: this runs on every connect, and int(None) here previously escaped as an
+                # unhandled TypeError that killed the application before the window was usable.
+                logger.warning(f"{self.title()}: device did not report '{f.name}'; "
+                               "mark the Field optional= if this bitstream legitimately lacks it")
+                w.setEnabled(False)
                 continue
             w.setEnabled(not f.read_only)
             if f.is_bool:
@@ -215,17 +235,35 @@ TRIGGER_FIELDS = [
                   "that the trigger point falls outside the captured window. Kept in sync with "
                   "PSD's Pre-trigger automatically."),
     Field("depth", "Depth (samples)", 1, 2048,
-          tooltip="Capture length -- also used to compute FCI/PSD. Must stay at 2048 to match "
-                  "fci_core's FFT length; a shorter capture desyncs its framing against real "
-                  "event boundaries instead of failing loudly."),
-    Field("cfd_fraction", "CFD fraction (/256)", 1, 255,
-          tooltip="Constant-fraction discriminator attenuation, as fraction/256. With the delay "
-                  "below it, sets the zero crossing at n = delay / (1 - fraction/256)."),
-    Field("cfd_delay", "CFD delay (samples)", 1, 31,
+          tooltip="Capture length, also the window FCI and PSD see. Safe to change while running: "
+                  "sample_framer owns the FFT's frame boundary and zero-pads a short capture up "
+                  "to 2048, so FCI stays a well-defined transform of the samples that arrived "
+                  "(and gets QUIETER, since padding zeros carry no noise). Keep PSD's pre-gate + "
+                  "long gate inside this length, or those integrals run off the end of the "
+                  "trace."),
+    # optional/settable_when_none=False: pre-CFD firmware answers $GT with four fields, so
+    # get_trigger() reports these two as None (deliberately tolerated rather than raising, so a
+    # host can still drive an older bitstream). Without the flags, refresh() reached int(None) and
+    # crashed the whole GUI on connect, and apply() then wrote '$ST 4 1' -- an index that firmware
+    # does not have -- from the widget's untouched minimum. Both controls light up on their own
+    # once a CFD build is flashed and $GT starts answering with six.
+    # Ranges and defaults track cli.c's own clamps and bringup.c's CFD_FRACTION / CFD_DELAY --
+    # the register reset values are the same pair, so all three agree by construction.
+    Field("cfd_fraction", "CFD fraction (/256)", 1, 255, optional=True, settable_when_none=False,
+          default=64,
+          tooltip="Constant-fraction discriminator attenuation, as fraction/256. Default 64 = 1/4, "
+                  "matching the register reset. With the delay below it, sets the zero crossing "
+                  "at n = delay / (1 - fraction/256). Disabled if this bitstream predates the CFD "
+                  "trigger."),
+    Field("cfd_delay", "CFD delay (samples)", 4, 31, optional=True, settable_when_none=False,
+          default=24,
           tooltip="CFD delay. Sets SENSITIVITY as well as timing: pulses smaller than about "
                   "threshold x rise x (1 - fraction) / delay never arm in time and produce no "
                   "trigger at all, silently. A larger delay lowers that floor -- the default 24 "
-                  "puts it near 1.25x threshold; 8 would put it at 3.75x."),
+                  "puts it near 1.25x threshold; 8 would put it at 3.75x. Minimum 4, for the same "
+                  "reason as the pre-trigger Delay: below that the crossing at n = delay/(1-f) "
+                  "falls inside the CFD's own ~3-sample pipeline. Disabled if this bitstream "
+                  "predates the CFD trigger."),
 ]
 
 BLR_FIELDS = [

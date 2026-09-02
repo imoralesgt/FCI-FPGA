@@ -184,8 +184,14 @@ static int trg_set(s32 idx, s32 v) {
     /* Also sets sensitivity, not just timing: the CFD crossing sits at a fixed n = D/(1-f) while
      * the arming threshold is crossed later for smaller pulses, so pulses below roughly
      * T*rise*(1-f)/D never arm in time and produce no trigger at all. A larger D lowers that
-     * floor. 0 degenerates the discriminator to (1-f)*s, which never crosses zero. */
-    if (!in_range(v, 1, 31))
+     * floor. 0 degenerates the discriminator to (1-f)*s, which never crosses zero.
+     *
+     * Minimum 4 for the same reason TRG_DELAY has one: the crossing sits at n = D/(1-f), so below
+     * D=4 (n < 5.3 at the default f=1/4) it falls inside the discriminator's own ~3-sample
+     * pipeline and is settling transient rather than signal. D=1..3 was accepted before and was
+     * never usable -- at this detector's 37-sample rise it puts the sensitivity floor above 9x
+     * threshold, i.e. a silently deaf trigger. */
+    if (!in_range(v, 4, 31))
       return 0;
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET, (u32)v);
     return 1;

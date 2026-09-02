@@ -88,13 +88,20 @@ what makes one bitstream cover two detector families.
 
 Three things are reasoned, not measured, and should be read as the open questions they are:
 
-1. **The frame is fixed at 40.96 µs and that may be the real obstacle.** `CAPTURE_DEPTH` must equal
-   `FFT_LENGTH`, which is a VHDL generic instantiating a fixed `xfft_2048` — so frame length is a
-   **rebuild**, not a register. CLYC's ~4.9 µs decay fills a useful fraction of that frame. An
-   EJ-276 or BC501A pulse, with a delayed component of tens to a few hundred ns, would occupy well
-   under 1% of it, leaving ~2000 samples of pure baseline summed into every bin. Zero-padding does
-   not destroy the spectral envelope, but the noise contribution grows with frame length while the
-   signal's does not. A shorter transform is the likely requirement for organics.
+1. **The transform length is fixed at 2048; the *live* window is not.** An EJ-276 or BC501A pulse,
+   with a delayed component of tens to a few hundred ns, occupies well under 1% of a 40.96 µs
+   frame — so the obvious worry is ~2000 samples of baseline noise summed into every bin. That
+   worry is mostly already answered: `sample_framer` owns the FFT's frame boundary and **zero-pads
+   a short capture up to `FFT_LENGTH`** (note 3 in its header). Exact zeros contribute no noise, so
+   per-bin noise scales with the square root of the *live* sample count, not the frame length —
+   a `depth` of 256 is ≈2.8× better per-bin SNR than a full-length capture, and the spectral
+   envelope is unchanged, merely interpolated onto finer bins. **Shortening the analysis window for
+   a fast scintillator is therefore a register write today.** What is *not* runtime-tunable is the
+   transform itself: `xfft_2048` is generated with `run_time_configurable_transform_length = false`
+   (`C_HAS_NFFT = 0`), so the FFT still consumes 2048 beats per frame whatever the capture depth,
+   pinning the event-rate ceiling at 40.96 µs/frame ≈ **24.4 kcps**. That is above the ~12 kcps
+   readout limit measured in §8h, so it does not bind yet — but it is the first thing that would,
+   at organic-scintillator rates. See §0a for what enabling runtime `NFFT` would cost.
 2. **The analog front end has never been characterized above ~0.5 MHz.** The ~0.47 MHz figure on
    record (§8g) comes from the CLYC+SiPM pulse's 740 ns rise — it describes the *signal*, not a
    measured AFE limit. Whether the AD8330 path and whatever anti-alias filtering the carrier has
@@ -106,6 +113,31 @@ Three things are reasoned, not measured, and should be read as the open question
    the hypothesis under test, not a corollary of either paper.
 
 Everything below is the record of building the CLYC half of that and getting it to work in silicon.
+
+## 0a. Runtime-configurable FFT length: what it would cost
+
+Not enabled, and **not the first thing to try** — reducing `depth` (above) buys the SNR benefit for
+free. Recorded here because the question will come back the moment event rate becomes the binding
+constraint, and because two of the steps are silent-failure traps.
+
+`xfft` v9.1 does support it, and this instance is compatible: `C_ARCH = 1` is Pipelined Streaming
+I/O, which allows run-time `NFFT`. Resources are set by the **maximum** length, so keeping the max at
+2048 leaves BRAM and DSP essentially where they are — the cost is control logic, not memory.
+
+| # | Change | Risk |
+|---|---|---|
+| 1 | Regenerate the IP with `run_time_configurable_transform_length = true` | low |
+| 2 | `s_axis_config_tdata` widens (an `NFFT` field appears in the LSBs). Update the component declaration in `fci_core_rtl_top.vhd` — **read the width off the regenerated `.veo`, do not assume 16** | low |
+| 3 | Config writes must land **between frames**. Today the core writes config once after reset and never again; runtime `NFFT` needs a small FSM to quiesce the input, let in-flight frames drain, write, resume | **deadlock** — a config write mid-frame corrupts the frame, and a halted FFT input channel stalls the lockstep broadcaster and bricks the pipeline (§4.3) |
+| 4 | `sample_framer`: `FFT_LENGTH` generic → signal. `beat_count` is already sized for the max, so only the `last_beat` compare changes | low |
+| 5 | `bin_accumulator`: `bit_reverse(beat_idx, NFFT)` must reverse over the **actual** log2(N), not the max. Cheap to fix (reverse the full width, then shift right by `NFFT_MAX − nfft`) | **silent** — get it wrong and every bin index is scrambled with no error flagged, producing a plausible-looking but meaningless FCI. Same failure class as §8g |
+| 6 | Window bounds are bin **indices**, and bin spacing changes with N. Firmware or host must rescale — better, hold the windows in Hz on the host and convert on write | **silent** — windows silently point at the wrong band after an `NFFT` change |
+| 7 | `CAPTURE_DEPTH`'s "HARD INTERFACE CONSTRAINT" comment in `bringup.c` is stricter than the RTL actually is, since the framer pads and flushes. Worth correcting either way | none |
+
+What it buys, and only this: the FFT frame occupies N cycles, so N = 256 lifts the transform-side
+ceiling from ~24.4 kcps to ~195 kcps. It does **not** improve per-bin SNR beyond what zero-padding
+already gives, and it makes bin spacing *coarser* (195 kHz at N = 256 against 24.4 kHz today). It is
+a throughput change, not a resolution change.
 
 ---
 
