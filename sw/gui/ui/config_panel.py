@@ -7,11 +7,15 @@ the same one-place-per-fact reasoning as the field lists themselves. This module
 `ConfigPanel` tab holds only the subsystems that don't have a more specific home: Baseline
 Restorer, VGA, and Pulse Shaper.
 
-Calls fci_api directly from the GUI thread (not routed through AcquisitionWorker) -- this is the
-one deliberate exception the approved plan calls out: FciTransport's RLock is exactly what makes
-this safe alongside the worker thread's concurrent read_batch() polling. Trace/batch reads are
-different (they must run ON the worker thread itself, not just under the same lock) -- see
-AcquisitionWorker's docstring for why.
+Calls the config client (a RemoteFciClient, see acquisition_worker.py) directly from the GUI
+thread rather than through AcquisitionWorker's request_*() methods -- safe not because of a shared
+lock (there is no shared transport to lock any more: it lives only inside the reader process,
+project log section 8i/8k) but because every RemoteFciClient call is its own self-contained RPC,
+independently queued and answered by request id. It can freely interleave with the worker's own
+streaming polls without corrupting either, the same way two independent HTTP requests don't need
+to coordinate with each other. Trace/batch reads are different (they must run through the SAME
+poll loop that owns pacing/adaptive-rate state, not as a one-off RPC) -- see AcquisitionWorker's
+request_trace()/request_scope_start().
 
 Built from a declarative per-field spec rather than six hand-written, nearly-identical blocks: the
 whole point is that a subsystem's field list lives in exactly one place, which is the same lesson

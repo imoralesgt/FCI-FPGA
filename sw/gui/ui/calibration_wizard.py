@@ -46,10 +46,10 @@ pre-trigger window inflates that ONE capture's own internal sigma well above the
 captured window's sigma is compared against the average across all of them and any capture whose
 own sigma exceeds that average is dropped before pooling.
 
-Calls FciClient directly from the GUI thread while its modal dialog is open, the same deliberate
-exception config_panel.py documents (FciTransport's RLock is what makes this safe alongside the
-worker thread's concurrent polling) -- appropriate here too since this is a short, user-initiated,
-blocking action, not something in an automatic background path.
+Calls the config client (a RemoteFciClient -- see acquisition_worker.py and config_panel.py's own
+docstring for why this is safe alongside the worker's concurrent polling) directly from the GUI
+thread while its modal dialog is open -- appropriate here too since this is a short,
+user-initiated, blocking action, not something in an automatic background path.
 """
 
 from __future__ import annotations

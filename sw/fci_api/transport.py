@@ -128,6 +128,22 @@ class FciTransport:
             # preceded it, the desync cascades to every subsequent call, not just the first one.
             self._ser.reset_input_buffer()
 
+            # reset_input_buffer() only clears what has ALREADY arrived; opening the port toggles
+            # DTR/RTS (pyserial does this as part of construction above), and the adapter's own
+            # reaction to that toggle can still be in flight over USB at this exact instant, landing
+            # a moment later as one or two garbage bytes prefixed onto whatever this connection's
+            # first real command receives back. _read_reply_line()/transact()/transact_framed() all
+            # only strip a LEADING NUL here, on the documented assumption that this glitch decodes
+            # as NUL -- true often enough to have gone unnoticed, but not guaranteed: a genuine
+            # framing-error byte can be any value (observed once as a two-byte b'\x00\xe1' prefix,
+            # which defeated that NUL-only stripping and surfaced as "$RQ 1024" appearing to get a
+            # reply that didn't echo its own code, on literally the first request after every
+            # connect). Draining here -- actively waiting out the settle window and discarding
+            # whatever lands in it, using the same machinery a post-failure resync already uses --
+            # fixes it at the one place it can be fixed for certain, instead of guessing at every
+            # possible corrupted byte value in every reply-parsing path downstream.
+            self._drain()
+
     def close(self) -> None:
         with self._lock:
             if self._ser is not None:

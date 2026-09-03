@@ -2,6 +2,14 @@
 also captured for offline analysis. Header comment block then a plain CSV table, matching the
 "# comments, then data" convention already used elsewhere in this project (see
 data/fci_verification_set.csv's sibling scripts and the reference GUI's own log files).
+
+The header also stamps the device's Trigger/PSD/FCI/BLR settings in force when recording started
+(``settings_lines``, from controllers.py's _device_settings_lines()) -- added after an offline
+analysis of an earlier dataset (project log section 8j) had to reconstruct FCI/PSD from raw traces
+because neither this file nor its sibling recorded what the windows/gates actually were, and the
+windows had in fact changed mid-run (section 7's dd_0004 contamination, repeated). A recording with
+no settings block predates this change; treat its FCI/PSD columns as untrustworthy for exactly that
+reason, the same way section 8j's did.
 """
 
 from __future__ import annotations
@@ -14,18 +22,29 @@ from fci_api import AcqEvent, TraceResult
 CSV_HEADER = "timestamp,psa_l,psa_w,fci,energy_short,energy_long,psd"
 
 
+def _write_header_prelude(f, title: str, settings_lines: list[str] | None) -> None:
+    f.write(f"# {title}\n")
+    f.write(f"# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+    if settings_lines:
+        f.write("# Settings:\n")
+        for line in settings_lines:
+            f.write(f"#   {line}\n")
+    else:
+        f.write("# Settings: not available (not connected, or a read failed at recording start)\n")
+
+
 class CsvLogger:
     """Filename is always `{prefix}_{index:04d}_fci_live.csv` -- the index is never optional (see
     controllers.py's _ensure_recording_session() for how prefix/index are chosen and why an
     unindexed name was rejected)."""
 
-    def __init__(self, directory: Path, prefix: str, index: int):
+    def __init__(self, directory: Path, prefix: str, index: int,
+                 settings_lines: list[str] | None = None):
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / f"{prefix}_{index:04d}_fci_live.csv"
 
         with open(self.path, "w", encoding="utf-8") as f:
-            f.write(f"# FCI-FPGA live acquisition log\n")
-            f.write(f"# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            _write_header_prelude(f, "FCI-FPGA live acquisition log", settings_lines)
             f.write(f"# Columns: {CSV_HEADER}\n")
             f.write(f"{CSV_HEADER}\n")
 
@@ -66,13 +85,13 @@ class TraceCsvLogger:
     record the live view logs continuously.
     """
 
-    def __init__(self, directory: Path, prefix: str, index: int):
+    def __init__(self, directory: Path, prefix: str, index: int,
+                 settings_lines: list[str] | None = None):
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / f"{prefix}_{index:04d}_scope_traces.csv"
 
         with open(self.path, "w", encoding="utf-8") as f:
-            f.write("# FCI-FPGA trigger trace log\n")
-            f.write(f"# Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            _write_header_prelude(f, "FCI-FPGA trigger trace log", settings_lines)
             f.write("# Columns: host_timestamp,n_samples,sample_0,sample_1,...\n")
 
         self._count = 0

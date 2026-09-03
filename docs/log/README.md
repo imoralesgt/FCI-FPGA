@@ -2113,6 +2113,324 @@ rejection all did their jobs — the desyncs were detected, never silently accep
 
 ---
 
+## 8j. Offline G/N discrimination on the DD dataset, before spending more DD time
+
+Before scheduling another (expensive) DD generator session, the raw traces already recorded on
+2026-08-28 (`~/datasets/clyc-FCI-test-20260828-DD`) were run back through a Python model of the
+exact same arithmetic the FPGA performs, `sw/analysis/fpga_model.py`, so both FCI and PSD could be
+retuned offline and only a genuinely improved configuration taken to hardware.
+
+### The model, and what it was checked against
+
+`fci_core_rtl`'s two operations translate directly to NumPy: `np.fft.rfft` for the FFT (block
+floating point cancels in the FCI ratio, and §8g already measured the built core against float —
+IQR ratio 0.988, so float is not the approximation that matters here), then
+`|Re| + |Im|` summed over inclusive bin ranges for the city-block ASDM, exactly as
+`bin_accumulator.vhd` computes it. `psd_core`'s dual-gate integrator translates to two prefix-sum
+lookups from a shared `gate_start = max(0, pre_trigger - pre_gate)`, matching
+`dual_gate_integrator.vhd`'s half-open comparisons beat for beat.
+
+The model was checked, not assumed. `psd_from_traces` at gates `(pre_gate=24, short=35, long=500)`
+reproduces the firmware-recorded `energy_short`/`energy_long` medians to **~1%** (29,652 vs 29,965;
+2.865M vs 2.856M) on the traces recorded in the same run — strong evidence the arithmetic, sample
+ordering, and gate placement all match. No FCI window pair reproduced the recorded FCI column at
+all (best achievable IQR 0.174 against a recorded 0.204): the windows were evidently changed mid
+run, which is exactly the contamination trap already documented once in §7 (the `dd_0004` episode).
+**Conclusion applied throughout: only the raw traces are trustworthy here, never the logged
+FCI/PSD columns from this dataset.** See "the lesson, applied" below for the fix going forward.
+
+### A dataset split nobody had labelled
+
+The five `dd_*_scope_traces.csv` files turned out to hold **two different depths** — `dd_0001/2/3`
+at 2048 samples (or captured shorter and left recorded that way; only `dd_0001` is a genuine
+2048-sample recording), `dd_0004/5` at 1024 — and, from where the pulse actually lands in the
+frame, **two different `pre_trigger` settings** (≈100 for 0001-3, ≈32 for 0004-5). This analysis
+used only the **1167-trace, `pre_trigger≈100` group** (`dd_0001/2/3`), zero-padded to 2048 samples
+exactly as `sample_framer.vhd` does on real hardware for a short capture — so this is what the FPGA
+itself would have transformed, not an approximation of it.
+
+### Energy calibration and what the spectrum shows
+
+No energy field survives from this dataset (see above), so energy was reconstructed as each
+trace's own peak amplitude above its pre-trigger baseline — the same convention Morales et al.
+§4.2.4 uses — and calibrated by a single point: the dominant narrow peak set to the
+**⁶Li(n,α)t capture line, 3160 keVee**, the one feature in a DD-generator spectrum with an energy
+known a priori. That gives **0.2465 keVee/count**.
+
+![DD dataset energy spectrum](images/dd20260828_energy_spectrum.png)
+
+The spectrum is capture-dominated: 717 of 1167 events fall in a 2800–3500 keVee band around the
+capture peak, against a much sparser continuum below ~2000 keVee. That continuum is the gamma
+population this run actually has to discriminate against — there is no separate gamma-only
+measurement in this dataset, so "gamma-like" here means "not the capture peak," which is a real
+limitation: high-energy Compton events reach into the capture window and contaminate the neutron
+label. The resulting FoM is therefore a **lower bound**, not the number a properly labelled
+gamma-only run would give.
+
+### LLD, applied as requested
+
+An LLD was needed for a mechanical reason independent of the labelling: below ~500 keVee both
+discriminators degrade toward noise (a coarse sweep found FCI's unsupervised FoM oscillating
+0.16–0.70 and PSD's outright failing to fit at all for several LLD values below this point, purely
+from a handful of near-threshold events dominating a small histogram). **LLD = 500 keVee** is used
+throughout what follows, dropping 262 of 1167 events (22%).
+
+### Tuning method, and the trap it was built to avoid
+
+Both discriminators were swept over a grid (windows for FCI, gate lengths for PSD) and scored
+against energy-based labels — neutron-like = 2800–3500 keVee, gamma-like = 500–2000 keVee — using
+`|median_n − median_g| / (FWHM_n + FWHM_g)`, widths from each group's IQR (`IQR_TO_SIGMA = 1.349`,
+robust to the tails a ratio-of-integrals discriminator always has). This is a **different** scoring
+path from the GUI's own unsupervised double-Gaussian fit (`fom_core.compute_fom`): that fit was
+tried first and found unusable here — with only ~110 gamma-like events, its FoM swung between 0.03
+and 0.82 across neighbouring LLD values, chasing which few points the auto-seeded peak-finder
+happened to grab. `sw/analysis/tune_fom.py` documents both paths and why the supervised one is
+what the grid search actually uses.
+
+An unconstrained grid search over a ratio-of-integrals score has an obvious failure mode: pushing
+gate lengths to a degenerate extreme (e.g. a near-zero short gate that barely integrates anything)
+can produce an arbitrarily large score by making both groups' spreads collapse rather than by
+separating them. Two checks guarded against this being reported by accident, not just against it
+being a purely theoretical worry:
+
+- **Interior-maximum check.** The PSD winner sits at `short_gate = 6` samples — far short of this
+  pulse's ~740 ns (37-sample) rise, and worth distrust on sight. Scanning `short_gate` alone at the
+  winning `pre_gate`/`long_gate` shows FoM rising from 0.94 (1 sample) through a peak of 1.38 at
+  6 samples and falling smoothly back down through 0.72 at 50 samples — a genuine interior optimum
+  in the middle of the scanned range, not a wall the search ran into.
+- **Bootstrap stability.** 300 resamples (with replacement, independently for each energy band) of
+  every top candidate. The winners' 90% intervals do not overlap the current on-device settings':
+
+  | discriminator | configuration | bootstrap FoM, median [p5–p95] |
+  |---|---|---|
+  | PSD | **pg=0, short=6, long=164** (found optimum) | **1.38 [1.12–1.55]** |
+  | PSD | pg=32, short=80, long=250 (device today) | 0.46 [0.38–0.58] |
+  | FCI | **psa_l 1–26, psa_w 1–138** (found optimum) | **1.10 [0.83–1.33]** |
+  | FCI | psa_l 1–25, psa_w 1–90 (device today) | 0.98 [0.80–1.17] |
+
+  PSD's improvement over the current gates is large and clearly resolved; FCI's is real but modest,
+  its interval overlapping the §0's paper-derived 1–42/1–144 candidate (0.97 [0.81–1.16]) — the
+  three are statistically indistinguishable from each other on this sample size, so FCI's window
+  choice should not be over-read from this one dataset.
+
+### Result
+
+![FCI vs energy](images/dd20260828_fci_vs_energy.png)
+![PSD vs energy](images/dd20260828_psd_vs_energy.png)
+
+The scatter plots show *where* each population sits; the histograms below show what the FoM number
+in the table actually measures — the two labelled populations, projected onto each discriminator's
+axis, with the median/IQR-derived widths the supervised score is computed from:
+
+![FCI histogram, labelled populations](images/dd20260828_fci_histogram.png)
+![PSD histogram, labelled populations](images/dd20260828_psd_histogram.png)
+
+These are deliberately **not** the GUI's own unsupervised double-Gaussian fit
+(`fom_core.compute_fom`) run on the whole LLD-cut population — that fit was tried first and
+produces a visibly wrong picture here: fed all 905 events with no energy label, its auto-seeded
+peak finder locks onto the capture line as one peak and a small shoulder beside it as the other
+(FCI: unsupervised FoM 0.72, fitting *within* the neutron cluster, not against the gamma one), and
+for PSD it degenerates entirely — the two "peaks" it fits sit on top of each other in a spike
+0.02 wide, no separation at all (unsupervised FoM 0.21). Both numbers are artifacts of an unlabelled
+fit meeting a sample where the neutron population outnumbers the gamma one roughly 7:1
+(717 vs 109 events); they say nothing about how well either discriminator actually separates
+gamma from neutron, and are exactly the instability already noted above.
+
+With the LLD applied (905 of 1167 events retained):
+
+| | windows/gates | FoM (supervised, this dataset) |
+|---|---|---|
+| FCI | `psa_l` 1–26, `psa_w` 1–138 | **1.16** |
+| PSD | `pre_gate` 0, `short_gate` 6, `long_gate` 164 | **1.38** |
+
+Both plots show clean, non-overlapping bands at these settings: FCI separates a gamma cluster near
+0.84 from a neutron cluster near 0.89 (a ~0.05 gap on very little per-band spread); PSD separates
+0.982 from 0.990 — a smaller absolute gap that nonetheless scores higher because its own scatter is
+tighter still. **On this dataset PSD narrowly outperforms FCI**, the opposite of the Co-60 result in
+§8d, which measured FCI's advantage specifically in the LOW-energy range — this DD run is
+capture-peak-dominated at 2800–3500 keVee, not the low-energy regime where §8d found FCI's margin.
+The two results are not in tension; they characterize different parts of the energy range.
+
+**Neither result is final.** This is one recording, from one detector position, against an
+approximate gamma label rather than a real gamma-only measurement, and PSD's winning gate sits at
+the edge of what this pulse shape can physically support (6 samples against a 37-sample rise) —
+worth confirming isn't an artifact of the specific noise realization in this particular recording
+before it's trusted as *the* PSD operating point. The honest use of this section is: don't spend a
+DD session re-deriving windows the traces already on disk can answer, and DO bring a real gamma
+source alongside DD next time so "gamma-like" stops being a proxy.
+
+### The lesson, applied
+
+Neither `_scope_traces.csv` nor `_fci_live.csv` recorded the trigger/PSD/FCI settings in force when
+it was written — which is exactly why the FCI column above could not be trusted and had to be
+reconstructed from raw traces instead of read off the file. **Fixed**: `csv_logger.py`'s two writers
+now take an optional `settings_lines` argument and stamp it into the header as a `# Settings:`
+block, one line per subsystem; `controllers.py`'s `_ensure_recording_session()` builds it from a
+live `get_trigger()`/`get_psd()`/`get_fci()`/`get_blr()` read at the exact moment recording starts.
+A subsystem that fails to read (e.g. FCI absent from a given bitstream) still gets its own line
+(`fci: read failed (...)`) rather than being silently omitted, and a file with no `# Settings:`
+block at all (anything recorded before this change, including every file in this dataset) should be
+read the same way this section had to: don't trust its FCI/PSD columns, go back to the raw traces.
+
+---
+
+## 8k. Analog calibration: µV/LSB and mV/keV, and an unresolved noise regression
+
+Measured on 2026-09-03, cross-referencing an oscilloscope reading at the detector output against
+the digitized baseline and a Cs-137 photopeak, to put the ADC-count-domain numbers used throughout
+this log onto an absolute voltage/energy scale.
+
+### Method, and two methodology traps found along the way
+
+Baseline RMS was measured from the pre-trigger segment of triggered raw traces (`$RT`), pooled
+across many captures. Two things had to be fixed before the number could be trusted:
+
+1. **`$RT` has no freshness signal.** `count` is 0 only if nothing has *ever* been captured; every
+   call after that returns whatever is in the ready buffer, stale or not. The first attempt read
+   the same trace 200 times. Fixed by gating each read on `$RC`'s `psd_event_count` having
+   actually advanced since the last accepted read.
+2. **The CFD fires partway up the rising edge, not at pulse onset** (`n = cfd_delay/(1-fraction) =
+   24/0.75 = 32` samples in, per §8h's own math), and the pulse's own rise adds more on top. A
+   window trusted to be "pre-trigger, therefore pure baseline" turned out to still catch the
+   leading edge for large pulses. Mapping std against sample position across the full 2048-sample
+   frame settled it: the cleanest available region is the first ~48 samples, and even the *tail* of
+   the frame (30+ µs after the trigger) reads no better — CLYC's slower decay component doesn't
+   fully die out inside one capture window.
+
+### The noise floor moved after a reconnect, and the oscilloscope pinned down where
+
+| when | baseline RMS (ADC counts) |
+|---|---|
+| before detector was unplugged | 46.13 |
+| after reconnecting, before any change | 69.03 |
+| after swapping the SiPM bias supply | 75.52 |
+
+The oscilloscope read **2.15 mV RMS at the detector output, unchanged, before and after** this
+whole sequence. That's the deciding fact: since the analog source noise didn't move, the ~50–65%
+increase in digitized noise is being added **downstream of the detector** — somewhere in the
+AFE/VGA/ADC/digitizer chain, not the SiPM or preamp. Swapping the bias supply as a test made it
+mildly *worse*, not better, which rules the bias supply out as the cause. **Not yet found** — next
+task.
+
+Because noise-ratio calibration only holds when the same noise source dominates both
+measurements, and that assumption broke here, the two possible µV/LSB figures mean different
+things: the pre-reconnect number is a clean *gain* measurement, while the post-reconnect numbers
+are contaminated by whatever this new, gain-independent noise is. Per instruction, the figures
+below use the current (post-bias-supply-swap) measurement, on the reasoning that it reflects the
+system as it actually stands today — but this number will need revisiting once the noise source is
+found, since it is not a pure gain measurement:
+
+```
+75.52 counts RMS  ->  28.47 uV/LSB  (35.13 LSB/mV)
+```
+
+### Energy gain: Co-60 didn't resolve, Cs-137 did
+
+An 800-trace Co-60 capture (threshold=400, genuine background+source rate — deliberately *not*
+lowering the trigger threshold to force a faster rate, after the DD-dataset work found that trap:
+a lowered threshold self-triggers on noise and pulls in overlapping captures) showed only Compton
+continuum, no resolvable photopeak. Expected in hindsight: this crystal is small (D=1/2", h=1"),
+and full-energy-peak efficiency at 1.17–1.33 MeV is low for a crystal this size — most interactions
+Compton-scatter out rather than fully absorbing.
+
+Cs-137's single 662 keV line is lower energy and far more likely to fully absorb in a small
+crystal. A 3000-trace capture (2999 distinct) resolved it cleanly:
+
+![Cs-137 raw spectrum](images/20260903_cs137_spectrum.png)
+![Cs-137 662 keV photopeak fit](images/20260903_cs137_photopeak_fit.png)
+
+```
+662 keV photopeak: mu = 4404 +/- 15 counts, FWHM = 569 counts (12.9%)
+```
+
+A second calibration point was attempted — Cs-137's ~32 keV Ba K-shell XRF line, which would have
+turned this into a real two-point fit instead of one point forced through the origin. Predicted
+position (from the 662 keV scale): ~213 counts, only ~3x today's noise RMS. A threshold sweep
+settled it empirically before spending more capture time on it:
+
+| threshold | rate |
+|---|---|
+| 400 (normal) | 314 ev/s |
+| 300 | 2220 ev/s |
+| 250 | 9636 ev/s |
+| 220 | 14442 ev/s |
+| ≤200 | ~16000 ev/s (readout ceiling) |
+
+Already saturated by 250, and even 300 — *above* the predicted 213-count line position, so it
+would miss real events too — shows a 7x rate inflation over the genuine source rate. **No
+threshold window separates real 32 keV X-rays from noise self-triggering at today's elevated noise
+floor.** The two-point calibration is blocked on the same open noise-source question above.
+
+### Result
+
+| quantity | value |
+|---|---|
+| baseline RMS (today, post-bias-supply-swap) | 75.52 counts |
+| analog scale factor | **28.47 µV/LSB** |
+| Cs-137 662 keV photopeak | 4404 ± 15 counts, 12.9% FWHM |
+| energy calibration | 0.1503 keV/count (6.656 count/keV) |
+| **energy gain** | **0.1895 mV/keV** (189.5 µV/keV) |
+
+Both headline numbers carry the same caveat: they describe the system **as it stands today**, with
+an unexplained noise regression baked in, not the system at its intended/achievable noise floor.
+Revisit both once the noise source below is found and fixed.
+
+### Chasing the noise source: a hard I2C fault, and the noise level isn't even stable
+
+Three remote diagnostics, run against the live board:
+
+**1. Spectral check — one genuine tone, not the harmonic comb it first looked like.** An averaged
+periodogram (Welch-style, 200 independent 748-sample segments from the frame tail) was built to
+look for a discrete interference frequency. A naive top-N-by-magnitude peak list produced what
+looked like an evenly-spaced series (67 kHz, 401, 735, 1070 kHz...) — but that was an artifact of
+the picker walking down a smooth low-frequency roll-off, not real periodicity; retracted once
+plotted. Proper peak detection (local excess over a median-filtered floor) found exactly **one**
+genuine discrete line: **12.10 MHz**, +3.7 dB above the local floor, closely matching the FT2232H's
+own **12 MHz reference crystal** — the same chip that runs this board's USB-UART bridge. A
+plausible, low-confidence EMI contributor; free-running regardless of link activity, so its
+presence doesn't by itself distinguish PCB-proximity coupling from anything link-load-dependent.
+
+**2. VGA gain sweep — never ran, because gain can no longer be WRITTEN at all.** Every `$SV`
+attempt was rejected, coarse and fine alike, including writing back the value already active
+(`fine=1000`, the current, presumably-valid setting). `vga_set()`'s range check accepts it
+(1..60000); the rejection traces to `VgaDac_SetGainFine()`/`SetGainCoarse()` themselves, both of
+which are thin wrappers over `WriteCommand()` → `Iic_DynamicSendBytes()` — a real I2C bus
+transaction to the AD5697 DAC, failing on every attempt, both DAC channels. This is a **hard I2C
+communication fault**, not a value/range issue: the device cannot currently talk to the VGA gain
+DAC at all.
+
+**3. BLR bypass — inconclusive, and expectedly so.** Only 5 genuine captures arrived in 40 s with
+BLR bypassed (100 arrive easily with it active), consistent with §8h's own documented dependency:
+the CFD needs a zero-centred baseline to trigger reliably, and bypassing BLR removes exactly that.
+Not enough samples to compare meaningfully; not treated as evidence either way.
+
+**The more telling result was incidental.** The BLR-active RMS measured *during this diagnostic
+pass* was **43.41 counts** — close to the original pre-reconnect 46.13, not the 69–75 range measured
+earlier in the same session. Four measurements, same physical setup, same day:
+
+| when | baseline RMS |
+|---|---|
+| before detector was unplugged | 46.13 |
+| after reconnecting | 69.03 |
+| after swapping the SiPM bias supply | 75.52 |
+| during this diagnostic pass, ~20 min later | 43.41 |
+
+That is not a system that regressed to a new, stable, elevated noise floor — it is a system whose
+noise level **moves around within one session**. Combined with a hardware I2C link that fails
+outright on demand, the pattern points at an **intermittent, marginal physical connection** rather
+than a single fixed fault: exactly what a not-fully-seated connector from the recent unplug/replug
+would produce, since a marginal connection can plausibly cause both symptoms — unreliable I2C
+*and* a fluctuating noise floor — depending on the exact mechanical state of the contact at any
+given moment.
+
+**Ruled out:** the SiPM bias supply (swapping it made things worse, not better).
+**Not yet checked:** the physical connector(s) between the digitizer board and the AFE — the
+natural place to look next, since it is the one connection point that could plausibly carry both
+the I2C lines to the AD5697 and the analog signal path together. This needs hands-on inspection;
+nothing further is diagnosable remotely without it.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**

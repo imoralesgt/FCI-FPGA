@@ -5,6 +5,7 @@ drop state machine, mirroring the reference GUI's own) and the CSV logger.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import re
 import time
@@ -14,9 +15,9 @@ from PySide6.QtCore import QObject, QTimer, Slot
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 import config
-from acquisition_worker import AcquisitionWorker
+from acquisition_worker import AcquisitionWorker, RemoteFciClient
 from csv_logger import CsvLogger, TraceCsvLogger
-from fci_api import FciClient, FciError, FciTransport, list_matching_ports
+from fci_api import FciError, list_matching_ports
 from ui.calibration_wizard import CalibrationWizard
 from ui.fom_wizard import FomWizard
 
@@ -28,8 +29,10 @@ class AppController(QObject):
         super().__init__()
         self.view = view
 
-        self.transport: FciTransport | None = None
-        self.config_client: FciClient | None = None
+        self.config_client: RemoteFciClient | None = None
+        """A RemoteFciClient, not a plain fci_api.FciClient -- the transport now lives only
+        inside the reader process (AcquisitionWorker), reached over IPC. See
+        acquisition_worker.py's module docstring."""
         self.worker: AcquisitionWorker | None = None
         self.csv_logger: CsvLogger | None = None
         self.scope_csv_logger: TraceCsvLogger | None = None
@@ -92,6 +95,14 @@ class AppController(QObject):
 
     def toggle_connection(self) -> None:
         if not self.is_connected:
+            # Reset here, not in _connect(): this is the one place a connection attempt is a
+            # deliberate, fresh user action rather than an automatic retry. _connect() is also
+            # called from _attempt_reconnect() after it has just incremented the counter -- if
+            # _connect() itself reset it to 0, every retry would log its own bumped number and
+            # then immediately zero it again before the next failure was even detected, so the
+            # count could never advance past 1 and "give up after N attempts" would never fire.
+            # That bug shipped and sat unnoticed until the first real reconnect episode.
+            self._reconnect_count = 0
             self._connect()
         else:
             self._disconnect(user_requested=True)
@@ -101,15 +112,16 @@ class AppController(QObject):
         if not port:
             return
         self._expect_connection = True
-        self._reconnect_count = 0
         self._reconnect_timer.stop()
 
-        self.transport = FciTransport(port)
-        self.config_client = FciClient(self.transport)
-        self.worker = AcquisitionWorker(self.transport, config.BATCH_POLL_INTERVAL_MS / 1000.0,
+        # AcquisitionWorker now spawns and supervises the reader process itself (see its module
+        # docstring) -- it takes the port string, not a live FciTransport, since the transport is
+        # constructed INSIDE that child process and never exists here.
+        self.worker = AcquisitionWorker(port, config.BATCH_POLL_INTERVAL_MS / 1000.0,
                                          config.STATS_POLL_INTERVAL_MS / 1000.0,
                                          config.BATCH_POLL_BUSY_MS / 1000.0,
                                          config.SCOPE_INTERVAL_MS / 1000.0)
+        self.config_client = self.worker.make_client()
         self.worker.batch_received.connect(self.on_batch_received)
         self.worker.trace_received.connect(self.on_trace_received)
         self.worker.stats_received.connect(self.view.live_view.update_stats)
@@ -131,7 +143,7 @@ class AppController(QObject):
         self.view.btn_connect.setText("Disconnecting...")
         self.view.btn_connect.setEnabled(False)
         if self.worker is not None and self.worker.isRunning():
-            self.worker.stop()  # blocks briefly (bounded by the transport timeout); see docstring
+            self.worker.stop()  # blocks briefly: joins the reader process, then this thread
 
     def _attempt_reconnect(self) -> None:
         if not self._expect_connection or self.is_connected:
@@ -177,7 +189,6 @@ class AppController(QObject):
             self.scope_csv_logger = None
             self.view.set_recording_active(False)
             self.worker = None
-            self.transport = None
             self.config_client = None
             self._live_acq_running = False
             self._scope_running = False
@@ -314,6 +325,37 @@ class AppController(QObject):
             f"Next files: {stem}_fci_live.csv, {stem}_scope_traces.csv{warning}"
         )
 
+    def _device_settings_lines(self) -> list[str] | None:
+        """One formatted line per subsystem (Trigger/PSD/FCI/BLR), for the CSV header -- see
+        csv_logger.py's module docstring for why this exists. Reads through config_client rather
+        than the worker thread: SubsystemPanel already does the same off the GUI thread (its own
+        docstring explains why that is safe), and this runs once, synchronously, at the moment
+        recording starts, not on every poll.
+
+        Returns None (not a partial list) if the device cannot be reached at all, so the header
+        can say plainly "not available" rather than mixing real settings with silence. A single
+        subsystem's read failing (e.g. FCI absent from this bitstream) still produces a line for
+        it, since that absence is itself worth recording."""
+        if self.config_client is None:
+            return None
+        lines = []
+        for label, getter in (
+            ("trigger", self.config_client.get_trigger),
+            ("psd", self.config_client.get_psd),
+            ("fci", self.config_client.get_fci),
+            ("blr", self.config_client.get_blr),
+        ):
+            try:
+                cfg = getter()
+            except FciError as e:
+                lines.append(f"{label}: read failed ({e})")
+                continue
+            # dataclasses.asdict(), not vars(): every Config dataclass uses slots=True (no
+            # instance __dict__), so vars(cfg) raises TypeError here.
+            fields = ", ".join(f"{k}={v}" for k, v in dataclasses.asdict(cfg).items())
+            lines.append(f"{label}: {fields}")
+        return lines
+
     def _ensure_recording_session(self) -> bool:
         """Returns whether a session is (now) active. False only means the user declined an
         overwrite warning -- callers (Start confirmation, on_record_toggled's resume-mid-run
@@ -342,8 +384,9 @@ class AppController(QObject):
                 if reply != QMessageBox.StandardButton.Ok:
                     return False
 
-        self.csv_logger = CsvLogger(out_dir, prefix, index)
-        self.scope_csv_logger = TraceCsvLogger(out_dir, prefix, index)
+        settings_lines = self._device_settings_lines()
+        self.csv_logger = CsvLogger(out_dir, prefix, index, settings_lines)
+        self.scope_csv_logger = TraceCsvLogger(out_dir, prefix, index, settings_lines)
         self.view.set_recording_active(True)
         logger.info(f"Recording started: {self.csv_logger.path}, {self.scope_csv_logger.path}")
         self._update_filename_preview()
