@@ -25,6 +25,7 @@ int Psd_Peek(u32 base, PsdResult *out) {
 
   out->energy_short = (s32)Xil_In32(base + PSD_ENERGY_SHORT_OFFSET);
   out->energy_long = (s32)Xil_In32(base + PSD_ENERGY_LONG_OFFSET);
+  out->peak = (s32)Xil_In32(base + PSD_PEAK_OFFSET);
   out->timestamp = ((u64)Xil_In32(base + PSD_TS_HI_OFFSET) << 32) |
                    (u64)Xil_In32(base + PSD_TS_LO_OFFSET);
   return 1;

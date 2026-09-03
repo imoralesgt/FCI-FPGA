@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from ui.config_panel import ConfigPanel
 from ui.file_management_view import FileManagementView
+from ui.histogram_view import HistogramView
 from ui.live_view import LiveView
 from ui.scope_view import ScopeView
 
@@ -77,15 +78,17 @@ class MainWindow(QMainWindow):
         self.scope_view = ScopeView()
         self.config_panel = ConfigPanel()
         self.file_view = FileManagementView()
+        self.histogram_view = HistogramView()
         # Each tab's content now includes full config forms (FCI/PSD embedded in the live view,
         # Trigger embedded in the scope view) on top of the plots -- taller than fits on many
         # screens at once. Wrapping each tab in its own scroll area (config_panel already did this
         # internally) means that content scrolls instead of forcing the whole window to grow past
         # the screen to satisfy the layout's combined minimum size.
-        self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
-        self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
-        self.tabs.addTab(self.config_panel, "Configuration")
         self.tabs.addTab(self.file_view, "File Management")
+        self.tabs.addTab(self.config_panel, "Configuration")
+        self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
+        self.tabs.addTab(self._scrollable(self.histogram_view), "Spectrum")
+        self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
         main_layout.addWidget(self.tabs)
 
         # Convenience aliases -- everything below (AppController, this class' own methods) refers
@@ -120,6 +123,7 @@ class MainWindow(QMainWindow):
         self.live_view.set_controls_enabled(enabled)
         self.scope_view.set_controls_enabled(enabled)
         self.config_panel.set_controls_enabled(enabled)
+        self.histogram_view.set_controls_enabled(enabled)
         self.chk_record.setEnabled(enabled)
 
     def set_recording_active(self, active: bool) -> None:

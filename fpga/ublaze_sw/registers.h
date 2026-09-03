@@ -93,6 +93,7 @@
 #define PSD_TS_HI_OFFSET 0x28        /* RO */
 #define PSD_EVENT_COUNT_OFFSET 0x2C  /* RO */
 #define PSD_WATERMARK_OFFSET 0x30    /* irq_o asserts at this FIFO level; 0 disables */
+#define PSD_PEAK_OFFSET 0x34         /* RO, signed -- max deviation over the whole frame */
 
 #define PSD_CTRL_POP_MASK (1U << 0)
 #define PSD_CTRL_CLEAR_MASK (1U << 1)

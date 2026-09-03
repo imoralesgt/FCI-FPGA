@@ -37,6 +37,9 @@ class AcqEvent:
     """CAEN PSD parameter, (long-short)/long. 0.0 is ambiguous: it is also the firmware's sentinel
     for "long-gate charge was <= 0, the ratio is undefined" (acquisition.c's psd_parameter_scaled).
     Check energy_long > 0 before trusting this field, exactly as firmware itself does."""
+    peak: int
+    """Max baseline-subtracted sample over the whole frame (raw ADC-code units), independent of the
+    PSD gates -- the spectroscopy energy channel. Sent raw, not scaled like fci/psd."""
 
 
 @dataclass(frozen=True, slots=True)

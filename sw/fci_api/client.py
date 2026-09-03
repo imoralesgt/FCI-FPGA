@@ -85,7 +85,9 @@ class FciClient:
 
     @staticmethod
     def _parse_event(fields: list[str]) -> AcqEvent:
-        ts_lo, ts_hi, psa_l, psa_w, fci_scaled, es, el, psd_scaled = (int(x) for x in fields)
+        ts_lo, ts_hi, psa_l, psa_w, fci_scaled, es, el, psd_scaled, peak = (
+            int(x) for x in fields
+        )
         return AcqEvent(
             timestamp=(ts_hi << 32) | ts_lo,
             psa_l=psa_l,
@@ -94,6 +96,7 @@ class FciClient:
             energy_short=es,
             energy_long=el,
             psd=psd_scaled / 10000.0,
+            peak=peak,
         )
 
     def read_value(self) -> AcqEvent | None:
@@ -110,7 +113,7 @@ class FciClient:
             raise FciNotPresentError("$RV: FCI result path not present in this bitstream")
         if valid == 0:
             return None
-        return self._parse_event(tokens[1:9])
+        return self._parse_event(tokens[1:10])
 
     def read_batch(self, n: int = 32) -> list[AcqEvent]:
         """`$RB [n]`. Pops up to `n` paired events (device-side range 1..32) in one round trip,
@@ -140,21 +143,22 @@ class FciClient:
                 f"likely two replies merged after a stalled read"
             ) from None
         body = tokens[:-1]
-        if count < 0 or len(body) < count * 8:
+        if count < 0 or len(body) < count * 9:
             raise FciProtocolError(
                 f"$RB reply claims {count} events but carries {len(body)} value tokens "
-                f"({len(body) / 8:.1f} events' worth)"
+                f"({len(body) / 9:.1f} events' worth)"
             )
-        return [self._parse_event(body[i * 8 : (i + 1) * 8]) for i in range(count)]
+        return [self._parse_event(body[i * 9 : (i + 1) * 9]) for i in range(count)]
 
     def read_batch_binary(self, n: int = 1024) -> list[AcqEvent]:
         """`$RQ [n]`. Same events as read_batch(), in a binary frame roughly half the size.
 
-        ASCII costs a measured 49.4 bytes per event; this costs 25 (24 payload + 1 frame tag),
-        which at 921600 baud moves the readout ceiling from ~1871 to ~3686 events/s. With the FTDI
-        latency timer at 1 ms the link runs at ~98% utilisation, so bytes on the wire are the
-        binding constraint and encoding is the only lever left short of a higher baud rate (which
-        needs a bitstream rebuild -- axi_uartlite's C_BAUDRATE is synthesis-time).
+        ASCII costs a measured 49.4 bytes per event (that figure predates the `peak` field, so it
+        is now an underestimate by one field's worth of digits); this costs 29 (28 payload + 1
+        frame tag), which at this link's 4 Mbaud (axi_uart16550) puts the readout ceiling around
+        400000/29 ~= 13793 events/s. With the FTDI latency timer at 1 ms the link runs close to
+        saturated, so bytes on the wire are the binding constraint and encoding is the only lever
+        left short of a higher baud rate.
 
         `fci` and `psd` are RECOMPUTED here rather than transmitted. Both are exact functions of
         the other fields, verified against 120,000 live events to agree with the values firmware
@@ -171,12 +175,12 @@ class FciClient:
             # Reported, not raised: the records that did arrive are good, and losing them too
             # would turn partial loss into total loss. The caller decides whether the rate matters.
             logger.warning("$RQ: %s", truncated)
-        if rec_size != 24:
-            raise FciProtocolError(f"$RQ: expected 24-byte records, device reports {rec_size}")
+        if rec_size != 28:
+            raise FciProtocolError(f"$RQ: expected 28-byte records, device reports {rec_size}")
         out: list[AcqEvent] = []
         for rec in records:
             ts_lo, ts_hi, psa_l, psa_w = struct.unpack_from("<4I", rec, 0)
-            es, el = struct.unpack_from("<2i", rec, 16)
+            es, el, peak = struct.unpack_from("<3i", rec, 16)
             out.append(
                 AcqEvent(
                     timestamp=(ts_hi << 32) | ts_lo,
@@ -188,6 +192,7 @@ class FciClient:
                     # Matches firmware's own guard: a non-positive long-gate integral makes the
                     # ratio undefined, and 0.0 is the documented sentinel for that.
                     psd=((el - es) / el) if el > 0 else 0.0,
+                    peak=peak,
                 )
             )
         return out

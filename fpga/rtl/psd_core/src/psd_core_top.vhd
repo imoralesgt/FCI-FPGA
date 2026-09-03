@@ -72,7 +72,7 @@ architecture rtl of psd_core_top is
 
   constant IDX_WIDTH   : integer := clog2(MAX_DEPTH);
   constant LEVEL_WIDTH : integer := clog2(FIFO_DEPTH) + 1;
-  constant REC_WIDTH   : integer := 64 + 2 * ACC_WIDTH;
+  constant REC_WIDTH   : integer := 64 + 3 * ACC_WIDTH;
 
   signal pre_trigger  : std_logic_vector(IDX_WIDTH - 1 downto 0);
   signal pre_gate     : std_logic_vector(IDX_WIDTH - 1 downto 0);
@@ -87,6 +87,7 @@ architecture rtl of psd_core_top is
   signal result_valid : std_logic;
   signal energy_short : std_logic_vector(ACC_WIDTH - 1 downto 0);
   signal energy_long  : std_logic_vector(ACC_WIDTH - 1 downto 0);
+  signal peak         : std_logic_vector(ACC_WIDTH - 1 downto 0);
 
   signal frame_start : std_logic;
   signal ts_latched  : std_logic_vector(63 downto 0);
@@ -139,10 +140,13 @@ begin
       long_gate_i    => long_gate,
       result_valid_o => result_valid,
       energy_short_o => energy_short,
-      energy_long_o  => energy_long
+      energy_long_o  => energy_long,
+      peak_o         => peak
     );
 
-  fifo_din <= ts_latched & energy_long & energy_short;
+  -- Appended above energy_long/energy_short rather than interleaved, so their bit positions (and
+  -- timestamp_i's slice below) stay put.
+  fifo_din <= ts_latched & peak & energy_long & energy_short;
 
   u_fifo : entity work.result_fifo
     generic map (
@@ -232,7 +236,8 @@ begin
       clear_o        => clear_strobe,
       energy_short_i => fifo_dout(ACC_WIDTH - 1 downto 0),
       energy_long_i  => fifo_dout(2 * ACC_WIDTH - 1 downto ACC_WIDTH),
-      timestamp_i    => fifo_dout(REC_WIDTH - 1 downto 2 * ACC_WIDTH),
+      peak_i         => fifo_dout(3 * ACC_WIDTH - 1 downto 2 * ACC_WIDTH),
+      timestamp_i    => fifo_dout(REC_WIDTH - 1 downto 3 * ACC_WIDTH),
       event_count_i  => std_logic_vector(event_count),
       empty_i        => fifo_empty,
       full_i         => fifo_full,

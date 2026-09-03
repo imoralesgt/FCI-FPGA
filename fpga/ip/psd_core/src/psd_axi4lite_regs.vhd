@@ -14,6 +14,7 @@
 --   0x28 timestamp_hi  RO  head of FIFO
 --   0x2C event_count   RO  frames integrated since the last clear
 --   0x30 watermark     RW  irq_o asserts once level reaches this (0 disables)
+--   0x34 peak          RO  head of FIFO -- max baseline-subtracted sample over the whole frame
 --
 -- Read-only registers present the FIFO head combinationally, so draining an event is four reads
 -- plus one pop write with no handshake stalls in between.
@@ -63,6 +64,7 @@ entity psd_axi4lite_regs is
 
     energy_short_i : in std_logic_vector(ACC_WIDTH - 1 downto 0);
     energy_long_i  : in std_logic_vector(ACC_WIDTH - 1 downto 0);
+    peak_i         : in std_logic_vector(ACC_WIDTH - 1 downto 0);
     timestamp_i    : in std_logic_vector(63 downto 0);
     event_count_i  : in std_logic_vector(31 downto 0);
     empty_i        : in std_logic;
@@ -257,6 +259,7 @@ begin
           when "1010" => rdata_q <= timestamp_i(63 downto 32);
           when "1011" => rdata_q <= event_count_i;
           when "1100" => rdata_q <= watermark_reg;
+          when "1101" => rdata_q <= peak_i;
           when others => rdata_q <= (others => '0');
         end case;
       elsif s_axi_rready = '1' and axi_rvalid = '1' then

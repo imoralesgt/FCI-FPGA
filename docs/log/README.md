@@ -2631,6 +2631,100 @@ the region of steeply-diminishing SNR returns.
 
 ---
 
+## 8l. FPGA peak amplitude + list mode, ahead of the live energy-spectrum GUI tab
+
+The GUI request that started this ("a histogram tab, SPE export, up to 3 calibration
+coefficients") was redirected mid-design: rather than histogramming `energy_long` (a PSD charge
+integral, windowed for discrimination and already excluded from the live view whenever it reads
+`<= 0`, a known BLR-gate artifact), compute a genuine pulse **peak amplitude in the FPGA**, tag it
+with `trigger_core`'s existing 64-bit timestamp, and pair it with FCI/PSD the same way those two
+are already paired (`Acq_PopPaired()`). That turns the per-event record into real list-mode data
+(amplitude, timestamp, FCI, PSD together per pulse) rather than adding a display-only histogram on
+top of an existing field that was never meant as an energy proxy.
+
+`dual_gate_integrator.vhd` already computes `dev` (baseline-subtracted sample) every cycle for the
+two charge integrals; the addition is a running max of that same value over the whole frame --
+deliberately unconditional, not gated by `short_gate`/`long_gate`, since amplitude is a whole-pulse
+property and the PSD gates are tuned for discrimination, not for bracketing the peak. Published
+alongside `energy_short`/`energy_long` on the frame's last beat as `peak_o`, carried through
+`psd_core_top`'s result FIFO (widened `REC_WIDTH` by one `ACC_WIDTH`, appended rather than
+interleaved so the existing energy/timestamp bit positions don't move), and exposed as a new
+read-only register at **0x34** in `psd_axi4lite_regs.vhd` -- the next free slot after `watermark`
+(0x30), confirmed by the address decode's `case` statement having no `"1101"` arm before this.
+
+### What the testbench caught
+
+The first version reset the running-max register to 0 at the start of every frame. That is wrong
+whenever a whole frame stays below baseline (no positive excursion at all, e.g. a triggered but
+otherwise noise-only capture): with a 0 floor, `peak` would silently read 0 instead of the frame's
+true (negative) maximum, indistinguishable from "no excursion" when the correct answer is "the
+detector's baseline dipped, not rose." Caught by a new `psd_core_tb.vhd` case built specifically
+for this (an all-negative flat frame, `peak` expected to equal that constant negative deviation,
+not 0) before this ever reached hardware. Fixed with a `PEAK_MIN` constant --
+`(DATA_WIDTH => '1', others => '0')`, the most-negative value representable in `peak`'s width --
+used as both the reset value and the per-frame re-arm value. Full `psd_core_tb.vhd`: **19/19**,
+including three new peak-specific cases (flat frame, all-negative frame, and a pulse-shaped frame
+confirming `peak` tracks the frame maximum independent of where the gates sit).
+
+### Protocol and host changes
+
+`peak` is threaded through as a 9th field on `$RV`/`$RB` and appended to the `$RQ` binary record
+(24 -> 28 bytes; 25 -> 29 on the wire with its frame tag). Unlike `fci`/`psd`, which `$RQ`
+deliberately omits because they are exact functions of the other fields, `peak` is transmitted raw
+-- it is not derivable from anything else in the record. `AcqEvent`/`PsdResult` (firmware) and
+`fci_api`'s `AcqEvent` (host) both gained the field; `Acq_PrintEventCsv()` and the GUI's
+`CsvLogger` both append it as a trailing CSV column, keeping the existing column order stable for
+anything already parsing these formats.
+
+While touching this: the `$RQ` throughput comments (`cli.c`, `client.py`) still assumed this link's
+old **921600 baud** ceiling -- stale since `axi_uartlite` was replaced by `axi_uart16550` at
+**4 Mbaud** (§ table above). Corrected to `400000 B/s / 29 B ~= 13800 events/s`; the batch-size
+sweep table itself (measured against the smaller, pre-`peak` record) is flagged as wanting
+re-measurement rather than silently left implying it is still current.
+
+### GUI: a new Spectrum tab
+
+`sw/gui/ui/histogram_view.py` -- a fixed 8192-channel histogram (one bin per raw ADC code, matching
+this design's clipping ceiling, no rebinning needed), reusing the 1D-histogram + `pg.BarGraphItem`
+pattern already established in the FoM wizard rather than introducing a second one. Up to 3
+calibration coefficients (`E = c0 + c1*ch + c2*ch^2`) relabel the x-axis; Clear and an SPE export
+(ORTEC/Maestro ASCII: `$SPEC_ID`/`$DATE_MEA`/`$MEAS_TIM`/`$DATA`/`$MCA_CAL`) round it out.
+Accumulation/Clear/Export are independent of the device connection on purpose, so a spectrum
+already collected stays exportable after disconnecting.
+
+### LUT budget: it didn't fit first, and the margin came from the ILA as expected
+
+Before this change: **19940 / 20800 LUTs (95.87%)**, 860 free -- the device was already tight
+(the CFD trigger's own +91 LUT addition, §8h, against a device previously "275 LUTs over"). The new
+RTL here is small (one comparator, one register, reusing the `dev` value the integrator already
+computes), well under the CFD's own footprint, but at this occupancy nothing is automatically safe,
+and it wasn't: the first synthesis attempt with `system_ila_1` untouched **failed DRC**, needing
+**21130 LUTs against 20800 available (over by 330)**.
+
+`system_ila_1` (`fpga/bd/fci_bd.tcl`) was the standing candidate for exactly this. Trimmed
+`SLOT_1_AXIS` (the `trigger_core_0`/`CDC_FIFO` capture slot -- redundant with the raw-trace DMA tap)
+and the two plain BLR probes (`baseline_o`, `gate_open_o`), keeping `SLOT_0_AXIS`
+(`blr_core_0/m_axis`) and the `adc_data` probe. That freed **~1242 LUTs** -- an AXIS capture slot's
+protocol-aware trigger/comparator logic costs far more than a plain probe, which is consistent with
+one slot plus two probes accounting for that much. Final placed utilization:
+
+| Resource | Used | Available | % |
+|---|---|---|---|
+| LUT | 19888 | 20800 | 95.62% |
+| LUTRAM | 7111 | 9600 | 74.07% |
+| FF | 18908 | 41600 | 45.45% |
+| BRAM | 33 | 50 | 66.00% |
+| DSP | 13 | 90 | 14.44% |
+
+**Net LUT count went down, not up** (19940 -> 19888), despite adding the peak detector: the ILA
+trim overshot what the new RTL cost. `system_ila_1` now covers only `blr_core`'s stream and the raw
+ADC bus -- the `trigger_core` stream tap and the two BLR probes it lost are still visible other
+ways (the raw-trace DMA path, and firmware readback of the same BLR registers), so nothing here
+removed a debugging capability that has no other route, but a future ILA session wanting the
+`trigger_core` stream directly will need to re-add `SLOT_1_AXIS` and budget the LUTs for it again.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**

@@ -231,6 +231,7 @@ class AppController(QObject):
     @Slot(list)
     def on_batch_received(self, events) -> None:
         self.view.live_view.add_events(events)
+        self.view.histogram_view.add_events(events)
         if self.csv_logger is not None:
             self.csv_logger.append_many(self.view.live_view.filter_for_recording(events))
 

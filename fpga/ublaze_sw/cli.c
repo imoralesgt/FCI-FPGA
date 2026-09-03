@@ -540,6 +540,7 @@ static int h_rv(const char *c, const s32 *a, int n) {
   reply_val(ev.energy_short);
   reply_val(ev.energy_long);
   reply_val(ev.psd_scaled);
+  reply_val(ev.peak);
   reply_close();
   }
 #else
@@ -562,10 +563,15 @@ static int h_rv(const char *c, const s32 *a, int n) {
  * be assumed configurable: this instrument has to work off-the-shelf on any host, without root or
  * a udev rule. That timer does not tax every packet, though -- the chip flushes on a full USB
  * packet OR on timer expiry, so a large reply streams at full rate and pays the 16 ms once, at the
- * end. Batch size therefore amortises it, and with the binary $RQ encoding below:
+ * end. Batch size therefore amortizes it, and with the binary $RQ encoding below:
  *
  *     batch     32 -> 1297 ev/s      batch  256 -> 2996 ev/s
  *     batch    128 -> 2524 ev/s      batch 1024 -> 3486 ev/s   (link ceiling 3686)
+ *
+ * Measured against the 24-byte $RQ record (25 bytes on the wire with its tag). The record is now
+ * 28 bytes (29 on the wire), which moves the arithmetic ceiling at this link's 4 Mbaud to
+ * 400000 B/s / 29 B ~= 13793 ev/s -- the shape of the curve (batching amortizes the 16 ms flush)
+ * still holds; these exact figures want re-measuring against the new record size.
  *
  * So a full-depth batch reaches 95% of the link with the DEFAULT timer, and tuning the timer down
  * becomes a nicety rather than a deployment requirement. An earlier revision capped this at 256 on
@@ -590,8 +596,8 @@ static int h_rv(const char *c, const s32 *a, int n) {
  * not a deeper poll), but it is the right fix for ordinary background-rate operation, where the
  * round trip itself, not any FIFO, was the limiting factor.
  *
- * Reply: `!RB [<ts_lo> <ts_hi> <psa_l> <psa_w> <fci> <energy_short> <energy_long> <psd>] ... <count>`
- * -- count groups of the same eight fields $RV reports for one event, followed by the count itself.
+ * Reply: `!RB [<ts_lo> <ts_hi> <psa_l> <psa_w> <fci> <energy_short> <energy_long> <psd> <peak>] ... <count>`
+ * -- count groups of the same nine fields $RV reports for one event, followed by the count itself.
  * count trails rather than leads, unlike every other multi-value reply in this protocol: the actual
  * count is only known once the FIFO runs dry or the request is satisfied, and reply_val streams
  * straight to the UART with nothing buffered, so there is no going back to fill in a leading count
@@ -622,6 +628,7 @@ static int h_rb(const char *c, const s32 *a, int n) {
       reply_val(ev.energy_short);
       reply_val(ev.energy_long);
       reply_val(ev.psd_scaled);
+      reply_val(ev.peak);
       got++;
     }
   }
@@ -638,16 +645,17 @@ static int h_rb(const char *c, const s32 *a, int n) {
 /* ---------------------------------------------------------------- $RQ, binary batch
  *
  * Same semantics as $RB, different encoding. ASCII costs a measured 49.4 bytes per event, which at
- * 921600 baud caps readout at ~1871 events/s -- and with the FTDI latency timer set to 1 ms the
- * link runs at 98% utilisation, so that ceiling is now raw bandwidth, not latency, and the only
- * way past it is to send fewer bytes. This packs the same information into 24.
+ * this link's 4 Mbaud (axi_uart16550 -- see uart.h) caps readout around 400000/49.4 ~= 8097
+ * events/s -- and with the FTDI latency timer set to 1 ms the link runs close to saturated, so
+ * that ceiling is raw bandwidth, not latency, and the only way past it is to send fewer bytes.
+ * This packs the same information into 28.
  *
  * Additive rather than a change to $RB: $RB's format is a documented contract with existing
  * scripts and examples, and nothing is gained by breaking it.
  *
  * Frame:
  *   !RQ <bytes_per_event>\n        <- ASCII header, so a desync is still visible
- *   0xA5 <24 raw bytes>            <- one per event, little-endian (matches the MicroBlaze build)
+ *   0xA5 <28 raw bytes>            <- one per event, little-endian (matches the MicroBlaze build)
  *   ...
  *   0x5A <u16 count> <u32 sum32>   <- end tag, count and additive checksum, little-endian
  *
@@ -661,15 +669,16 @@ static int h_rb(const char *c, const s32 *a, int n) {
  * measurements. A plain additive sum is cheap on a MicroBlaze and catches truncation and splicing,
  * which are the failures actually observed here.
  *
- * Per event, in order (24 bytes):
- *   u32 ts_lo, u32 ts_hi, u32 psa_l, u32 psa_w, s32 energy_short, s32 energy_long
+ * Per event, in order (28 bytes):
+ *   u32 ts_lo, u32 ts_hi, u32 psa_l, u32 psa_w, s32 energy_short, s32 energy_long, s32 peak
  *
  * fci and psd are deliberately NOT sent. Both are exact functions of the fields above
  * (fci = psa_l/psa_w, psd = (long-short)/long) and were verified against 120,000 live events to
  * agree with the transmitted values to the last digit of their 1e-4 wire quantum. Sending them
  * would cost 8 of 32 bytes to transmit nothing the host cannot derive, and would introduce a way
- * for the two to disagree. */
-#define RQ_BYTES_PER_EVENT 24
+ * for the two to disagree. peak IS sent: it is not derived from any other field here, unlike fci
+ * and psd. */
+#define RQ_BYTES_PER_EVENT 28
 #define RQ_TAG_EVENT 0xA5u /* one record follows */
 #define RQ_TAG_END 0x5Au   /* end of frame; u16 count then u32 checksum follow */
 
@@ -716,6 +725,7 @@ static int h_rq(const char *c, const s32 *a, int n) {
       rq_put_u32((u32)ev.psa_w);
       rq_put_u32((u32)ev.energy_short);
       rq_put_u32((u32)ev.energy_long);
+      rq_put_u32((u32)ev.peak);
       got++;
     }
   }

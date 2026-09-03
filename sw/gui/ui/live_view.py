@@ -1,7 +1,9 @@
 """Live discrimination view: two independent scatter plots, each flanked by that subsystem's own
 controls -- configuration form on the LEFT of the plot, live statistics on the RIGHT. FCI vs Energy
-on the top row, PSD vs Energy on the bottom row. Energy is energy_long (see module-level rationale
-below). Fed by AcquisitionWorker.batch_received / stats_received.
+on the top row, PSD vs Energy on the bottom row. Energy is keVee, computed from each event's FPGA
+peak amplitude (AcqEvent.peak) through the SAME calibration coefficients the Spectrum tab's
+HistogramView owns (see module-level rationale below) -- Fed by
+AcquisitionWorker.batch_received / stats_received.
 
 There is only one underlying acquisition state ($AE/$AD pairs FCI and PSD together -- they cannot
 be started independently), so the FCI and PSD Start/Stop/Reset button triples are mirrored:
@@ -13,18 +15,22 @@ Clearing what's plotted is Reset's job alone, so a Stop followed by another Star
 freeze the display, or because the CSV segment should roll over) continues the same accumulated
 view rather than silently discarding it.
 
-Energy is energy_long (the PSD long-gate charge integral) -- the long gate is configured to cover
-essentially the whole pulse (see project log section 8d and PsdConfig.long_gate's docstring), which
-is what makes it a usable proxy for total deposited charge here. These are raw ADC-code-integrated
-units, not a calibrated physical energy -- the axis is labelled accordingly rather than implying a
-keV scale nothing here has established.
+Energy: E = c0 + c1*peak + c2*peak^2, `peak` being the FPGA's max baseline-subtracted deviation
+over the whole frame (see dual_gate_integrator.vhd) -- a whole-pulse property, independent of the
+PSD gates, unlike the energy_long this axis used before. The coefficients live in HistogramView
+(set_calibration() below receives them via MainWindow's cross-tab wiring, the same pattern used for
+PSD pre_trigger / Trigger delay) and default to the identity map (c0=0, c1=1, c2=0), so an
+uncalibrated session still plots a sensible raw-peak axis rather than a meaningless one. Because the
+underlying stored value is `peak`, not a pre-computed energy, a calibration change retroactively
+rescales every already-plotted point (see _recompute_energy()) rather than only affecting events
+that arrive afterwards.
 
-Events with energy_long <= 0 are excluded from both plots, not merely left to render as garbage:
-that is the documented low-energy pathology (project log section 8d) where the BLR gate does not
-close in time for a small pulse and the long-gate integral goes non-positive. Energy itself is not
-meaningfully defined for such an event, and firmware's PSD ratio for it is a 0.0 sentinel for
-"undefined" (see AcqEvent.psd's docstring), not a real measurement -- plotting either would
-misrepresent a known-invalid result as data. The exclusion is counted and shown, not hidden.
+Events with energy_long <= 0 are STILL excluded from both plots, even though energy_long is no
+longer the plotted axis: that is the documented low-energy pathology (project log section 8d) where
+the BLR gate does not close in time for a small pulse and the long-gate integral goes non-positive,
+and firmware's PSD ratio for such an event is a 0.0 sentinel for "undefined" (see AcqEvent.psd's
+docstring), not a real measurement -- plotting it against ANY energy axis would misrepresent a
+known-invalid PSD result as data. The exclusion is counted and shown, not hidden.
 """
 
 from __future__ import annotations
@@ -109,7 +115,7 @@ class _ControlsPanel(QGroupBox):
 
         self.chk_cut_enabled = QCheckBox("Enable LLD/ULD")
         self.chk_cut_enabled.setToolTip(
-            "Gates this plot, its stats, and recording by an energy_long range -- drag the "
+            "Gates this plot, its stats, and recording by an energy (keVee) range -- drag the "
             "shaded region's edges on the plot to set it."
         )
         self.chk_cut_enabled.toggled.connect(self.cut_toggled.emit)
@@ -247,6 +253,10 @@ class LiveView(QWidget):
         super().__init__()
         self._cap = 1 << 16
         self._energy = np.empty(self._cap, dtype=np.float64)
+        self._peak = np.empty(self._cap, dtype=np.float64)
+        """Raw FPGA peak amplitude, kept alongside the derived _energy so a calibration change can
+        rescale everything already plotted (see set_calibration()/_recompute_energy()) instead of
+        only affecting events that arrive after the change."""
         self._fci = np.empty(self._cap, dtype=np.float64)
         self._psd = np.empty(self._cap, dtype=np.float64)
         self._n = 0
@@ -254,6 +264,9 @@ class LiveView(QWidget):
         10 kcps, converting three lists to arrays on every redraw would cost tens of milliseconds
         on the GUI thread -- the exact cost that was starving the reader. Arrays grow by doubling
         and are compacted in place when the window overflows."""
+        self._cal: tuple[float, float, float] = (0.0, 1.0, 0.0)
+        """(c0, c1, c2) for E = c0 + c1*peak + c2*peak^2, pushed in from HistogramView via
+        set_calibration(). Identity by default so an uncalibrated session plots raw peak values."""
         self._total_events = 0
         self._excluded_events = 0
         self._fci_captured = 0
@@ -332,7 +345,7 @@ class LiveView(QWidget):
         grid.addWidget(self.fci_controls, 0, 0)
 
         self.plot_fci = pg.PlotWidget(title="FCI vs Energy")
-        self.plot_fci.setLabel("bottom", "Energy (energy_long, raw ADC-code·samples)")
+        self.plot_fci.setLabel("bottom", "Energy (keVee)")
         self.plot_fci.setLabel("left", "FCI")
         self.plot_fci.showGrid(x=True, y=True)
         self.plot_fci.setMinimumHeight(self.PLOT_MIN_HEIGHT)
@@ -367,7 +380,7 @@ class LiveView(QWidget):
         grid.addWidget(self.psd_controls, 1, 0)
 
         self.plot_psd = pg.PlotWidget(title="PSD vs Energy")
-        self.plot_psd.setLabel("bottom", "Energy (energy_long, raw ADC-code·samples)")
+        self.plot_psd.setLabel("bottom", "Energy (keVee)")
         self.plot_psd.setLabel("left", "PSD")
         self.plot_psd.showGrid(x=True, y=True)
         self.plot_psd.setMinimumHeight(self.PLOT_MIN_HEIGHT)

@@ -135,6 +135,7 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   out->energy_short = p.energy_short;
   out->energy_long = p.energy_long;
   out->psd_scaled = psd_parameter_scaled(p.energy_short, p.energy_long);
+  out->peak = p.peak;
 
   stats->paired++;
 
@@ -171,22 +172,23 @@ static void print_scaled(const char *label, s32 scaled) {
 void Acq_PrintEvent(const AcqEvent *ev) {
   xil_printf("  ts=%u:%08u  ", (u32)(ev->timestamp >> 32), (u32)ev->timestamp);
   print_scaled("FCI", (s32)ev->fci_scaled);
-  xil_printf("  Es=%d El=%d  ", ev->energy_short, ev->energy_long);
+  xil_printf("  Es=%d El=%d Pk=%d  ", ev->energy_short, ev->energy_long, ev->peak);
   print_scaled("PSD", ev->psd_scaled);
   xil_printf("\r\n");
 }
 
 /* Machine-readable form for host-side capture: one row per event, so a PC-side tool can plot PSD
  * against FCI directly and see whether the two separate the same populations. That comparison is
- * the reason this whole path exists. */
+ * the reason this whole path exists. peak is appended at the end to keep the existing field order
+ * stable for anything already parsing this format. */
 void Acq_PrintCsvHeader(void) {
-  xil_printf("EVT,ts_hi,ts_lo,psa_l,psa_w,fci_x10000,energy_short,energy_long,psd_x10000\r\n");
+  xil_printf("EVT,ts_hi,ts_lo,psa_l,psa_w,fci_x10000,energy_short,energy_long,psd_x10000,peak\r\n");
 }
 
 void Acq_PrintEventCsv(const AcqEvent *ev) {
-  xil_printf("EVT,%u,%u,%u,%u,%u,%d,%d,%d\r\n", (u32)(ev->timestamp >> 32), (u32)ev->timestamp,
+  xil_printf("EVT,%u,%u,%u,%u,%u,%d,%d,%d,%d\r\n", (u32)(ev->timestamp >> 32), (u32)ev->timestamp,
              ev->psa_l, ev->psa_w, ev->fci_scaled, ev->energy_short, ev->energy_long,
-             ev->psd_scaled);
+             ev->psd_scaled, ev->peak);
 }
 
 void Acq_PrintStats(const AcqStats *stats) {
