@@ -18,7 +18,7 @@ create_project -force trigger_core_pkg_proj $scratch_proj_dir -part xc7a35tcpg23
 add_files -norecurse [list \
   "$core_dir/src/trigger_core_pkg.vhd" \
   "$core_dir/src/delay_line.vhd" \
-  "$core_dir/src/trigger.vhd" \
+  "$core_dir/src/cfd_trigger.vhd" \
   "$core_dir/src/circular_buffer.vhd" \
   "$core_dir/src/axi4lite_regs.vhd" \
   "$core_dir/src/capture_engine.vhd" \

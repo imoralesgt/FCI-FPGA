@@ -1,26 +1,133 @@
-"""AcquisitionWorker: a QThread that owns one FciTransport/FciClient and is the ONLY thing that
-calls into it during normal operation -- see fci_api.FciTransport's own docstring for why that
-makes the RLock inside it a second line of defence rather than the only one.
+"""AcquisitionWorker: supervises the device-I/O child process (fci_api.reader_process) and
+translates its evt_q messages into the same Qt signals this class has always emitted.
 
-Deliberately NOT using nested Qt event loops or QTimer inside this thread (a QThread subclass's own
-slots are not automatically affinitized to the thread it runs on unless you use moveToThread(), a
-well-known Qt/PySide gotcha). Instead this mirrors the reference project's own approach
-(NSIL-Counter's SerialWorker): a plain Python loop in run(), and plain threading.Event flags for
-the GUI thread to request things (start/stop acquisition, capture one trace) -- the worker's own
-loop checks them once per iteration and acts on its own thread, so a trace capture can never race
-a batch poll for the same transport.
+This class no longer touches the serial port itself -- see fci_api/reader_process.py's module
+docstring for why (project log section 8i/8k: a GUI redraw holding the GIL for ~40+ ms was enough
+to overrun the kernel's UART receive buffer and corrupt `$RQ` frames; the only structural fix is
+giving the device I/O its own process, hence its own GIL, so nothing the GUI does can ever delay a
+read). What used to be a plain Python loop in QThread.run() reading the port directly is now a
+`multiprocessing.Process` running that loop in reader_process.py; this class's own QThread.run()
+does much less work -- it drains the child's evt_q and re-emits Qt signals, exactly as before, so
+every call site in controllers.py is unchanged.
+
+Config panels, the calibration wizard, and the FoM sweep worker used to hold a plain fci_api.
+FciClient and call it directly from their own thread, relying on FciTransport's RLock to serialize
+against this worker's concurrent polling (see config_panel.py's docstring for that reasoning, now
+historical). The transport lives only in the child process, so there is no longer a shared
+FciTransport for an RLock to protect -- instead, make_client() returns a RemoteFciClient, which
+proxies every fci_api.FciClient method across the process boundary as an RPC and blocks the caller
+until the child replies. It matches FciClient's public interface closely enough (duck typing, not
+inheritance) that no other file needed to change.
 """
 
 from __future__ import annotations
 
+import itertools
 import logging
+import multiprocessing
+import queue
 import threading
 
 from PySide6.QtCore import QThread, Signal
 
-from fci_api import AcqEvent, FciClient, FciError, FciTransport, TraceResult
+import config
+from fci_api.exceptions import (
+    FciError,
+    FciNotPresentError,
+    FciParamError,
+    FciProtocolError,
+    FciTimeoutError,
+    FciUnknownCommandError,
+)
+from fci_api.reader_process import run_reader_process
 
 logger = logging.getLogger(__name__)
+
+RB_MAX_BATCH = 1024
+"""Events one batch request may return, matching cli.c's RB_MAX_BATCH and the result FIFO depth.
+
+Sized for the FTDI latency timer at its 16 ms DEFAULT, because the instrument has to work on any
+host without root or a udev rule. The timer only delays the final partial USB packet, so a large
+reply pays it once and batch size amortises it: with the binary $RQ encoding, batch 32 gives
+~1300 ev/s and batch 1024 gives ~3486 ev/s against a 3686 ev/s link ceiling. Tuning the timer to
+1 ms then adds almost nothing, which is the point -- it must not be a deployment requirement.
+
+Asking for the maximum is free when little is pending: the device stops early once the FIFO
+empties. The long transaction only happens when the FIFO is genuinely full, which is when
+draining it fast matters more than command latency. (Also defined in fci_api.reader_process,
+which is the process that actually acts on it -- this copy is for the docstring above and for
+any caller here that wants the same number, e.g. log messages.)"""
+
+_READER_LOG_PATH = str(config.LOG_DIR / "fci_gui_reader.log")
+"""Separate from fci_gui.log on purpose -- see reader_process._configure_logging()'s docstring:
+two independent RotatingFileHandlers, one per process, must never share a file."""
+
+_ERROR_TYPES: dict[str, type[FciError]] = {
+    "FciError": FciError,
+    "FciProtocolError": FciProtocolError,
+    "FciUnknownCommandError": FciUnknownCommandError,
+    "FciParamError": FciParamError,
+    "FciTimeoutError": FciTimeoutError,
+    "FciNotPresentError": FciNotPresentError,
+}
+
+
+def _reraise_from_child(error_type: str, message: str) -> None:
+    """Reconstructs and raises the exception an RPC failed with in the CHILD process, as the
+    SAME exception subtype, so callers doing `except FciParamError` or `except FciError` keep
+    working across the process boundary exactly as they did against a local FciClient.
+
+    Deliberately does not call the subtype's own __init__ (FciCommandError's takes `request`, not
+    a message -- signatures differ per subtype and are not worth replicating here). Instead builds
+    a bare instance via __new__ and sets its message directly through the base Exception.__init__,
+    which is enough for isinstance() checks and str(e) to both behave correctly; only the object's
+    OWN extra attributes (like FciCommandError.request) are not reconstructed, and nothing in this
+    codebase reads those from a caught exception.
+
+    An error_type not in _ERROR_TYPES means the child hit something that was never an FciError to
+    begin with (a genuine bug, not a device-reported condition) -- raised as RuntimeError so it is
+    visible rather than silently mapped onto FciError, which callers filter on and would swallow."""
+    cls = _ERROR_TYPES.get(error_type)
+    if cls is None:
+        raise RuntimeError(f"reader process: {error_type}: {message}")
+    exc = cls.__new__(cls)
+    Exception.__init__(exc, message)
+    raise exc
+
+
+class RemoteFciClient:
+    """Drop-in for fci_api.FciClient (duck-typed, not a subclass) whose every method is an RPC to
+    the reader process instead of a direct transport call -- see this module's own docstring.
+
+    No method list of its own: __getattr__ proxies ANY non-underscore attribute access as a
+    same-named RPC, so a new FciClient method works here with no change, and a typo still fails
+    at call time (the child's own getattr(client, name) raises AttributeError, forwarded back
+    through _reraise_from_child like any other exception) rather than earlier or later than it
+    would against a real client.
+
+    Every call blocks the calling thread until the child replies or _RPC_TIMEOUT_S elapses --
+    the same blocking behaviour a direct client call always had (it blocked on the serial round
+    trip), just crossing a queue instead of a wire now. SubsystemPanel, the calibration wizard,
+    and the FoM sweep worker all call synchronously and expect exactly this.
+    """
+
+    _RPC_TIMEOUT_S = 5.0
+    """Generous relative to any single RPC: the reader process services cmd_q at the top of every
+    loop iteration, ahead of its own batch/scope/stats work, so real latency is a small fraction
+    of this. This bound exists to fail loudly if the child has died or deadlocked, not to be a
+    tuned budget."""
+
+    def __init__(self, issue_rpc):
+        self._issue_rpc = issue_rpc
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+
+        def _call(*args, **kwargs):
+            return self._issue_rpc(name, args, kwargs)
+
+        return _call
 
 
 class AcquisitionWorker(QThread):
@@ -31,142 +138,165 @@ class AcquisitionWorker(QThread):
     connection_changed = Signal(bool)
     error_occurred = Signal(str)
 
-    def __init__(self, transport: FciTransport, poll_interval_s: float = 0.2,
-                 stats_interval_s: float = 2.0):
+    def __init__(self, port: str, poll_interval_s: float = 0.2,
+                 stats_interval_s: float = 2.0, busy_interval_s: float = 0.0,
+                 scope_interval_s: float = 0.5):
         super().__init__()
-        self._transport = transport
-        self._client = FciClient(transport)
+        self._port = port
         self._poll_interval_s = poll_interval_s
         self._stats_interval_s = stats_interval_s
+        self._busy_interval_s = busy_interval_s
+        self._scope_interval_s = scope_interval_s
+
+        # spawn, not fork: this process holds Qt state (event loop, widgets, other threads), none
+        # of which should be duplicated into the child. spawn re-imports cleanly instead, at the
+        # cost of the target/args needing to be picklable -- true here (a module-level function,
+        # plain str/float args, and Queue objects made via this same context).
+        self._mp_ctx = multiprocessing.get_context("spawn")
+        self._cmd_q = self._mp_ctx.Queue()
+        self._evt_q = self._mp_ctx.Queue()
+        self._proc: multiprocessing.process.BaseProcess | None = None
 
         self._stop_event = threading.Event()
-        self._trace_request = threading.Event()
-        self._trace_n = 2048
-        self._scope_running = threading.Event()
-        """Continuous ('Start') scope mode, distinct from _trace_request's one-shot ('Single').
-        Checked every loop iteration while set, alongside the batch poll -- both are cheap enough
-        (a $RT round trip is ~30 ms even for a full 2048-sample trace) to share one iteration
-        without meaningfully slowing either down at the 200 ms default poll interval."""
-        self._scope_n = 2048
-        self._start_acq_request = threading.Event()
-        self._stop_acq_request = threading.Event()
-        self._batch_poll_suspended = threading.Event()
-        """Set while the FoM sweep worker needs exclusive use of $RB for its own grid-point event
-        collection. Without this, this worker's own unconditional per-iteration read_batch() call
-        (below) would race the sweep's reads for the same 32-deep FIFO, splitting events between
-        the two unpredictably and making "collect N fresh events for this grid point" unreliable."""
+        self._pending: dict[int, tuple[threading.Event, dict]] = {}
+        self._pending_lock = threading.Lock()
+        self._next_id = itertools.count(1)
 
-    # ---- thread-safe requests from the GUI thread; the worker's own loop acts on these ----
+    # ---- device access for everything that isn't the streaming poll loop ----
+
+    def make_client(self) -> RemoteFciClient:
+        """One RemoteFciClient per connection, matching how controllers.py used to build one
+        FciClient per connection. Cheap to call more than once if ever needed -- it holds no
+        per-instance state beyond the shared RPC plumbing below."""
+        return RemoteFciClient(self._issue_rpc)
+
+    def _issue_rpc(self, method: str, args: tuple, kwargs: dict):
+        """Called from ANY thread (the GUI thread via a config panel, or FomSweepWorker's own
+        thread) -- registers a pending call keyed by a fresh id, posts it to cmd_q, and blocks on
+        a private threading.Event until run()'s evt_q-draining loop sees the matching reply and
+        sets it. This is a minimal hand-rolled Future; concurrent.futures wasn't reached for
+        because both ends of the wiring (post to cmd_q, wait on an Event) are two lines each and
+        the alternative would still need this same pending-calls dict to route replies by id."""
+        call_id = next(self._next_id)
+        done = threading.Event()
+        box: dict = {}
+        with self._pending_lock:
+            self._pending[call_id] = (done, box)
+        self._cmd_q.put({"type": "rpc", "id": call_id, "method": method,
+                          "args": args, "kwargs": kwargs})
+        try:
+            if not done.wait(RemoteFciClient._RPC_TIMEOUT_S):
+                raise FciTimeoutError(
+                    f"{method}: no reply from reader process within "
+                    f"{RemoteFciClient._RPC_TIMEOUT_S}s (process alive: "
+                    f"{self._proc.is_alive() if self._proc else False})"
+                )
+        finally:
+            with self._pending_lock:
+                self._pending.pop(call_id, None)
+        if box.get("error"):
+            _reraise_from_child(box["error_type"], box["message"])
+        return box.get("value")
+
+    # ---- thread-safe requests from the GUI thread; the child's own loop acts on these ----
 
     def suspend_batch_polling(self) -> None:
-        self._batch_poll_suspended.set()
+        self._cmd_q.put({"type": "suspend_batch_polling"})
 
     def resume_batch_polling(self) -> None:
-        self._batch_poll_suspended.clear()
+        self._cmd_q.put({"type": "resume_batch_polling"})
 
     def request_trace(self, n: int = 2048) -> None:
-        """Requests one $RT capture on the worker's own thread ("Single"). Safe to call from any
+        """Requests one $RT capture on the reader process ("Single"). Safe to call from any
         thread."""
-        self._trace_n = n
-        self._trace_request.set()
+        self._cmd_q.put({"type": "trace_once", "n": n})
 
     def request_scope_start(self, n: int = 2048) -> None:
-        """Starts continuously capturing and emitting traces ("Start"/"Run"), once per loop
-        iteration, until request_scope_stop(). Safe to call from any thread."""
-        self._scope_n = n
-        self._scope_running.set()
+        """Starts continuously capturing and emitting traces ("Start"/"Run"), until
+        request_scope_stop(). Safe to call from any thread."""
+        self._cmd_q.put({"type": "scope_start", "n": n})
 
     def request_scope_stop(self) -> None:
-        self._scope_running.clear()
+        self._cmd_q.put({"type": "scope_stop"})
 
     def request_start_acquisition(self) -> None:
-        self._start_acq_request.set()
+        self._cmd_q.put({"type": "start_acq"})
 
     def request_stop_acquisition(self) -> None:
-        self._stop_acq_request.set()
+        self._cmd_q.put({"type": "stop_acq"})
 
     def stop(self) -> None:
-        """Signals the loop to exit and blocks until the thread has actually finished."""
+        """Signals the reader process to shut down and this thread's evt_q pump to exit, then
+        blocks until both have actually finished."""
+        self._cmd_q.put({"type": "shutdown"})
         self._stop_event.set()
         self.wait()
+        if self._proc is not None:
+            self._proc.join(timeout=2.0)
+            if self._proc.is_alive():
+                logger.warning("reader process did not exit cleanly; terminating")
+                self._proc.terminate()
+                self._proc.join(timeout=1.0)
 
-    # ---- the thread body ----
+    # ---- the thread body: spawn the child, then pump evt_q into Qt signals ----
 
     def run(self) -> None:
-        try:
-            self._transport.open()
-        except Exception as e:  # pyserial raises plain OSError/SerialException, not FciError
-            logger.error(f"failed to open {self._transport.port}: {e}")
-            self.error_occurred.emit(f"Failed to open {self._transport.port}: {e}")
-            self.connection_changed.emit(False)
-            return
-
-        logger.info(f"connected to {self._transport.port}")
-        self.connection_changed.emit(True)
-
-        stats_countdown = 0.0
+        self._proc = self._mp_ctx.Process(
+            target=run_reader_process,
+            args=(self._port, self._poll_interval_s, self._stats_interval_s,
+                  self._busy_interval_s, self._scope_interval_s, self._cmd_q, self._evt_q,
+                  _READER_LOG_PATH),
+            daemon=True,
+        )
+        self._proc.start()
 
         while not self._stop_event.is_set():
-            if self._start_acq_request.is_set():
-                self._start_acq_request.clear()
-                self._safe_call(self._client.enable_acquisition, "enable_acquisition")
-                self.acquisition_state_changed.emit(True)
+            try:
+                msg = self._evt_q.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            self._dispatch(msg)
 
-            if self._stop_acq_request.is_set():
-                self._stop_acq_request.clear()
-                self._safe_call(self._client.disable_acquisition, "disable_acquisition")
-                self.acquisition_state_changed.emit(False)
-
-            if self._trace_request.is_set():
-                self._trace_request.clear()
-                trace = self._safe_call(lambda: self._client.read_trace(self._trace_n), "read_trace")
-                if trace is not _FAILED:
-                    self.trace_received.emit(trace)
-                # Deliberately no `continue` here: a trace capture and the batch poll below are
-                # both cheap, and skipping this cycle's poll would just delay live data for no
-                # benefit -- unlike request handling, there is no reason to prioritize one over
-                # the other within a single loop iteration.
-
-            if self._scope_running.is_set():
-                trace = self._safe_call(lambda: self._client.read_trace(self._scope_n), "read_trace")
-                if trace is not _FAILED:
-                    self.trace_received.emit(trace)
-
-            if not self._batch_poll_suspended.is_set():
-                events = self._safe_call(self._client.read_batch, "read_batch")
-                if events is not _FAILED and events:
-                    self.batch_received.emit(events)
-
-            if stats_countdown <= 0:
-                stats = self._safe_call(self._client.read_stats, "read_stats")
-                if stats is not _FAILED:
-                    self.stats_received.emit(stats)
-                stats_countdown = self._stats_interval_s
-
-            self._stop_event.wait(self._poll_interval_s)
-            stats_countdown -= self._poll_interval_s
-
-        self._safe_call(self._client.disable_acquisition, "disable_acquisition (shutdown)")
-        self._transport.close()
-        logger.info(f"disconnected from {self._transport.port}")
-        self.connection_changed.emit(False)
-
-    def _safe_call(self, fn, label: str):
-        """Runs fn(), converting an FciError into an emitted signal instead of an uncaught
-        exception that would silently kill this thread. Returns the sentinel _FAILED on error so
-        callers can distinguish "got None" (a legitimate return value, e.g. no trace pending) from
-        "the call raised"."""
+        # Drain briefly for the "disconnected" message the child's shutdown path sends, so
+        # on_connection_changed(False) still fires even when stop() raced the child's own exit.
         try:
-            return fn()
-        except FciError as e:
-            logger.warning(f"{label} failed: {e}")
-            self.error_occurred.emit(f"{label}: {e}")
-            return _FAILED
+            while True:
+                self._dispatch(self._evt_q.get(timeout=0.5))
+        except queue.Empty:
+            pass
 
-
-class _FailedSentinel:
-    def __repr__(self) -> str:
-        return "<FAILED>"
-
-
-_FAILED = _FailedSentinel()
+    def _dispatch(self, msg: dict) -> None:
+        t = msg["type"]
+        if t == "connected":
+            self.connection_changed.emit(True)
+        elif t == "connect_failed":
+            logger.error(f"failed to open {self._port}: {msg['error']}")
+            self.error_occurred.emit(f"Failed to open {self._port}: {msg['error']}")
+            self.connection_changed.emit(False)
+        elif t == "disconnected":
+            self.connection_changed.emit(False)
+        elif t == "batch":
+            self.batch_received.emit(msg["events"])
+        elif t == "trace":
+            self.trace_received.emit(msg["trace"])
+        elif t == "stats":
+            self.stats_received.emit(msg["stats"])
+        elif t == "acq_state":
+            self.acquisition_state_changed.emit(msg["running"])
+        elif t == "error":
+            self.error_occurred.emit(msg["message"])
+        elif t in ("rpc_result", "rpc_error"):
+            with self._pending_lock:
+                entry = self._pending.get(msg["id"])
+            if entry is None:
+                return  # the caller already timed out and stopped waiting; nothing to deliver to
+            done, box = entry
+            if t == "rpc_result":
+                box["value"] = msg["value"]
+            else:
+                box["error"] = True
+                box["error_type"] = msg["error_type"]
+                box["message"] = msg["message"]
+            done.set()
+        else:
+            logger.warning(f"acquisition worker: unknown message type {t!r}")

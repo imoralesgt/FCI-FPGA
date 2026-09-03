@@ -13,7 +13,10 @@ matters rather than restated on every method:
 
 from __future__ import annotations
 
-from .exceptions import FciNotPresentError
+import logging
+import struct
+
+from .exceptions import FciNotPresentError, FciProtocolError
 from .transport import FciTransport
 from .types import (
     AcqEvent,
@@ -37,6 +40,9 @@ def _bool(token: str) -> bool:
 def _opt_int(token: str) -> int | None:
     v = int(token)
     return None if v == -1 else v
+
+
+logger = logging.getLogger(__name__)
 
 
 class FciClient:
@@ -121,9 +127,70 @@ class FciClient:
         tokens = self._t.transact("RB", n)
         if len(tokens) == 1 and tokens[0] == "-1":
             raise FciNotPresentError("$RB: FCI result path not present in this bitstream")
-        count = int(tokens[-1])
+        # Validated rather than int()'d directly. A desynced line (two replies glued together
+        # after a host stall, e.g. '... 12690!AE') otherwise raises a bare ValueError out of the
+        # library, which is not an FciError and so escaped the GUI worker's handler and killed the
+        # acquisition thread outright. A framing problem is exactly what FciProtocolError is for,
+        # and raising it also marks the transport for resync.
+        try:
+            count = int(tokens[-1])
+        except (ValueError, IndexError):
+            raise FciProtocolError(
+                f"$RB reply has no valid trailing count -- last token {tokens[-1]!r}; "
+                f"likely two replies merged after a stalled read"
+            ) from None
         body = tokens[:-1]
+        if count < 0 or len(body) < count * 8:
+            raise FciProtocolError(
+                f"$RB reply claims {count} events but carries {len(body)} value tokens "
+                f"({len(body) / 8:.1f} events' worth)"
+            )
         return [self._parse_event(body[i * 8 : (i + 1) * 8]) for i in range(count)]
+
+    def read_batch_binary(self, n: int = 1024) -> list[AcqEvent]:
+        """`$RQ [n]`. Same events as read_batch(), in a binary frame roughly half the size.
+
+        ASCII costs a measured 49.4 bytes per event; this costs 25 (24 payload + 1 frame tag),
+        which at 921600 baud moves the readout ceiling from ~1871 to ~3686 events/s. With the FTDI
+        latency timer at 1 ms the link runs at ~98% utilisation, so bytes on the wire are the
+        binding constraint and encoding is the only lever left short of a higher baud rate (which
+        needs a bitstream rebuild -- axi_uartlite's C_BAUDRATE is synthesis-time).
+
+        `fci` and `psd` are RECOMPUTED here rather than transmitted. Both are exact functions of
+        the other fields, verified against 120,000 live events to agree with the values firmware
+        used to send to the last digit of their 1e-4 wire quantum, so sending them would have cost
+        8 of every 32 bytes to carry nothing new -- and would have created a way for the two to
+        disagree. The 1e-4 quantisation firmware applied is NOT reproduced: these come back at full
+        float precision, so values may differ from read_batch()'s in the fifth decimal.
+
+        Raises FciProtocolError on a checksum or framing failure -- see transact_framed().
+        """
+        rec_size, records = self._t.transact_framed("RQ", n)
+        truncated = getattr(self._t, "_last_frame_truncated", None)
+        if truncated:
+            # Reported, not raised: the records that did arrive are good, and losing them too
+            # would turn partial loss into total loss. The caller decides whether the rate matters.
+            logger.warning("$RQ: %s", truncated)
+        if rec_size != 24:
+            raise FciProtocolError(f"$RQ: expected 24-byte records, device reports {rec_size}")
+        out: list[AcqEvent] = []
+        for rec in records:
+            ts_lo, ts_hi, psa_l, psa_w = struct.unpack_from("<4I", rec, 0)
+            es, el = struct.unpack_from("<2i", rec, 16)
+            out.append(
+                AcqEvent(
+                    timestamp=(ts_hi << 32) | ts_lo,
+                    psa_l=psa_l,
+                    psa_w=psa_w,
+                    fci=(psa_l / psa_w) if psa_w else 0.0,
+                    energy_short=es,
+                    energy_long=el,
+                    # Matches firmware's own guard: a non-positive long-gate integral makes the
+                    # ratio undefined, and 0.0 is the documented sentinel for that.
+                    psd=((el - es) / el) if el > 0 else 0.0,
+                )
+            )
+        return out
 
     def read_pending(self) -> Pending:
         """`$RN`. See Pending's docstring for why only the FCI side can be None here."""
@@ -175,9 +242,15 @@ class FciClient:
 
     def get_trigger(self) -> TriggerConfig:
         """`$GT` (CLI doc section 3.1)."""
-        threshold, polarity, delay, depth = self._t.transact("GT")
+        tok = self._t.transact("GT")
+        if len(tok) < 4:
+            raise FciProtocolError(f"$GT: expected at least 4 fields, got {len(tok)}: {tok!r}")
+        # Six fields since the CFD replaced the cross-level trigger; four on older firmware, which
+        # is tolerated rather than raising so a host can still talk to an older bitstream.
         return TriggerConfig(
-            threshold=int(threshold), rising=_bool(polarity), delay=int(delay), depth=int(depth)
+            threshold=int(tok[0]), rising=_bool(tok[1]), delay=int(tok[2]), depth=int(tok[3]),
+            cfd_fraction=int(tok[4]) if len(tok) > 4 else None,
+            cfd_delay=int(tok[5]) if len(tok) > 5 else None,
         )
 
     def set_trigger(
@@ -186,8 +259,13 @@ class FciClient:
         rising: bool | None = None,
         delay: int | None = None,
         depth: int | None = None,
+        cfd_fraction: int | None = None,
+        cfd_delay: int | None = None,
     ) -> None:
-        """`$ST` (CLI doc section 3.1). Only arguments given are written."""
+        """`$ST` (CLI doc section 3.1). Only arguments given are written.
+
+        `delay` has a minimum of 4, not the hardware's 2: the CFD's pipeline is ~3 samples deep,
+        so a smaller pre-trigger delay leaves the trigger point outside the captured window."""
         if threshold is not None:
             self._t.transact("ST", 0, threshold)
         if rising is not None:
@@ -196,6 +274,10 @@ class FciClient:
             self._t.transact("ST", 2, delay)
         if depth is not None:
             self._t.transact("ST", 3, depth)
+        if cfd_fraction is not None:
+            self._t.transact("ST", 4, cfd_fraction)
+        if cfd_delay is not None:
+            self._t.transact("ST", 5, cfd_delay)
 
     def get_blr(self) -> BlrConfig:
         """`$GB` (CLI doc section 3.2)."""

@@ -27,18 +27,14 @@
 #include "vga_dac.h"
 #include "xil_io.h"
 #include "xil_printf.h"
-#include "xuartlite_l.h"
+#include "uart.h"
 
-/* fci_sink is not in every block design: while fci_core's results still travel over axi_dma_0 there
- * is no XPAR_FCI_SINK_0_BASEADDR, and acquisition.c compiles to nothing. registers.h guards the
- * base address the same way. The CLI stays useful in that build -- every configuration command and
- * $RT work unchanged -- and the result-path commands report their absence rather than pretending
- * the FIFO is merely empty. */
-#ifdef XPAR_FCI_SINK_0_BASEADDR
-#define CLI_HAVE_RESULTS 1
-#else
-#define CLI_HAVE_RESULTS 0
-#endif
+/* A FIFO-backed result window is not in every block design: while fci_core's results still travel
+ * over axi_dma_0 there is none, and acquisition.c compiles to nothing. The CLI stays useful in that
+ * build -- every configuration command and $RT work unchanged -- and the result-path commands
+ * report their absence rather than pretending the FIFO is merely empty. registers.h decides, so
+ * this file and acquisition.c cannot disagree about which build they are in. */
+#define CLI_HAVE_RESULTS FCI_RESULT_VIA_FCI_SINK
 
 #define CLI_LINE_MAX 96
 #define CLI_ARGS_MAX 8
@@ -124,6 +120,8 @@ static int in_range(s32 v, s32 lo, s32 hi) { return v >= lo && v <= hi; }
 #define TRG_POLARITY 1
 #define TRG_DELAY 2
 #define TRG_DEPTH 3
+#define TRG_CFD_FRAC 4
+#define TRG_CFD_DELAY 5
 
 static int trg_get(s32 idx, s32 *out) {
   switch (idx) {
@@ -140,6 +138,12 @@ static int trg_get(s32 idx, s32 *out) {
     return 1;
   case TRG_DEPTH:
     *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_DEPTH_OFFSET) & 0x1FFFu);
+    return 1;
+  case TRG_CFD_FRAC:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_FRAC_OFFSET) & 0xFFu);
+    return 1;
+  case TRG_CFD_DELAY:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET) & 0x1Fu);
     return 1;
   default:
     return 0;
@@ -159,11 +163,37 @@ static int trg_set(s32 idx, s32 v) {
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_POLARITY_OFFSET, (u32)v);
     return 1;
   case TRG_DELAY:
-    /* The core clamps to 2..256 in hardware; rejecting here instead means a mistyped value is
-     * reported rather than silently corrected into something that still acquires. */
-    if (!in_range(v, 2, 256))
+    /* Lower bound is 4, not the hardware's 2: the CFD's own pipeline is ~3 samples deep, so with
+     * fewer pre-trigger samples than that the captured window does not contain the trigger point
+     * at all. The capture is still well-formed, but a trace whose trigger sample fell off the
+     * front is not what anyone asking for pre-trigger context wants, and it is invisible unless
+     * you go looking. The core still clamps to 2..256 in hardware; rejecting here means a
+     * mistyped value is reported rather than silently corrected into something that acquires. */
+    if (!in_range(v, 4, 256))
       return 0;
     reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_DELAY_OFFSET, (u32)v);
+    return 1;
+  case TRG_CFD_FRAC:
+    /* fraction = v/256. 0 would make the bipolar signal equal to the delayed sample, whose zero
+     * crossings are baseline noise; 256 would make it identically zero. */
+    if (!in_range(v, 1, 255))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_FRAC_OFFSET, (u32)v);
+    return 1;
+  case TRG_CFD_DELAY:
+    /* Also sets sensitivity, not just timing: the CFD crossing sits at a fixed n = D/(1-f) while
+     * the arming threshold is crossed later for smaller pulses, so pulses below roughly
+     * T*rise*(1-f)/D never arm in time and produce no trigger at all. A larger D lowers that
+     * floor. 0 degenerates the discriminator to (1-f)*s, which never crosses zero.
+     *
+     * Minimum 4 for the same reason TRG_DELAY has one: the crossing sits at n = D/(1-f), so below
+     * D=4 (n < 5.3 at the default f=1/4) it falls inside the discriminator's own ~3-sample
+     * pipeline and is settling transient rather than signal. D=1..3 was accepted before and was
+     * never usable -- at this detector's 37-sample rise it puts the sensitivity floor above 9x
+     * threshold, i.e. a silently deaf trigger. */
+    if (!in_range(v, 4, 31))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET, (u32)v);
     return 1;
   case TRG_DEPTH:
     if (!in_range(v, 1, CLI_TRACE_MAX))
@@ -287,8 +317,10 @@ static int fci_get(s32 idx, s32 *out) {
 static int fci_set(s32 idx, s32 v) {
   if (idx >= 0 && idx <= 3) {
     /* Bin indices into the FFT magnitude spectrum. The upper bound is the Nyquist bin of the
-     * 1024-point transform; the core does not range-check these itself. */
-    if (!in_range(v, 0, 512))
+     * 2048-point transform; the core does not range-check these itself. Bins above Nyquist are
+     * the mirror image of those below it for a real-valued input, so they carry no new
+     * information -- rejecting them keeps a typo from silently double-counting energy. */
+    if (!in_range(v, 0, 1024))
       return 0;
     reg_set(FCI_CORE_BASEADDR, fci_off[idx], (u32)v);
     return 1;
@@ -316,26 +348,34 @@ static int vga_get(s32 idx, s32 *out) {
 }
 
 static int vga_set(s32 idx, s32 v) {
-  /* Gains travel as milli-units because the framing carries integers only: 1500 means x1.50. */
+  /* Gains travel as milli-units because the framing carries integers only: 1500 means x1.50.
+   *
+   * The VgaDac_SetGain*()/SetFineCodeRaw() calls below are thin passthroughs of
+   * Iic_DynamicSendBytes(), whose header is explicit: "Returns 1 on success, 0 if all retries
+   * were exhausted." The checks here used to read `!= 0`, i.e. treat a SUCCESSFUL write as the
+   * failure case -- inverted. Every $SV call reported !XX 1 regardless of whether the DAC write
+   * actually happened (it did; the analog effect was visible on a live photopeak while the CLI
+   * insisted the write had failed), and g_vga_*_milli were never updated on a real success,
+   * leaving $GV's reported gain silently stale after every genuine change. Found 2026-09-03. */
   switch (idx) {
   case 0:
     if (!in_range(v, 1, 60000))
       return 0;
-    if (VgaDac_SetGainFine((double)v / 1000.0) != 0)
+    if (VgaDac_SetGainFine((double)v / 1000.0) == 0)
       return 0;
     g_vga_fine_milli = v;
     return 1;
   case 1:
     if (!in_range(v, 1, 60000))
       return 0;
-    if (VgaDac_SetGainCoarse((double)v / 1000.0) != 0)
+    if (VgaDac_SetGainCoarse((double)v / 1000.0) == 0)
       return 0;
     g_vga_coarse_milli = v;
     return 1;
   case 2:
     if (!in_range(v, 0, 4095))
       return 0;
-    if (VgaDac_SetFineCodeRaw((u16)v) != 0)
+    if (VgaDac_SetFineCodeRaw((u16)v) == 0)
       return 0;
     g_vga_raw_code = v;
     return 1;
@@ -376,7 +416,7 @@ static int generic_set(const char *code, const s32 *a, int n, int (*set)(s32, s3
   return 0;
 }
 
-static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 4, trg_get); }
+static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 6, trg_get); }
 static int h_st(const char *c, const s32 *a, int n) { return generic_set(c, a, n, trg_set); }
 static int h_gb(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 7, blr_get); }
 static int h_sb(const char *c, const s32 *a, int n) { return generic_set(c, a, n, blr_set); }
@@ -510,11 +550,34 @@ static int h_rv(const char *c, const s32 *a, int n) {
   return 0;
 }
 
-/* FIFO depth (both cores are provisioned identically -- see psd_core_top.vhd/fci_sink_top.vhd's
- * FIFO_DEPTH generic, default 32). No symbolic constant is exported to firmware for this; $SP/$SF's
- * watermark range check already hardcodes the same 32 for the same reason -- it is a hardware fact
- * with nowhere natural to live as shared code between a VHDL generic and a C header. */
-#define RB_MAX_BATCH 32
+/* FIFO depth (both cores are provisioned identically -- see psd_core_top.vhd and
+ * fci_core_rtl_top.vhd's FIFO_DEPTH generic). Raised from 32 to 1024 in the 2026-09-01 bitstream.
+ * It is a hardware fact with nowhere natural to live as shared code between a VHDL generic and a C
+ * header, so it is stated once here and referenced by the watermark range checks. */
+#define RESULT_FIFO_DEPTH 1024
+
+/* Events one request may return. Matched to RESULT_FIFO_DEPTH deliberately.
+ *
+ * The binding constraint is the FTDI adapter's latency timer, which defaults to 16 ms and CANNOT
+ * be assumed configurable: this instrument has to work off-the-shelf on any host, without root or
+ * a udev rule. That timer does not tax every packet, though -- the chip flushes on a full USB
+ * packet OR on timer expiry, so a large reply streams at full rate and pays the 16 ms once, at the
+ * end. Batch size therefore amortises it, and with the binary $RQ encoding below:
+ *
+ *     batch     32 -> 1297 ev/s      batch  256 -> 2996 ev/s
+ *     batch    128 -> 2524 ev/s      batch 1024 -> 3486 ev/s   (link ceiling 3686)
+ *
+ * So a full-depth batch reaches 95% of the link with the DEFAULT timer, and tuning the timer down
+ * becomes a nicety rather than a deployment requirement. An earlier revision capped this at 256 on
+ * the reasoning that the link already saturated from a batch of 32 -- true only with the timer at
+ * 1 ms, which is not an assumption this firmware is entitled to make.
+ *
+ * Requesting the maximum costs nothing when little is pending: both $RB and $RQ stop early once
+ * the FIFO empties, so a quiet instrument still answers in microseconds. The 294 ms transaction
+ * only occurs when the FIFO is genuinely full, which is precisely when draining it efficiently
+ * matters more than command latency. That is the trade being made, and it is the right way round.
+ */
+#define RB_MAX_BATCH RESULT_FIFO_DEPTH
 
 /* Pops up to n paired events (default/max RB_MAX_BATCH) in ONE round trip, stopping early if the
  * FIFO empties. This exists because $RV costs a full round trip per event, and on this UART/USB
@@ -564,6 +627,107 @@ static int h_rb(const char *c, const s32 *a, int n) {
   }
   reply_val_u(got);
   reply_close();
+#else
+  (void)want;
+  (void)got;
+  reply_one(c, -1);
+#endif
+  return 0;
+}
+
+/* ---------------------------------------------------------------- $RQ, binary batch
+ *
+ * Same semantics as $RB, different encoding. ASCII costs a measured 49.4 bytes per event, which at
+ * 921600 baud caps readout at ~1871 events/s -- and with the FTDI latency timer set to 1 ms the
+ * link runs at 98% utilisation, so that ceiling is now raw bandwidth, not latency, and the only
+ * way past it is to send fewer bytes. This packs the same information into 24.
+ *
+ * Additive rather than a change to $RB: $RB's format is a documented contract with existing
+ * scripts and examples, and nothing is gained by breaking it.
+ *
+ * Frame:
+ *   !RQ <bytes_per_event>\n        <- ASCII header, so a desync is still visible
+ *   0xA5 <24 raw bytes>            <- one per event, little-endian (matches the MicroBlaze build)
+ *   ...
+ *   0x5A <u16 count> <u32 sum32>   <- end tag, count and additive checksum, little-endian
+ *
+ * Self-delimiting rather than length-prefixed. A leading count would be tidier to parse, but it
+ * cannot be known until the FIFO runs dry or the request is satisfied, and producing it would mean
+ * staging every event first -- 8 KB for a 256-event batch, in a firmware with under 1 KB spare.
+ * Tagging each record costs one byte and needs no memory at all.
+ *
+ * The checksum is not ceremony. Every desync this project has hit was caught only because ASCII
+ * made it visible -- a corrupted binary frame is silent and would enter the dataset as real
+ * measurements. A plain additive sum is cheap on a MicroBlaze and catches truncation and splicing,
+ * which are the failures actually observed here.
+ *
+ * Per event, in order (24 bytes):
+ *   u32 ts_lo, u32 ts_hi, u32 psa_l, u32 psa_w, s32 energy_short, s32 energy_long
+ *
+ * fci and psd are deliberately NOT sent. Both are exact functions of the fields above
+ * (fci = psa_l/psa_w, psd = (long-short)/long) and were verified against 120,000 live events to
+ * agree with the transmitted values to the last digit of their 1e-4 wire quantum. Sending them
+ * would cost 8 of 32 bytes to transmit nothing the host cannot derive, and would introduce a way
+ * for the two to disagree. */
+#define RQ_BYTES_PER_EVENT 24
+#define RQ_TAG_EVENT 0xA5u /* one record follows */
+#define RQ_TAG_END 0x5Au   /* end of frame; u16 count then u32 checksum follow */
+
+#if CLI_HAVE_RESULTS
+static u32 g_rq_sum; /* additive checksum accumulator for the frame being streamed */
+
+/* Streams one little-endian u32 and folds it into the checksum. Bytes go out through outbyte()
+ * because xil_printf() formats -- it cannot emit an arbitrary byte, and 0x00/0x0A are ordinary
+ * payload values here. */
+static void rq_put_u32(u32 v) {
+  int i;
+  for (i = 0; i < 4; i++) {
+    u8 b = (u8)(v >> (8 * i));
+    g_rq_sum += b;
+    outbyte((char)b);
+  }
+}
+#endif
+
+/* Binary counterpart of $RB. Streams with NO staging buffer: this firmware has under 1 KB of LMB
+ * headroom, and buffering 256 events to put the count in a leading header would have cost 8 KB.
+ * That is why the frame is self-delimiting instead of length-prefixed -- a 1-byte tag before each
+ * record, and an end tag carrying the count and checksum. One byte per event to avoid an overflow
+ * that would not have fit, which is a trade worth making. */
+static int h_rq(const char *c, const s32 *a, int n) {
+  u32 want = RB_MAX_BATCH, got = 0;
+  if (n > 1)
+    return ERR_PARAM;
+  if (n == 1) {
+    if (!in_range(a[0], 1, RB_MAX_BATCH))
+      return ERR_PARAM;
+    want = (u32)a[0];
+  }
+#if CLI_HAVE_RESULTS
+  xil_printf("!%c%c %d\n", c[0], c[1], RQ_BYTES_PER_EVENT);
+  g_rq_sum = 0;
+  if (g_running) {
+    AcqEvent ev;
+    while (got < want && Acq_PopPaired(&ev, &g_stats)) {
+      outbyte((char)(u8)RQ_TAG_EVENT);
+      rq_put_u32((u32)(ev.timestamp & 0xFFFFFFFFu));
+      rq_put_u32((u32)(ev.timestamp >> 32));
+      rq_put_u32((u32)ev.psa_l);
+      rq_put_u32((u32)ev.psa_w);
+      rq_put_u32((u32)ev.energy_short);
+      rq_put_u32((u32)ev.energy_long);
+      got++;
+    }
+  }
+  {
+    u32 sum = g_rq_sum; /* over event payload bytes only; the trailer is not part of it */
+    int k;
+    outbyte((char)(u8)RQ_TAG_END);
+    outbyte((char)(u8)(got & 0xFFu));
+    outbyte((char)(u8)((got >> 8) & 0xFFu));
+    for (k = 0; k < 4; k++)
+      outbyte((char)(u8)(sum >> (8 * k)));
+  }
 #else
   (void)want;
   (void)got;
@@ -662,7 +826,7 @@ static const struct {
 } g_cmds[] = {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
-    {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'T'}, h_rt},
+    {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'Q'}, h_rq},  {{'R', 'T'}, h_rt},
     {{'G', 'T'}, h_gt},   {{'S', 'T'}, h_st},  {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},
     {{'G', 'P'}, h_gp},   {{'S', 'P'}, h_sp},  {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},
     {{'G', 'V'}, h_gv},   {{'S', 'V'}, h_sv},  {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},
@@ -734,8 +898,8 @@ void Cli_Init(void) {
 int Cli_AcquisitionEnabled(void) { return g_running; }
 
 void Cli_Poll(void) {
-  while (!XUartLite_IsReceiveEmpty(AXI_UARTLITE_BASEADDR)) {
-    char ch = (char)XUartLite_RecvByte(AXI_UARTLITE_BASEADDR);
+  while (Uart_HasByte()) {
+    char ch = Uart_GetByte();
     if (ch == '\r')
       continue; /* terminals that send CRLF */
     if (ch != '\n') {

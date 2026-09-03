@@ -76,6 +76,12 @@ class ScopeView(QWidget):
         self.plot_widget.setLabel("bottom", "sample index")
         self.plot_widget.setLabel("left", "ADC code")
         self.plot_widget.showGrid(x=True, y=True)
+        # Fixed Y range rather than autoscaling per trace: a single clipped/saturated capture
+        # (project log section 8k) would otherwise yank the axis out to ~14500 and make every
+        # normal-amplitude trace after it look flat. -300..8000 covers this detector's normal
+        # pulse range with headroom; setYRange also switches the axis out of autorange mode, and
+        # nothing later in this view calls autoRange() to switch it back.
+        self.plot_widget.setYRange(-300, 8000, padding=0)
         self.curve = self.plot_widget.plot(pen=pg.mkPen("c", width=1))
 
         TRIGGER_LINE_COLOR = (152, 251, 152)  # pale green

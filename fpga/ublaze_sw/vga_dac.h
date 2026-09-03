@@ -45,10 +45,16 @@
 
 #include "xil_types.h"
 
-/* Operating point. Fine matches the sibling's default (1.0); coarse is this project's own
- * confirmed setting (the sibling's main.py currently runs 6.4). */
+/* Operating point. Fine matches the sibling's default (1.0). Coarse was 6.0 through early
+ * bring-up (the sibling's main.py currently runs 6.4); changed to 2.0 on 2026-09-03 once the
+ * full 1x-10x baseline-noise sweep (project log section 8k) gave the data to choose deliberately
+ * rather than inherit the sibling's number: 2.0x puts this CLYC detector's ~6 MeVee ceiling at
+ * 6.56 MeVee (headroom, not a hard cutoff -- 2.19x would land exactly on 6 MeVee, see the log for
+ * why 2.0x was preferred), while the same sweep's SNR-vs-gain model shows SNR is still rising
+ * steeply through this range (it only saturates past ~8x) -- so 6.0x traded away more than half
+ * the dynamic range above 2.19x for well under one more unit of asymptotic SNR. */
 #define AD8330_DEFAULT_GAIN_FINE_LINEAR 1.0
-#define AD8330_DEFAULT_GAIN_COARSE_LINEAR 6.0
+#define AD8330_DEFAULT_GAIN_COARSE_LINEAR 2.0
 
 /* Enables the AD5697's internal 2.5V reference. Call once before any SetGain* call. Returns 1 on
  * success, 0 on I2C failure. */

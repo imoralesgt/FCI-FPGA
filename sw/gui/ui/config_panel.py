@@ -7,11 +7,15 @@ the same one-place-per-fact reasoning as the field lists themselves. This module
 `ConfigPanel` tab holds only the subsystems that don't have a more specific home: Baseline
 Restorer, VGA, and Pulse Shaper.
 
-Calls fci_api directly from the GUI thread (not routed through AcquisitionWorker) -- this is the
-one deliberate exception the approved plan calls out: FciTransport's RLock is exactly what makes
-this safe alongside the worker thread's concurrent read_batch() polling. Trace/batch reads are
-different (they must run ON the worker thread itself, not just under the same lock) -- see
-AcquisitionWorker's docstring for why.
+Calls the config client (a RemoteFciClient, see acquisition_worker.py) directly from the GUI
+thread rather than through AcquisitionWorker's request_*() methods -- safe not because of a shared
+lock (there is no shared transport to lock any more: it lives only inside the reader process,
+project log section 8i/8k) but because every RemoteFciClient call is its own self-contained RPC,
+independently queued and answered by request id. It can freely interleave with the worker's own
+streaming polls without corrupting either, the same way two independent HTTP requests don't need
+to coordinate with each other. Trace/batch reads are different (they must run through the SAME
+poll loop that owns pacing/adaptive-rate state, not as a one-off RPC) -- see AcquisitionWorker's
+request_trace()/request_scope_start().
 
 Built from a declarative per-field spec rather than six hand-written, nearly-identical blocks: the
 whole point is that a subsystem's field list lives in exactly one place, which is the same lesson
@@ -68,6 +72,12 @@ class Field:
         docstring), so offering it as editable would just be misleading.
     """
     settable_when_none: bool = True
+    default: int | None = None
+    """Value the control shows before any device value has been read. None means "use minimum",
+    which is right for most fields. Set it wherever the minimum is NOT a usable setting -- the CFD
+    fields are the case in point: their minima are protocol bounds, while the value that actually
+    works is the one firmware boots with (bringup.c's CFD_FRACTION / CFD_DELAY). Showing 1/256 and
+    a 1-sample delay implied a configuration that would trigger on almost nothing."""
 
 
 class SubsystemPanel(QGroupBox):
@@ -90,6 +100,10 @@ class SubsystemPanel(QGroupBox):
         self._client: FciClient | None = None
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
+        self._shown_when_none: dict[str, Any] = {}
+        """For optional fields the device reported as None: the placeholder value refresh() put in
+        the widget. apply() diffs against this so an untouched placeholder is never written back --
+        see apply() for the hardware damage that caused."""
 
         grid = QGridLayout(self)
         grid.setColumnStretch(0, 0)
@@ -103,6 +117,8 @@ class SubsystemPanel(QGroupBox):
                 w = QCheckBox()
             else:
                 w = SliderSpinField(f.minimum, f.maximum)
+                if f.default is not None:
+                    w.setValue(f.default)
             if f.tooltip:
                 w.setToolTip(f.tooltip)
             w.setEnabled(not f.read_only)
@@ -159,10 +175,28 @@ class SubsystemPanel(QGroupBox):
                     # Not written yet this session, but a first value CAN be applied -- leave the
                     # control enabled at a sane default rather than locking it out.
                     w.setEnabled(not f.read_only)
-                    w.setChecked(False) if f.is_bool else w.setValue(f.minimum)
+                    if f.is_bool:
+                        w.setChecked(False)
+                        self._shown_when_none[f.name] = False
+                    else:
+                        shown = f.default if f.default is not None else f.minimum
+                        w.setValue(shown)
+                        # Remember what we PUT here, so apply() can tell "the user deliberately
+                        # chose this" from "this is just the placeholder we displayed". See
+                        # apply()'s use of _shown_when_none.
+                        self._shown_when_none[f.name] = shown
                 else:
                     # Does not exist in this bitstream; no value written here would ever apply.
                     w.setEnabled(False)
+                continue
+            if value is None:
+                # Reached only when a field the device did not report is NOT marked optional --
+                # a host/firmware schema mismatch, not a user error. Warn and skip rather than
+                # raise: this runs on every connect, and int(None) here previously escaped as an
+                # unhandled TypeError that killed the application before the window was usable.
+                logger.warning(f"{self.title()}: device did not report '{f.name}'; "
+                               "mark the Field optional= if this bitstream legitimately lacks it")
+                w.setEnabled(False)
                 continue
             w.setEnabled(not f.read_only)
             if f.is_bool:
@@ -185,9 +219,20 @@ class SubsystemPanel(QGroupBox):
             if f.optional and old_value is None:
                 if not f.settable_when_none:
                     continue  # genuinely absent in this bitstream -- see Field.optional's docstring
-                # First value ever for this field: no baseline to diff against, always include it.
+                # No device-side baseline to diff against, so diff against the placeholder
+                # refresh() displayed instead: send this only if the user actually moved it.
+                #
+                # This used to unconditionally include the field ("first value ever, always send
+                # it"), which was actively destructive for VgaConfig.fine_dac_code: that field is a
+                # RAW override of the same physical DAC channel as fine_gain_milli (both are
+                # command 0x31, "DAC A" -- see vga_dac.c), and it is written LAST, so every VGA
+                # Apply silently clobbered the fine gain the user had just set with a raw code of
+                # 0, i.e. essentially zero gain. On hardware that read as "event rate drops to zero
+                # after any VGA change, whatever value you set". Found 2026-09-03.
                 w = self._controls[f.name]
-                kwargs[f.name] = w.isChecked() if f.is_bool else w.value()
+                current = w.isChecked() if f.is_bool else w.value()
+                if current != self._shown_when_none.get(f.name, current):
+                    kwargs[f.name] = current
                 continue
             w = self._controls[f.name]
             new_value = w.isChecked() if f.is_bool else w.value()
@@ -206,13 +251,44 @@ class SubsystemPanel(QGroupBox):
 
 TRIGGER_FIELDS = [
     Field("threshold", "Threshold", -32768, 32767,
-          tooltip="Signed ADC code the live signal must cross to fire a capture."),
+          tooltip="Signed ADC code that ARMS the discriminator. It decides whether an event is "
+                  "real; the CFD zero crossing decides when it happened."),
     Field("rising", "Rising edge", is_bool=True,
           tooltip="Trigger on the signal crossing threshold upward (checked) or downward."),
-    Field("delay", "Delay (samples)", 2, 256,
-          tooltip="Pre-trigger delay. Kept in sync with PSD's Pre-trigger automatically."),
+    Field("delay", "Delay (samples)", 4, 256,
+          tooltip="Pre-trigger delay. Minimum 4: the CFD pipeline is ~3 samples deep, so below "
+                  "that the trigger point falls outside the captured window. Kept in sync with "
+                  "PSD's Pre-trigger automatically."),
     Field("depth", "Depth (samples)", 1, 2048,
-          tooltip="Capture length -- also used to compute FCI/PSD."),
+          tooltip="Capture length, also the window FCI and PSD see. Safe to change while running: "
+                  "sample_framer owns the FFT's frame boundary and zero-pads a short capture up "
+                  "to 2048, so FCI stays a well-defined transform of the samples that arrived "
+                  "(and gets QUIETER, since padding zeros carry no noise). Keep PSD's pre-gate + "
+                  "long gate inside this length, or those integrals run off the end of the "
+                  "trace."),
+    # optional/settable_when_none=False: pre-CFD firmware answers $GT with four fields, so
+    # get_trigger() reports these two as None (deliberately tolerated rather than raising, so a
+    # host can still drive an older bitstream). Without the flags, refresh() reached int(None) and
+    # crashed the whole GUI on connect, and apply() then wrote '$ST 4 1' -- an index that firmware
+    # does not have -- from the widget's untouched minimum. Both controls light up on their own
+    # once a CFD build is flashed and $GT starts answering with six.
+    # Ranges and defaults track cli.c's own clamps and bringup.c's CFD_FRACTION / CFD_DELAY --
+    # the register reset values are the same pair, so all three agree by construction.
+    Field("cfd_fraction", "CFD fraction (/256)", 1, 255, optional=True, settable_when_none=False,
+          default=64,
+          tooltip="Constant-fraction discriminator attenuation, as fraction/256. Default 64 = 1/4, "
+                  "matching the register reset. With the delay below it, sets the zero crossing "
+                  "at n = delay / (1 - fraction/256). Disabled if this bitstream predates the CFD "
+                  "trigger."),
+    Field("cfd_delay", "CFD delay (samples)", 4, 31, optional=True, settable_when_none=False,
+          default=24,
+          tooltip="CFD delay. Sets SENSITIVITY as well as timing: pulses smaller than about "
+                  "threshold x rise x (1 - fraction) / delay never arm in time and produce no "
+                  "trigger at all, silently. A larger delay lowers that floor -- the default 24 "
+                  "puts it near 1.25x threshold; 8 would put it at 3.75x. Minimum 4, for the same "
+                  "reason as the pre-trigger Delay: below that the crossing at n = delay/(1-f) "
+                  "falls inside the CFD's own ~3-sample pipeline. Disabled if this bitstream "
+                  "predates the CFD trigger."),
 ]
 
 BLR_FIELDS = [
@@ -221,7 +297,11 @@ BLR_FIELDS = [
           tooltip="Deviation from baseline (counts) that opens the restorer's gate."),
     Field("holdoff", "Hold-off", 0, 4095,
           tooltip="Samples to hold the gate closed after a pulse (samples)."),
-    Field("bypass", "Bypass", is_bool=True, tooltip="Disable baseline restoration entirely."),
+    Field("bypass", "Bypass", is_bool=True,
+          tooltip="Disable baseline restoration entirely. WARNING: this also stops the CFD "
+                  "trigger working. The discriminator needs a zero-centred baseline -- at a "
+                  "resting level b the bipolar signal sits at b(1-fraction) and never crosses "
+                  "zero -- so with the restorer bypassed there are no triggers at all."),
     Field("hold", "Hold", is_bool=True, tooltip="Freeze the baseline estimate."),
     Field("baseline", "Baseline (RO)", -32768, 32767, read_only=True,
           tooltip="Live baseline estimate (read-only)."),
@@ -253,10 +333,12 @@ PSD_FIELDS = [
 ]
 
 FCI_FIELDS = [
-    Field("psa_l_lo", "PSA_l low", 0, 512, tooltip="PSA_l low FFT bin index."),
-    Field("psa_l_hi", "PSA_l high", 0, 512, tooltip="PSA_l high FFT bin index."),
-    Field("psa_w_lo", "PSA_w low", 0, 512, tooltip="PSA_w low FFT bin index."),
-    Field("psa_w_hi", "PSA_w high", 0, 512, tooltip="PSA_w high FFT bin index."),
+    # Upper bound is the Nyquist bin of the 2048-point transform. Bin spacing is 50 Msps / 2048 =
+    # ~24.4 kHz, so bin k is k * 24.4 kHz.
+    Field("psa_l_lo", "PSA_l low", 0, 1024, tooltip="PSA_l low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_l_hi", "PSA_l high", 0, 1024, tooltip="PSA_l high FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_w_lo", "PSA_w low", 0, 1024, tooltip="PSA_w low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_w_hi", "PSA_w high", 0, 1024, tooltip="PSA_w high FFT bin index (~24.4 kHz per bin)."),
     # Watermark deliberately not exposed here -- same reasoning as PSD_FIELDS above.
 ]
 

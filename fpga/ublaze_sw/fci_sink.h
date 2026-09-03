@@ -1,10 +1,14 @@
 /*
  * fci_sink.h
  *
- * Driver for fci_sink (fpga/rtl/fci_sink) -- the buffered AXI4-Lite result window that replaced
- * axi_dma_0 on fci_core's output.
+ * Driver for the buffered AXI4-Lite result window on fci_core's output.
  *
- * Register map mirrors fci_sink_axi4lite_regs.vhd; keep the two in sync if that map changes.
+ * The separate fci_sink IP this was named after no longer exists: it was merged into the
+ * hand-written fci_core (fpga/rtl/fci_core_rtl), which exposes the same result-window semantics
+ * from one register map at one base address. The FciSink_* names are kept because the accessors
+ * below work unchanged against the merged map -- see registers.h for what actually moved.
+ *
+ * Register map mirrors fci_axi4lite_regs.vhd; keep the two in sync if that map changes.
  */
 
 #ifndef SRC_FCI_SINK_H_
@@ -12,9 +16,9 @@
 
 #include "xil_types.h"
 
-/* psa_l/psa_w are ap_ufixed<28,12> (Q12.16): value = raw / 2^16. Kept raw here rather than
- * converted, because the FCI ratio cancels the scale factor exactly and converting first would
- * throw away precision for nothing. */
+/* psa_l/psa_w are raw 32-bit unsigned sums of |Re|+|Im| bin magnitudes -- NOT the old HLS core's
+ * ap_ufixed<28,12> (Q12.16). The scale is arbitrary but identical for both windows, so the FCI
+ * ratio is unaffected; nothing here or downstream should apply a 2^16 divisor any more. */
 typedef struct {
   u32 psa_l;
   u32 psa_w;

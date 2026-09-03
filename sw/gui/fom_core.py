@@ -44,10 +44,10 @@ own docstring in fci_api/types.py. These three are explicitly what acquisition.c
 discrimination knobs ... meant to be swept" (PSD_PRE_GATE/SHORT_GATE/LONG_GATE's own comment)."""
 
 FCI_SWEEP_PARAMS = [
-    SweepParam("psa_l_lo", "PSA_l low", 0, 512),
-    SweepParam("psa_l_hi", "PSA_l high", 0, 512),
-    SweepParam("psa_w_lo", "PSA_w low", 0, 512),
-    SweepParam("psa_w_hi", "PSA_w high", 0, 512),
+    SweepParam("psa_l_lo", "PSA_l low", 0, 1024),
+    SweepParam("psa_l_hi", "PSA_l high", 0, 1024),
+    SweepParam("psa_w_lo", "PSA_w low", 0, 1024),
+    SweepParam("psa_w_hi", "PSA_w high", 0, 1024),
 ]
 
 

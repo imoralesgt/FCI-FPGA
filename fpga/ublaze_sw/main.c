@@ -17,9 +17,20 @@
 #include "bringup.h"
 #include "cli.h"
 #include "platform.h"
+#include "uart.h"
 
 int main(void) {
   init_platform();
+
+  /* Before ANY output. Uart_Init() reprograms the 16550's divisor latch, which reconfigures the
+   * line -- a character in flight at that moment is corrupted, and everything printed afterwards
+   * is at the new rate. Placing it first means the boot self-test is entirely at the operating
+   * baud, rather than split across a rate change partway down the log.
+   *
+   * The host must therefore open the port at UART_BAUD_HZ (uart.h) to read the boot log at all.
+   * That is a deliberate trade: one fixed, documented rate beats a rate that changes mid-stream.
+   * No-op on an axi_uartlite bitstream, where the baud is fixed at synthesis. */
+  Uart_Init();
 
   Bringup_Init();
   Cli_Init();

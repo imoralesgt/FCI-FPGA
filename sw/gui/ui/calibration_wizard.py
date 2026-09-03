@@ -17,6 +17,18 @@ the user's own request. depth/delay are ALWAYS restored to whatever they were be
 whether calibration succeeds, fails, or is cancelled -- only the proposed threshold/rising are a
 lasting change, and only once the user explicitly applies them.
 
+A pre-trigger sample is not automatically a pre-PULSE sample, and the two used to be the same thing
+only by accident of what fired the trigger. `trigger.vhd` (the original cross-level comparator) fired
+exactly where threshold was crossed, so "everything before the trigger point" and "baseline" were
+identical, and taking the first `delay` samples of a capture as noise was exactly right. The CFD
+(`cfd_trigger.vhd`, section 8h) does not: it fires at the pulse's zero-crossing, which sits
+`cfd_delay/(1-fraction)` samples AFTER the pulse's physical onset -- so the last stretch of the
+pre-trigger window is the rising edge of the very pulse that caused the capture, not baseline.
+`_safe_baseline_window()` shortens the window it actually pools by exactly that lag, using whatever
+cfd_delay/cfd_fraction happen to be configured (never changed by this wizard, only read) rather than
+assuming a fixed number -- see section 8k, where this same lag was measured directly and matched the
+formula to within a couple of samples.
+
 Earlier versions of this wizard tried to actively FORCE a high capture rate before collecting --
 first by parking the trigger at blr_core's live baseline (which turned out to be a completely
 different numeric domain from what trigger_core's comparator actually uses, and never fired at
@@ -46,15 +58,16 @@ pre-trigger window inflates that ONE capture's own internal sigma well above the
 captured window's sigma is compared against the average across all of them and any capture whose
 own sigma exceeds that average is dropped before pooling.
 
-Calls FciClient directly from the GUI thread while its modal dialog is open, the same deliberate
-exception config_panel.py documents (FciTransport's RLock is what makes this safe alongside the
-worker thread's concurrent polling) -- appropriate here too since this is a short, user-initiated,
-blocking action, not something in an automatic background path.
+Calls the config client (a RemoteFciClient -- see acquisition_worker.py and config_panel.py's own
+docstring for why this is safe alongside the worker's concurrent polling) directly from the GUI
+thread while its modal dialog is open -- appropriate here too since this is a short,
+user-initiated, blocking action, not something in an automatic background path.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import statistics
 import time
 
@@ -103,6 +116,36 @@ CAPTURE_POLL_INTERVAL_S = 0.15
 """How often read_trace() is polled while collecting -- background pulses observed this session run
 at a few Hz to a few tens of Hz, so this comfortably catches fresh captures without hammering the
 link."""
+
+
+MIN_SAFE_WINDOW = 32
+"""If the CFD's own crossing lag (see _safe_baseline_window()) eats more than
+CALIBRATION_DELAY - MIN_SAFE_WINDOW samples, there isn't enough of the pre-trigger window left to
+calibrate from -- fail cleanly rather than pool a handful of samples into a meaningless sigma."""
+
+
+def _safe_baseline_window(delay: int, cfd_delay: int | None, cfd_fraction: int | None) -> int:
+    """How many of the leading `delay` pre-trigger samples are genuinely pre-PULSE, not just
+    pre-TRIGGER. Before the CFD (trigger.vhd, a plain cross-level comparator) these were the same
+    thing -- the trigger fires exactly where the signal crosses threshold, so every earlier sample
+    really is baseline. The CFD (cfd_trigger.vhd, project log section 8h) fires LATER than that, at
+    the pulse's zero-crossing n = cfd_delay/(1-fraction) samples after its physical onset -- so the
+    last `crossing_lag` samples before the trigger point are the rising edge of the very pulse that
+    caused the capture, not baseline, and pooling them in would inflate the measured sigma (and so
+    the computed threshold) with real signal rather than noise.
+
+    This lag was measured directly in section 8k: at cfd_delay=24/fraction=0.25 (crossing_lag=32
+    by this formula), the rising edge was found to start at sample ~224 of a 256-sample delay
+    window -- matching the formula to within a couple of samples, not just in principle.
+
+    Returns `delay` unchanged (the old behaviour) if cfd_delay/cfd_fraction are None -- firmware
+    predating the CFD, where trigger.vhd's zero-lag crossing is exactly what this always assumed.
+    """
+    if cfd_delay is None or cfd_fraction is None:
+        return delay
+    fraction = cfd_fraction / 256.0
+    crossing_lag = math.ceil(cfd_delay / (1.0 - fraction))
+    return delay - crossing_lag
 
 
 class CalibrationError(Exception):
@@ -224,7 +267,18 @@ class CalibrationWizard(QDialog):
         callers own the restore/UI update around it."""
         self._client.set_trigger(rising=rising, delay=CALIBRATION_DELAY, depth=CALIBRATION_DEPTH)
 
-        captures = self._poll_for_captures()
+        safe_window = _safe_baseline_window(CALIBRATION_DELAY, original.cfd_delay,
+                                             original.cfd_fraction)
+        if safe_window < MIN_SAFE_WINDOW:
+            raise CalibrationError(
+                f"The CFD's own crossing lag (cfd_delay={original.cfd_delay}, "
+                f"cfd_fraction={original.cfd_fraction}/256) leaves only {safe_window} genuinely "
+                f"pre-pulse samples out of the {CALIBRATION_DELAY}-sample window -- too few to "
+                f"calibrate from safely. Lower cfd_delay or raise cfd_fraction on the Trigger tab "
+                f"first (see its tooltips for the sensitivity tradeoff), then retry."
+            )
+
+        captures = self._poll_for_captures(safe_window)
         if len(captures) < N_CAPTURES_MINIMUM:
             raise CalibrationError(
                 f"Only {len(captures)} capture(s) observed in {CAPTURE_TIMEOUT_S:.0f}s at the "
@@ -247,10 +301,11 @@ class CalibrationWizard(QDialog):
         pooled = [s for c in survivors for s in c]
         return pooled, len(survivors)
 
-    def _poll_for_captures(self) -> list[list[int]]:
-        """Returns one entry per fresh capture, each its own list of CALIBRATION_DELAY pre-trigger
-        samples -- kept separate (not flattened) so the caller can score and filter each capture
-        individually before pooling."""
+    def _poll_for_captures(self, safe_window: int) -> list[list[int]]:
+        """Returns one entry per fresh capture, each its own list of `safe_window` genuinely
+        pre-PULSE samples (see _safe_baseline_window() -- with the CFD this is shorter than the
+        full CALIBRATION_DELAY pre-trigger window) -- kept separate (not flattened) so the caller
+        can score and filter each capture individually before pooling."""
         captures: list[list[int]] = []
         last_trace: list[int] | None = None
         deadline = time.monotonic() + CAPTURE_TIMEOUT_S
@@ -259,7 +314,7 @@ class CalibrationWizard(QDialog):
             if (len(trace.samples) >= CALIBRATION_DELAY
                     and trace.samples != last_trace):
                 last_trace = trace.samples
-                captures.append(trace.samples[:CALIBRATION_DELAY])
+                captures.append(trace.samples[:safe_window])
             self.lbl_result.setText(f"Collecting captures... ({len(captures)}/{N_CAPTURES_RAW_TARGET})")
             # This whole method runs on the GUI thread (see module docstring for why), so without
             # this the progress bar would never actually animate and the window would look frozen

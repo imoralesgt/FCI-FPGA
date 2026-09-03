@@ -35,7 +35,7 @@ from collections import deque
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Signal
+from PySide6.QtCore import QRectF, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
@@ -149,7 +149,7 @@ class _StatsPanel(QGroupBox):
         self.lbl_overflow = QLabel("0")
         for row, (name, widget) in enumerate(
             [
-                ("Events plotted:", self.lbl_events),
+                ("Events captured:", self.lbl_events),
                 ("Event rate (Hz):", self.lbl_rate),
                 ("Excluded (energy_long ≤ 0):", self.lbl_excluded),
                 ("Paired:", self.lbl_paired),
@@ -207,18 +207,72 @@ class LiveView(QWidget):
     stop_clicked = Signal()
     fom_wizard_clicked = Signal()
 
-    MAX_POINTS = 20_000
-    """Sliding-window cap so a long session doesn't grow memory/render time without bound --
-    mirrors the reference GUI's own PLOT_WINDOW_LEN pattern."""
+    MAX_POINTS = 1_000_000
+    """Sliding-window cap on RETAINED points. Raised from 20,000: at the 10 kcps this instrument
+    now sustains, 20,000 was a two-second window, so the view reset itself continuously and no
+    structure could accumulate. A million points is ~100 s at 10 kcps, or hours at background
+    rates, and costs ~24 MB across the three arrays.
+
+    Affordable only because storage is numpy and drawing is decimated to MAX_PLOT_POINTS: the
+    retained window is masked and strided per redraw, never converted or drawn in full.
+
+    This caps only what is PLOTTED. Recording, the rate readout and the "Events captured" tally
+    are unaffected."""
+
+    REDRAW_HZ = 1
+    """Plot repaint rate, fully decoupled from the arrival rate -- the acquisition thread polls as
+    fast as the link allows while this ticks once a second.
+
+    Was 10. Every redraw holds the GIL, and the reader needs it between reads; at 10 kcps the two
+    were competing hard enough that throughput depended visibly on which plot type was displayed
+    (a scatter redraw measured 3-5x a heatmap's, and the observed rate moved ~10k -> ~12k ev/s
+    between them). At 1 Hz the redraw is a rounding error against acquisition, and a live scatter
+    updating once a second is no worse to read -- the underlying distribution is not changing on
+    a 100 ms timescale."""
+
+    MAX_PLOT_POINTS = 50_000
+    """Upper bound on points handed to setData() per redraw. Independent of MAX_POINTS, which
+    bounds what is RETAINED; this bounds what is DRAWN.
+
+    Was 4,000, chosen when redraws ran at 10 Hz and every millisecond of GIL time was starving the
+    reader. At 1 Hz the budget is ten times larger: measured 44 ms for 50,000 points, i.e. 4.4%
+    duty, against 17.4% for the same 20,000 points that used to cause byte loss at 10 Hz.
+
+    It was also masking the retention increase. With the drawn count pinned at 4,000, raising
+    retention from 20,000 to 1,000,000 changed nothing visible -- and worse, stride decimation
+    re-samples a DIFFERENT subset each time the stride increments, so the cloud reshuffled between
+    redraws and read as the plot resetting."""
 
     def __init__(self):
         super().__init__()
-        self._energy: list[int] = []
-        self._fci: list[float] = []
-        self._psd: list[float] = []
+        self._cap = 1 << 16
+        self._energy = np.empty(self._cap, dtype=np.float64)
+        self._fci = np.empty(self._cap, dtype=np.float64)
+        self._psd = np.empty(self._cap, dtype=np.float64)
+        self._n = 0
+        """Numpy-backed rather than Python lists. With MAX_POINTS raised to hold a useful span at
+        10 kcps, converting three lists to arrays on every redraw would cost tens of milliseconds
+        on the GUI thread -- the exact cost that was starving the reader. Arrays grow by doubling
+        and are compacted in place when the window overflows."""
         self._total_events = 0
         self._excluded_events = 0
-        self._rate_samples: deque[tuple[float, int]] = deque()
+        self._fci_captured = 0
+        self._psd_captured = 0
+        """Cumulative events captured under each discriminator's cut -- a true running total, not
+        a count of what is currently plotted. These are what the side panels show: the plotted
+        count was capped by MAX_POINTS and so pinned at 20,000 while acquisition continued, which
+        told the operator nothing about how much data they had actually collected. Counted at
+        arrival under the cut that was active then, so these match what the CSV recorded; moving a
+        region afterwards does not retroactively recount (it cannot -- events older than the
+        plotting window are no longer held)."""
+        self._rate_samples: deque[tuple[float, np.ndarray]] = deque()
+        """(arrival_time, that batch's energies) -- one entry per BATCH, not per event. See
+        _rate_hz_for()."""
+        self._dirty = False
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setInterval(int(1000 / self.REDRAW_HZ))
+        self._redraw_timer.timeout.connect(self._on_redraw_tick)
+        self._redraw_timer.start()
         """(monotonic_time, energy_long) once per event within RATE_WINDOW_S, oldest first (all
         events in the same batch share that batch's arrival time -- the granularity add_events()
         actually receives data at). Per-EVENT, not a running cumulative count like this used to
@@ -354,11 +408,25 @@ class LiveView(QWidget):
         # the same energy slice is easy to compare across both discriminators.
         self.plot_psd.setXLink(self.plot_fci)
 
-    HEATMAP_XBINS = 120
-    HEATMAP_YBINS = 60
-    """A 2D histogram over at most MAX_POINTS (20,000) events at this bin count is a few hundred
-    microseconds to a couple of milliseconds with numpy -- cheap enough to recompute on every
-    batch while heatmap view is active, same cadence as the scatter plot's own setData()."""
+    HEATMAP_XBINS = 512
+    HEATMAP_YBINS = 512
+    """Raised from 120x60, which could not resolve the features this instrument exists to measure.
+
+    At YBINS=60 over a fixed 0..1 discriminant axis a bin is 0.0167 wide. The paper's gamma peak
+    has an FCI FWHM of 0.0093 -- HALF a bin -- and the PSD Li-6 capture band is ~0.0015, a tenth of
+    one. Any structure that narrow was being flattened into a single row before it could be seen.
+
+    The y range is also auto-scaled to the data now (see _update_heatmap). A fixed 0..1 axis spent
+    almost every bin on empty space: PSD lives in roughly 0.96..1.00, so 96% of the resolution went
+    where there were no events. Auto-ranging plus 512 bins puts ~19 bins across a 0.0015 FWHM
+    instead of a tenth of one.
+
+    Cost is dominated by the point count, not the bin count -- histogram2d over the full retained
+    window is ~83 ms at 1,000,000 points either way, i.e. ~8% duty at the 1 Hz redraw."""
+
+    HEATMAP_MIN_YSPAN = 0.01
+    """Floor on the auto-ranged discriminant span. Without it, a run where every event lands in a
+    very tight cluster would zoom until the display showed only quantisation structure."""
 
     @staticmethod
     def _heatmap_lut() -> np.ndarray:
@@ -382,8 +450,9 @@ class LiveView(QWidget):
             # rather than remembering wherever it was last dragged to -- a fresh, predictable
             # starting point (narrow FROM here) beats resuming a stale range from a previous,
             # possibly very different, session.
-            if self._energy:
-                lo, hi = float(min(self._energy)), float(max(self._energy))
+            if self._n:
+                view = self._energy[: self._n]
+                lo, hi = float(view.min()), float(view.max())
                 if hi <= lo:
                     hi = lo + 1.0
             else:
@@ -393,15 +462,24 @@ class LiveView(QWidget):
 
     def _on_cut_changed(self) -> None:
         """A panel's own LLD/ULD cut changed (enabled/disabled, or its region was dragged) --
-        both the plot (_refresh_plots) and that panel's "Events plotted" count
+        both the plot (_refresh_plots) and that panel's readout
         (_refresh_side_panels) depend on it, so both need redoing; neither add_events() nor
         update_stats() would otherwise run again until the next batch."""
         self._refresh_plots()
         self._refresh_side_panels()
 
     @staticmethod
+    def _cut_keeps(controls: "_ControlsPanel", region: pg.LinearRegionItem,
+                   energy: float) -> bool:
+        """Scalar form of _mask_for, for tallying one event as it arrives."""
+        if not controls.chk_cut_enabled.isChecked():
+            return True
+        lo, hi = region.getRegion()
+        return bool(lo <= energy <= hi)
+
+    @staticmethod
     def _mask_for(controls: "_ControlsPanel", region: pg.LinearRegionItem,
-                   energy: np.ndarray) -> np.ndarray:
+                  energy: np.ndarray) -> np.ndarray:
         """True for every energy sample this discriminator's cut would keep. An unchecked cut
         keeps everything -- the region only constrains anything once its checkbox is on."""
         if not controls.chk_cut_enabled.isChecked():
@@ -436,7 +514,7 @@ class LiveView(QWidget):
         PSD are masked independently, so the two can show different energy slices of the same
         underlying event stream. Called after every new batch, on the heatmap/scatter toggle, and
         whenever either panel's cut changes (enabled/disabled or dragged)."""
-        energy = np.asarray(self._energy, dtype=np.float64)
+        energy = self._energy[: self._n]
         heatmap = self.chk_heatmap.isChecked()
         for values, controls, region, scatter, img in (
             (self._fci, self.fci_controls, self.fci_energy_region, self.scatter_fci,
@@ -446,10 +524,28 @@ class LiveView(QWidget):
         ):
             mask = self._mask_for(controls, region, energy)
             e = energy[mask]
-            v = np.asarray(values, dtype=np.float64)[mask]
+            v = values[: self._n][mask]
             if heatmap:
                 self._update_heatmap(e, v, img)
             else:
+                # Decimated. This runs on the GUI thread and holds the GIL for its whole duration,
+                # which starves the acquisition thread of scheduling -- and at 4 Mbaud the host
+                # serial buffer overflows in tens of milliseconds, silently dropping bytes. That
+                # was not a cosmetic problem: a dropped byte misaligns the binary $RQ frame onto a
+                # payload byte, and since almost every field's high byte is zero the reader lands
+                # on 0x00 and rejects the frame. Redraw cost was corrupting acquisition.
+                #
+                # Plotting the whole retained window is not worth it: a million points against a
+                # few hundred thousand device pixels is almost entirely invisible overdraw.
+                if len(e) > self.MAX_PLOT_POINTS:
+                    # Take the most RECENT MAX_PLOT_POINTS rather than striding the whole window.
+                    # Striding samples a different subset whenever the stride changes, so points
+                    # visibly jump between redraws; a tail slice is stable -- a point, once drawn,
+                    # stays put until it ages out. The older part of the retained window is still
+                    # there for the heatmap, the FoM wizard and recording; it is only the scatter
+                    # that shows a bounded recent slice, which is what a scatter is legible for.
+                    e = e[-self.MAX_PLOT_POINTS:]
+                    v = v[-self.MAX_PLOT_POINTS:]
                 scatter.setData(e, v)
 
     def _update_heatmap(self, energy: np.ndarray, values: np.ndarray, img: pg.ImageItem) -> None:
@@ -459,21 +555,33 @@ class LiveView(QWidget):
         x_min, x_max = float(energy.min()), float(energy.max())
         if x_max <= x_min:
             x_max = x_min + 1.0
+        # Auto-range the discriminant axis too, not just energy. Both FCI and PSD occupy a narrow
+        # band of their 0..1 range (PSD typically ~0.96..1.00), so a fixed axis spent most of its
+        # bins on empty space and left a thin peak unresolved. Padded slightly so the extreme
+        # points are not clipped to the edge rows, and floored at a minimum span so a single
+        # cluster does not blow up to full scale.
+        y_min, y_max = float(values.min()), float(values.max())
+        pad = max((y_max - y_min) * 0.05, self.HEATMAP_MIN_YSPAN / 2.0)
+        y_min, y_max = y_min - pad, y_max + pad
         hist, _, _ = np.histogram2d(
             energy, values, bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
-            range=[[x_min, x_max], [0.0, 1.0]],
+            range=[[x_min, x_max], [y_min, y_max]],
         )
         # log1p (not log): most bins are near-empty and a few are dense, so a linear color
         # scale saturates the busy bins and makes everything else invisible; log1p(0) = 0
         # keeps empty bins mapped cleanly instead of producing -inf.
         img.setImage(np.log1p(hist), autoLevels=True)
-        img.setRect(QRectF(x_min, 0.0, x_max - x_min, 1.0))
+        img.setRect(QRectF(x_min, y_min, x_max - x_min, y_max - y_min))
 
-    def get_accumulated_events(self) -> tuple[list[int], list[float], list[float]]:
-        """(energy, fci, psd) parallel lists for whatever is currently plotted -- the FoM wizard's
+    def get_accumulated_events(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """(energy, fci, psd) parallel numpy arrays for whatever is currently plotted -- the FoM wizard's
         "live session data" source. Returns copies: the caller must not be able to corrupt this
         view's own buffers by mutating what it gets back."""
-        return list(self._energy), list(self._fci), list(self._psd)
+        # Copies, so the caller cannot corrupt this view's buffers -- and sliced to _n, since the
+        # backing arrays are over-allocated and the tail beyond _n is uninitialised memory.
+        return (self._energy[: self._n].copy(),
+                self._fci[: self._n].copy(),
+                self._psd[: self._n].copy())
 
     def _on_start(self) -> None:
         if self.confirm_start is not None and not self.confirm_start():
@@ -499,11 +607,11 @@ class LiveView(QWidget):
         self.psd_controls.set_controls_enabled(enabled)
 
     def clear(self) -> None:
-        self._energy.clear()
-        self._fci.clear()
-        self._psd.clear()
+        self._n = 0
         self._total_events = 0
         self._excluded_events = 0
+        self._fci_captured = 0
+        self._psd_captured = 0
         self._rate_samples.clear()
         self._last_stats = None
         self.scatter_fci.setData([], [])
@@ -514,31 +622,84 @@ class LiveView(QWidget):
         self.psd_stats.clear_rate_history()
         self._refresh_side_panels()
 
+    def _grow(self, needed: int) -> None:
+        """Doubles capacity until `needed` fits. Amortised O(1) per event."""
+        if needed <= self._cap:
+            return
+        while self._cap < needed:
+            self._cap *= 2
+        for name in ("_energy", "_fci", "_psd"):
+            old = getattr(self, name)
+            new = np.empty(self._cap, dtype=np.float64)
+            new[: self._n] = old[: self._n]
+            setattr(self, name, new)
+
+    @staticmethod
+    def _cut_mask(controls: "_ControlsPanel", region: pg.LinearRegionItem,
+                  energy: np.ndarray) -> np.ndarray:
+        """Vector form of _cut_keeps, for tallying a whole batch at once."""
+        if not controls.chk_cut_enabled.isChecked():
+            return np.ones(len(energy), dtype=bool)
+        lo, hi = region.getRegion()
+        return (energy >= lo) & (energy <= hi)
+
+    def _on_redraw_tick(self) -> None:
+        """Repaints only if new events arrived since the last tick, so an idle instrument costs
+        nothing and a busy one costs a fixed REDRAW_HZ rather than one redraw per batch."""
+        if not self._dirty:
+            return
+        self._dirty = False
+        self._refresh_plots()
+        self._refresh_side_panels()
+
     def add_events(self, events: list[AcqEvent]) -> None:
         if not events:
             return
         now = time.monotonic()
-        for e in events:
-            if e.energy_long <= 0:
-                self._excluded_events += 1
-                continue
-            self._energy.append(e.energy_long)
-            self._fci.append(e.fci)
-            self._psd.append(e.psd)
-            self._total_events += 1
-            self._rate_samples.append((now, e.energy_long))
-        # _total_events is a true cumulative count, independent of the sliding-window trim below
-        # -- it must NOT be derived from len(self._energy), or it would silently stop counting
-        # (or even go backwards) once MAX_POINTS starts discarding the oldest plotted points.
+        # Vectorised: at 10 kcps a batch carries up to 1024 events, and a per-event Python loop
+        # here runs on the GUI thread. _total_events stays a true cumulative count, independent of
+        # the sliding-window trim below -- it must NOT be derived from the array length, or it
+        # would stop counting (or go backwards) once MAX_POINTS starts discarding the oldest.
+        e_arr = np.fromiter((e.energy_long for e in events), dtype=np.float64, count=len(events))
+        keep = e_arr > 0
+        self._excluded_events += int((~keep).sum())
+        k = int(keep.sum())
+        if k == 0:
+            return
+        e_arr = e_arr[keep]
+        f_arr = np.fromiter((e.fci for e in events), dtype=np.float64, count=len(events))[keep]
+        p_arr = np.fromiter((e.psd for e in events), dtype=np.float64, count=len(events))[keep]
+        self._total_events += k
 
-        if len(self._energy) > self.MAX_POINTS:
-            overflow = len(self._energy) - self.MAX_POINTS
-            del self._energy[:overflow]
-            del self._fci[:overflow]
-            del self._psd[:overflow]
+        self._grow(self._n + k)
+        self._energy[self._n:self._n + k] = e_arr
+        self._fci[self._n:self._n + k] = f_arr
+        self._psd[self._n:self._n + k] = p_arr
+        self._n += k
 
-        self._refresh_plots()
-        self._refresh_side_panels()
+        self._rate_samples.append((now, e_arr))
+
+        # Tallied at arrival under whichever cut is active now -- see the counters' own docstring
+        # for why this is not derived from the plotted arrays.
+        self._fci_captured += int(
+            self._cut_mask(self.fci_controls, self.fci_energy_region, e_arr).sum())
+        self._psd_captured += int(
+            self._cut_mask(self.psd_controls, self.psd_energy_region, e_arr).sum())
+
+        if self._n > self.MAX_POINTS:
+            drop = self._n - self.MAX_POINTS
+            for a in (self._energy, self._fci, self._psd):
+                a[: self.MAX_POINTS] = a[drop : drop + self.MAX_POINTS]
+            self._n = self.MAX_POINTS
+
+        # Mark dirty and let the repaint timer coalesce, rather than redrawing here. Redrawing per
+        # batch was costing acquisition throughput, not just frames: a full setData() over up to
+        # MAX_POINTS points runs on the GUI thread and holds the GIL, which starves the worker
+        # thread doing the serial round trips. Once adaptive polling raised the batch rate to ~30/s
+        # that became ~30 full scatter rebuilds per second, and the effect was directly observable
+        # -- the live event rate DROPPED when the window was focused and Qt actually repainted.
+        # Coalescing to REDRAW_HZ decouples render cost from event rate entirely.
+        self._dirty = True
 
     def _rate_hz_for(self, controls: "_ControlsPanel", region: pg.LinearRegionItem) -> float:
         """Rate of events passing this discriminator's CURRENT LLD/ULD cut (or the raw rate, if
@@ -564,13 +725,17 @@ class LiveView(QWidget):
             # history yet" and report 0 until the window has actually accumulated some span,
             # same as the empty-window case above.
             return 0.0
+        # One numpy array per BATCH rather than one entry per event. At 10 kcps a per-event deque
+        # would hold ~30,000 tuples over the 3 s window and be rebuilt into an array on every
+        # call; keeping each batch's energies as an array costs one append per batch and lets the
+        # cut still be applied live, so dragging a region updates the rate immediately rather than
+        # only affecting events that arrive afterwards.
         if controls.chk_cut_enabled.isChecked():
             lo, hi = region.getRegion()
-            energies = np.fromiter((e for _, e in self._rate_samples), dtype=np.float64,
-                                    count=len(self._rate_samples))
-            count = int(np.count_nonzero((energies >= lo) & (energies <= hi)))
+            count = sum(int(np.count_nonzero((a >= lo) & (a <= hi)))
+                        for _, a in self._rate_samples)
         else:
-            count = len(self._rate_samples)
+            count = sum(len(a) for _, a in self._rate_samples)
         return count / dt
 
     def update_stats(self, stats: Stats) -> None:
@@ -584,17 +749,16 @@ class LiveView(QWidget):
         dropped_psd = s.dropped_psd if s else 0
         overflow_fci = s.overflow_fci if s else 0
         overflow_psd = s.overflow_psd if s else 0
-        # Both "Events plotted" and the rate reflect each discriminator's OWN LLD/ULD cut, not a
-        # shared total -- meant to match what that plot (and, for the rate, that plot's slice of
-        # the recorded stream) is actually showing right now.
-        energy = np.asarray(self._energy, dtype=np.float64)
-        fci_shown = int(self._mask_for(self.fci_controls, self.fci_energy_region, energy).sum())
-        psd_shown = int(self._mask_for(self.psd_controls, self.psd_energy_region, energy).sum())
+        # "Events captured" is the cumulative tally kept by add_events(); it is deliberately NOT
+        # recomputed from self._energy here. Doing that was the old behaviour and it capped at
+        # MAX_POINTS, so the figure froze at 20,000 while acquisition carried on. Both it and the
+        # rate still honour each discriminator's OWN LLD/ULD cut rather than a shared total, so
+        # each panel reflects that plot's slice of the recorded stream.
         fci_rate = self._rate_hz_for(self.fci_controls, self.fci_energy_region)
         psd_rate = self._rate_hz_for(self.psd_controls, self.psd_energy_region)
         self.fci_stats.update_counts(
-            fci_shown, fci_rate, self._excluded_events, paired, dropped_fci, overflow_fci
+            self._fci_captured, fci_rate, self._excluded_events, paired, dropped_fci, overflow_fci
         )
         self.psd_stats.update_counts(
-            psd_shown, psd_rate, self._excluded_events, paired, dropped_psd, overflow_psd
+            self._psd_captured, psd_rate, self._excluded_events, paired, dropped_psd, overflow_psd
         )

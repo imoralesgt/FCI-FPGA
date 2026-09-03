@@ -18,6 +18,7 @@ xvhdl --93_mode \
   "$SRC_DIR/delay_line.vhd" \
   "$SRC_DIR/trigger.vhd" \
   "$SRC_DIR/circular_buffer.vhd" \
+  "$SRC_DIR/cfd_trigger.vhd" \
   "$SRC_DIR/axi4lite_regs.vhd" \
   "$SRC_DIR/capture_engine.vhd" \
   "$SRC_DIR/trigger_core_top.vhd" \

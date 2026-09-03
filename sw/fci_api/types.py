@@ -96,6 +96,14 @@ class TriggerConfig:
     """Pre-trigger samples, 2..256."""
     depth: int
     """Capture length in samples, 1..2048."""
+    cfd_fraction: int | None = None
+    """Constant-fraction discriminator fraction, as value/256 (1..255). None if the device
+    predates the CFD and reported only four fields."""
+    cfd_delay: int | None = None
+    """CFD delay in samples (1..31). Sets timing AND sensitivity: the zero crossing sits at a
+    fixed n = delay/(1 - fraction) while the arming threshold is crossed later for smaller pulses,
+    so pulses below roughly `threshold * rise * (1 - fraction) / cfd_delay` never arm in time and
+    produce no trigger at all. A larger delay lowers that floor. None on pre-CFD firmware."""
 
 
 @dataclass(frozen=True, slots=True)

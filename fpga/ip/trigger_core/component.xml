@@ -340,7 +340,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>0163c967</spirit:value>
+            <spirit:value>0a24e177</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -356,7 +356,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>0163c967</spirit:value>
+            <spirit:value>0a24e177</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -370,7 +370,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>09ae4341</spirit:value>
+            <spirit:value>ca275736</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -890,6 +890,21 @@
         <spirit:displayName>Max Depth</spirit:displayName>
         <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.MAX_DEPTH">4096</spirit:value>
       </spirit:modelParameter>
+      <spirit:modelParameter spirit:dataType="integer">
+        <spirit:name>CFD_DLY_MAX</spirit:name>
+        <spirit:displayName>Cfd Dly Max</spirit:displayName>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.CFD_DLY_MAX">32</spirit:value>
+      </spirit:modelParameter>
+      <spirit:modelParameter spirit:dataType="integer">
+        <spirit:name>CFD_FRAC_BITS</spirit:name>
+        <spirit:displayName>Cfd Frac Bits</spirit:displayName>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.CFD_FRAC_BITS">8</spirit:value>
+      </spirit:modelParameter>
+      <spirit:modelParameter spirit:dataType="integer">
+        <spirit:name>CFD_ARM_WINDOW</spirit:name>
+        <spirit:displayName>Cfd Arm Window</spirit:displayName>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.CFD_ARM_WINDOW">64</spirit:value>
+      </spirit:modelParameter>
     </spirit:modelParameters>
   </spirit:model>
   <spirit:fileSets>
@@ -911,6 +926,11 @@
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
+        <spirit:name>src/cfd_trigger.vhd</spirit:name>
+        <spirit:fileType>vhdlSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
+      </spirit:file>
+      <spirit:file>
         <spirit:name>src/circular_buffer.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
@@ -921,14 +941,9 @@
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
-        <spirit:name>src/trigger.vhd</spirit:name>
-        <spirit:fileType>vhdlSource</spirit:fileType>
-        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
-      </spirit:file>
-      <spirit:file>
         <spirit:name>src/trigger_core_top.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
-        <spirit:userFileType>CHECKSUM_e6c367f9</spirit:userFileType>
+        <spirit:userFileType>CHECKSUM_4ec1a51b</spirit:userFileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
@@ -950,17 +965,17 @@
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
+        <spirit:name>src/cfd_trigger.vhd</spirit:name>
+        <spirit:fileType>vhdlSource</spirit:fileType>
+        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
+      </spirit:file>
+      <spirit:file>
         <spirit:name>src/circular_buffer.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
       <spirit:file>
         <spirit:name>src/delay_line.vhd</spirit:name>
-        <spirit:fileType>vhdlSource</spirit:fileType>
-        <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
-      </spirit:file>
-      <spirit:file>
-        <spirit:name>src/trigger.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
@@ -975,7 +990,7 @@
       <spirit:file>
         <spirit:name>xgui/trigger_core_v1_0.tcl</spirit:name>
         <spirit:fileType>tclSource</spirit:fileType>
-        <spirit:userFileType>CHECKSUM_09ae4341</spirit:userFileType>
+        <spirit:userFileType>CHECKSUM_ca275736</spirit:userFileType>
         <spirit:userFileType>XGUI_VERSION_2</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
@@ -1003,6 +1018,21 @@
       <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.MAX_DEPTH">4096</spirit:value>
     </spirit:parameter>
     <spirit:parameter>
+      <spirit:name>CFD_DLY_MAX</spirit:name>
+      <spirit:displayName>Cfd Dly Max</spirit:displayName>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.CFD_DLY_MAX">32</spirit:value>
+    </spirit:parameter>
+    <spirit:parameter>
+      <spirit:name>CFD_FRAC_BITS</spirit:name>
+      <spirit:displayName>Cfd Frac Bits</spirit:displayName>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.CFD_FRAC_BITS">8</spirit:value>
+    </spirit:parameter>
+    <spirit:parameter>
+      <spirit:name>CFD_ARM_WINDOW</spirit:name>
+      <spirit:displayName>Cfd Arm Window</spirit:displayName>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.CFD_ARM_WINDOW">64</spirit:value>
+    </spirit:parameter>
+    <spirit:parameter>
       <spirit:name>Component_Name</spirit:name>
       <spirit:value spirit:resolve="user" spirit:id="PARAM_VALUE.Component_Name" spirit:order="1">trigger_core_top_v1_0</spirit:value>
     </spirit:parameter>
@@ -1019,16 +1049,16 @@
       <xilinx:definitionSource>package_project</xilinx:definitionSource>
       <xilinx:vendorDisplayName>FCI-FPGA project</xilinx:vendorDisplayName>
       <xilinx:coreRevision>1</xilinx:coreRevision>
-      <xilinx:coreCreationDateTime>2026-08-21T12:56:35Z</xilinx:coreCreationDateTime>
+      <xilinx:coreCreationDateTime>2026-09-02T09:12:40Z</xilinx:coreCreationDateTime>
     </xilinx:coreExtensions>
     <xilinx:packagingInfo>
       <xilinx:xilinxVersion>2022.2</xilinx:xilinxVersion>
       <xilinx:checksum xilinx:scope="busInterfaces" xilinx:value="99c74627"/>
       <xilinx:checksum xilinx:scope="memoryMaps" xilinx:value="c930e363"/>
-      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="911f1743"/>
+      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="130857dd"/>
       <xilinx:checksum xilinx:scope="ports" xilinx:value="9081780a"/>
-      <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="b5c88fc0"/>
-      <xilinx:checksum xilinx:scope="parameters" xilinx:value="215938e6"/>
+      <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="c9e34624"/>
+      <xilinx:checksum xilinx:scope="parameters" xilinx:value="45fd882c"/>
     </xilinx:packagingInfo>
   </spirit:vendorExtensions>
 </spirit:component>
