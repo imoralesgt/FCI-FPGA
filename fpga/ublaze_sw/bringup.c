@@ -175,7 +175,7 @@ static void test_vga_dac(void) {
   check_ok("VgaDac_Init (internal 2.5V reference)", VgaDac_Init());
 
   check_ok("VgaDac_SetGainFine(1x -> code 819)", VgaDac_SetGainFine(AD8330_DEFAULT_GAIN_FINE_LINEAR));
-  check_ok("VgaDac_SetGainCoarse(6x -> code 765)",
+  check_ok("VgaDac_SetGainCoarse(2x -> code 296)",
            VgaDac_SetGainCoarse(AD8330_DEFAULT_GAIN_COARSE_LINEAR));
 }
 

@@ -348,26 +348,34 @@ static int vga_get(s32 idx, s32 *out) {
 }
 
 static int vga_set(s32 idx, s32 v) {
-  /* Gains travel as milli-units because the framing carries integers only: 1500 means x1.50. */
+  /* Gains travel as milli-units because the framing carries integers only: 1500 means x1.50.
+   *
+   * The VgaDac_SetGain*()/SetFineCodeRaw() calls below are thin passthroughs of
+   * Iic_DynamicSendBytes(), whose header is explicit: "Returns 1 on success, 0 if all retries
+   * were exhausted." The checks here used to read `!= 0`, i.e. treat a SUCCESSFUL write as the
+   * failure case -- inverted. Every $SV call reported !XX 1 regardless of whether the DAC write
+   * actually happened (it did; the analog effect was visible on a live photopeak while the CLI
+   * insisted the write had failed), and g_vga_*_milli were never updated on a real success,
+   * leaving $GV's reported gain silently stale after every genuine change. Found 2026-09-03. */
   switch (idx) {
   case 0:
     if (!in_range(v, 1, 60000))
       return 0;
-    if (VgaDac_SetGainFine((double)v / 1000.0) != 0)
+    if (VgaDac_SetGainFine((double)v / 1000.0) == 0)
       return 0;
     g_vga_fine_milli = v;
     return 1;
   case 1:
     if (!in_range(v, 1, 60000))
       return 0;
-    if (VgaDac_SetGainCoarse((double)v / 1000.0) != 0)
+    if (VgaDac_SetGainCoarse((double)v / 1000.0) == 0)
       return 0;
     g_vga_coarse_milli = v;
     return 1;
   case 2:
     if (!in_range(v, 0, 4095))
       return 0;
-    if (VgaDac_SetFineCodeRaw((u16)v) != 0)
+    if (VgaDac_SetFineCodeRaw((u16)v) == 0)
       return 0;
     g_vga_raw_code = v;
     return 1;

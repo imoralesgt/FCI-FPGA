@@ -2375,9 +2375,11 @@ Both headline numbers carry the same caveat: they describe the system **as it st
 an unexplained noise regression baked in, not the system at its intended/achievable noise floor.
 Revisit both once the noise source below is found and fixed.
 
-### Chasing the noise source: a hard I2C fault, and the noise level isn't even stable
+### Chasing the noise source: a real firmware bug found, but it isn't the noise source
 
-Three remote diagnostics, run against the live board:
+Three remote diagnostics were run against the live board, in the order below — but the second one
+led somewhere more important than the noise hunt itself, so read this section as two findings, not
+one.
 
 **1. Spectral check — one genuine tone, not the harmonic comb it first looked like.** An averaged
 periodogram (Welch-style, 200 independent 748-sample segments from the frame tail) was built to
@@ -2389,45 +2391,243 @@ genuine discrete line: **12.10 MHz**, +3.7 dB above the local floor, closely mat
 own **12 MHz reference crystal** — the same chip that runs this board's USB-UART bridge. A
 plausible, low-confidence EMI contributor; free-running regardless of link activity, so its
 presence doesn't by itself distinguish PCB-proximity coupling from anything link-load-dependent.
+Still open.
 
-**2. VGA gain sweep — never ran, because gain can no longer be WRITTEN at all.** Every `$SV`
-attempt was rejected, coarse and fine alike, including writing back the value already active
-(`fine=1000`, the current, presumably-valid setting). `vga_set()`'s range check accepts it
-(1..60000); the rejection traces to `VgaDac_SetGainFine()`/`SetGainCoarse()` themselves, both of
-which are thin wrappers over `WriteCommand()` → `Iic_DynamicSendBytes()` — a real I2C bus
-transaction to the AD5697 DAC, failing on every attempt, both DAC channels. This is a **hard I2C
-communication fault**, not a value/range issue: the device cannot currently talk to the VGA gain
-DAC at all.
+**2. VGA gain sweep — every `$SV` write was rejected, including writing back the already-active
+value. This was misdiagnosed at first as a hardware I2C fault, and that diagnosis was wrong.**
+While this entry was being written, a live counter-example landed: watching the GUI during
+acquisition, changing coarse gain from 6000 to 3000 visibly moved the Cs-137 photopeak to roughly
+half its position on the FCI energy axis — the write plainly reached the DAC — while the CLI kept
+reporting `!XX 1` for that exact command (confirmed in `fci_gui.log`: `$SV 1 3000` logged as failed
+at 11:22:10, the same command and moment). A real I2C failure cannot move a photopeak. The actual
+bug was a one-line polarity inversion in `cli.c`'s `vga_set()`: `Iic_DynamicSendBytes()` is
+documented, in its own header, to return **1 on success**, 0 only once all retries are exhausted —
+but the three call sites in `vga_set()` (fine, coarse, and raw DAC code) all checked `!= 0` as the
+failure condition, which fires exactly when the write **succeeds**. Every genuine gain change has
+therefore been reported as a parameter error since this code existed, and — the more damaging
+half — `g_vga_fine_milli`/`g_vga_coarse_milli` were never updated on a real success either, so
+`$GV` has been silently returning a **stale** gain value after every actual change. **Fixed**
+(2026-09-03): the three checks now read `== 0`; compiles clean at `-Os -Wall -Wextra`. Not yet
+rebuilt into a bitstream/firmware image.
+
+The practical fallout: any gain figure read back from `$GV`/the GUI's VGA panel since this bug was
+introduced cannot be trusted to match the DAC's actual state if a `$SV` write was ever issued in
+that session — including earlier in *this* session, before the bug was found. §8k's own energy-gain
+figures above were captured before any VGA write was attempted this session, so they stand; nothing
+downstream of the very first `$SV` call in this investigation should be assumed accurate without
+independent confirmation (a photopeak position, as here, or an oscilloscope reading).
 
 **3. BLR bypass — inconclusive, and expectedly so.** Only 5 genuine captures arrived in 40 s with
 BLR bypassed (100 arrive easily with it active), consistent with §8h's own documented dependency:
 the CFD needs a zero-centred baseline to trigger reliably, and bypassing BLR removes exactly that.
 Not enough samples to compare meaningfully; not treated as evidence either way.
 
-**The more telling result was incidental.** The BLR-active RMS measured *during this diagnostic
-pass* was **43.41 counts** — close to the original pre-reconnect 46.13, not the 69–75 range measured
-earlier in the same session. Four measurements, same physical setup, same day:
+### The original question — why the noise floor moved — is still open
+
+The "hard I2C fault" is retracted, and with it goes the unifying "one marginal connector explains
+both symptoms" theory this log entry originally proposed: that reasoning leaned on the I2C failure
+being a real hardware fault, and it wasn't one. What's left standing on its own:
 
 | when | baseline RMS |
 |---|---|
 | before detector was unplugged | 46.13 |
 | after reconnecting | 69.03 |
 | after swapping the SiPM bias supply | 75.52 |
-| during this diagnostic pass, ~20 min later | 43.41 |
+| during the (unrelated) VGA/BLR diagnostic pass, ~20 min later | 43.41 |
 
-That is not a system that regressed to a new, stable, elevated noise floor — it is a system whose
-noise level **moves around within one session**. Combined with a hardware I2C link that fails
-outright on demand, the pattern points at an **intermittent, marginal physical connection** rather
-than a single fixed fault: exactly what a not-fully-seated connector from the recent unplug/replug
-would produce, since a marginal connection can plausibly cause both symptoms — unreliable I2C
-*and* a fluctuating noise floor — depending on the exact mechanical state of the contact at any
-given moment.
+This is still a real, measured fact: the noise floor has not settled to one stable value since the
+reconnect, and 43.41 sits close to the original pre-reconnect 46.13 rather than the elevated 69–75
+range — but *why* it moves is back to unexplained. The 12.10 MHz tone above is the only concrete,
+still-standing lead.
 
-**Ruled out:** the SiPM bias supply (swapping it made things worse, not better).
-**Not yet checked:** the physical connector(s) between the digitizer board and the AFE — the
-natural place to look next, since it is the one connection point that could plausibly carry both
-the I2C lines to the AD5697 and the analog signal path together. This needs hands-on inspection;
-nothing further is diagnosable remotely without it.
+**Ruled out:** the SiPM bias supply (swapping it made things worse, not better); a hardware I2C
+fault (retracted above — the DAC communicates fine, the firmware was lying about it).
+**Not checked yet:** the physical connector(s) between the digitizer board and the AFE, and whether
+the 12.10 MHz line's amplitude tracks anything controllable (cable routing, grounding). This still
+needs hands-on inspection; nothing further is diagnosable remotely without it.
+
+### The cli.c fix went to hardware, and immediately found a second, worse bug behind it
+
+The `vga_set()` fix (above) was flashed. The very next thing that happened, live: changing coarse
+gain through the GUI made event rate drop to **zero — at every threshold down to ~550, no matter
+what coarse value was set** — while the trigger mechanism itself tested fine (a forced low-threshold
+capture still fired cleanly). Two wrong turns preceded the real answer, both worth recording because
+the mistake is the reusable part:
+
+1. **First guess: BLR's gate was stuck.** `gate_open` read `True` for a full 43 s poll, baseline
+   frozen at -6367. Wrong on the polarity: reading `baseline_estimator.vhd`'s actual FSM,
+   `gate_open='1'` means the deviation is SMALL and the estimator IS tracking normally — `'0'` is
+   the frozen state. `gate_open=True` the whole time was a *healthy*, stable baseline, not a stuck
+   one. Retracted as soon as the RTL was actually read instead of inferred from the signal name.
+2. **Second: is `cli.c`'s fix itself the cause?** Mechanically checked and ruled out — the fix only
+   touches success/failure detection and `g_vga_*_milli` bookkeeping in `vga_set()`; it does not
+   touch `VgaDac_SetGainFine/Coarse()`, `WriteCommand()`, or the gain-to-DAC-code formulas. The same
+   DAC command is sent whether the check is right or wrong. A direct threshold sweep confirmed the
+   trigger itself worked (forced capture at threshold=50 fired and looked like ordinary noise) while
+   real events had shifted down to threshold ~60–80 from a normal ~400–550 — a real ~5–7x sensitivity
+   drop, but not one this fix's logic could produce.
+
+**The actual mechanism: a second bug, in the GUI, that the firmware fix exposed rather than caused.**
+`sw/gui/ui/config_panel.py`'s `SubsystemPanel.apply()` had a rule for `optional` fields the device
+reports as `None` ("not written yet this session"): since there is no baseline to diff against,
+always include the field's current widget value in the write. `VgaConfig.fine_dac_code` is such a
+field — and it is a RAW override of the *same physical DAC channel* as `fine_gain_milli` (`vga_dac.c`:
+both are command `0x31`, "DAC A"). Its widget sits at its minimum, 0, untouched. So every VGA
+`Apply` — for any field — silently also sent `fine_dac_code=0` last in the sequence, overwriting
+whatever fine gain had just been set with a raw code of essentially zero gain.
+
+This was already happening before the `cli.c` fix, every single time, because `g_vga_raw_code` could
+never be tracked (same polarity bug) — so `fine_dac_code` read `None` forever and the clobber fired
+on *every* apply, self-correcting the DAC back toward zero as fast as any real change was made. After
+the fix, the clobber fires exactly **once** per boot: the first successful raw-code write is tracked
+correctly, so `old_value` stops being `None` and the "always include" rule stops applying on later
+edits. That one clobber is what dropped sensitivity — confirmed directly: writing `fine_gain_milli`
+alone (bypassing the GUI, no `fine_dac_code` in the payload) restored the physical channel, and rate
+came back to 237.6 ev/s at threshold=550, in line with the day's earlier readings. **Fixed**
+(2026-09-03): `apply()` now diffs an unset-optional field against the placeholder `refresh()` last
+displayed, not against a fixed "always send" rule, so an untouched raw-code control is never written
+back. Regression-tested against both this case and the CFD-field fix from earlier in the day; both
+pass.
+
+**A separate, correctly-diagnosed non-issue along the way:** a trace showing the exact
+spike→plateau→undershoot→settle signature documented in [[adc-encoding-fold]] as the historic
+2's-complement bring-up bug turned out to be ordinary ADC rail clipping — the same log entry
+documents this as a known look-alike ("if they over-range they clip flat at the rail before cliffing
+back"), and the trigger config log around the same time shows a `$SV 1 10000` attempt (coarse ×10,
+well past the normal ×6). A fresh capture after gain was restored to normal came back clean: peak
+4285 counts, smooth rise/decay, no plateau — matching the 2026-08-18 reference measurement (~4086
+counts) closely. Not a regression of the encoding fix; the RTL fix (`adc_data_ob`'s MSB flip) was
+never touched this session.
+
+### The clipping ceiling explained, sources ruled out as the noise cause, and a full gain sweep
+
+Three more results from the same day, closing out (for now) the analog-calibration thread §8k
+opened.
+
+**The clipping ceiling is exactly `+8191 − raw_baseline`, not a mystery constant.** `BlrConfig.baseline`
+is the *raw* (properly-signed, pre-restoration) baseline estimate — read all session as a stable
+**-6367**, regardless of gain, since it reflects the detector/AFE's DC operating point upstream of
+the VGA's gain stage. For a signed 14-bit datapath the positive rail sits at +8191, so the full span
+above baseline before clipping is `8191 − (−6367) = 14558`. Measured clipping in this session's own
+captures: **14557 and 14552** — matching to within a count or two. The "~14550 ceiling" noted
+earlier in this log was never an arbitrary empirical constant; it falls straight out of where the
+baseline happens to sit.
+
+**Sources are not the cause of the elevated/moving noise.** Directly tested: Cs-137 and Co-60 had
+been sitting near the detector the whole session (not added/removed as originally assumed), so every
+"background" rate logged earlier was already source-driven, raising real pile-up concern (a slower
+CLYC decay component tailing into a nominally-quiet sampling window at high enough rate). Tested by
+comparing baseline RMS with the sources in place against a rate ~90× lower with them physically moved
+away, same gain (1×) both times:
+
+| condition | rate | RMS |
+|---|---|---|
+| sources present | 836 ev/s | 29.60 counts |
+| sources removed | 9.4 ev/s | 31.745 counts |
+
+No meaningful difference — if anything slightly higher with the sources removed, the opposite of what
+pile-up contamination predicts. Ruled out.
+
+**Current leading hypothesis: a switching supply.** Unprompted by the source test, an alternative
+explanation for the 12.10 MHz tone found earlier: the detector's own bias supply, if switching-type,
+landing a fundamental or harmonic near 12 MHz. This also reframes the earlier bias-supply swap
+(§8k, "ruled out... swapping it made things worse") — that result only shows the specific replacement
+unit tested wasn't better, not that a switching supply *in general* isn't the mechanism, since a
+second switching-type unit would reproduce the same symptom. Not yet confirmed; the clean test is a
+linear supply substituted in and the same baseline measurement repeated. Hands-on, not remotely
+checkable.
+
+**A full 1×–10× gain sweep, 0.5× steps, sources removed throughout.** Same verified methodology as
+every RMS figure in this log: freshness-gated `$RT` on `$RC` advancing (not `$RT`'s own stale-buffer
+return), delay raised to 256 for a long clean pre-trigger window, first 48 samples used (the region
+already established as free of CFD-crossing-lag contamination). Threshold was chosen per gain point
+from a running noise model and verified against live rate before capturing, avoiding the
+self-triggering-on-noise trap documented earlier in this section — all 19 points landed at 1.4–27
+ev/s, comfortably clear of it.
+
+| gain | RMS | | gain | RMS |
+|---|---|---|---|---|
+| 1.0× | 29.43 | | 6.0× | 74.01 |
+| 1.5× | 31.60 | | 6.5× | 75.48 |
+| 2.0× | 35.37 | | 7.0× | 89.31 |
+| 2.5× | 40.19 | | 7.5× | 87.71 |
+| 3.0× | 43.93 | | 8.0× | 95.55 |
+| 3.5× | 48.52 | | 8.5× | 94.99 |
+| 4.0× | 51.19 | | 9.0× | 106.91 |
+| 4.5× | 56.97 | | 9.5× | 108.71 |
+| 5.0× | 65.50 | | 10.0× | 109.19 |
+| 5.5× | 68.41 | | | |
+
+![Baseline RMS vs coarse gain, 1x-10x sweep](images/20260903_gain_sweep_rms.png)
+
+Fit to all 19 points as two independent noise sources in quadrature —
+`RMS(g) = sqrt((k·g)² + c²)`, the same form a 2-point estimate suggested earlier in this section:
+
+```
+k = 11.123 +/- 0.135
+c = 28.238 +/- 1.475
+fit residual RMS: 2.55 counts (max |residual| 6.49, at g=7.0x)
+```
+
+A 2.5-count residual across a 19-point, 1–10× sweep is a genuinely tight fit, not an artifact of
+having only two points to draw a curve through. It confirms the noise really does split into two
+independent, additive-in-quadrature components: a gain-dependent term (~11.1 counts per unit gain,
+amplified along with the real signal, so it originates at or before the VGA) and a **fixed ~28.2-count
+floor that no amount of gain reduction touches** — the same floor behind the still-open "why did
+baseline noise move" question above, now precisely characterized rather than just observed to move.
+
+**Applied to gain selection.** With this detector's foreseen ceiling at 6 MeVee and the Cs-137
+662 keV calibration point (§8k, 4404 counts at 6×, giving 6.6556 counts/keV at that gain), the gain
+that puts 6 MeVee exactly at the 14558-count ceiling is **2.19×** (predicted RMS 37.29 counts via the
+fit above) — not the initially-guessed 2.25×, which clips about 170 keV short of a full 6 MeVee range
+(ceiling at 5.83 MeVee). 2.0× gives headroom above 6 MeVee (ceiling 6.56 MeVee) if margin is
+preferred over cutting it close.
+
+### SNR vs. gain, and the tradeoff the ceiling calculation was missing
+
+The gain choice above only asked "where does the ceiling land." It says nothing about resolution.
+Combining the fitted noise model with a fixed reference pulse (`A = 100` arbitrary pre-gain units,
+scaled by gain the same way a real pulse is: `signal(g) = A·g`) gives an explicit
+`SNR(g) = A·g / RMS(g)` alongside the same energy-ceiling formula, swept 1.00×–10.00× in 0.25× steps
+— a pure model evaluation, no new hardware measurement, using only the constants already established
+in this section (`k=11.123`, `c=28.238`, `CEILING=14558` counts, `6.6556` counts/keV at 6×).
+
+| gain | RMS | SNR (A=100) | ceiling (MeVee) | | gain | RMS | SNR (A=100) | ceiling (MeVee) |
+|---|---|---|---|---|---|---|---|---|
+| 1.00 | 30.35 | 3.29 | 13.124 | | 5.75 | 69.91 | 8.22 | 2.282 |
+| 1.25 | 31.48 | 3.97 | 10.499 | | 6.00 | 72.47 | 8.28 | 2.187 |
+| 1.50 | 32.80 | 4.57 | 8.749 | | 6.25 | 75.03 | 8.33 | 2.100 |
+| 1.75 | 34.30 | 5.10 | 7.499 | | 6.50 | 77.62 | 8.37 | 2.019 |
+| 2.00 | 35.95 | 5.56 | 6.562 | | 6.75 | 80.21 | 8.41 | 1.944 |
+| 2.25 | 37.73 | 5.96 | 5.833 | | 7.00 | 82.82 | 8.45 | 1.875 |
+| 2.50 | 39.63 | 6.31 | 5.250 | | 7.25 | 85.44 | 8.49 | 1.810 |
+| 2.75 | 41.63 | 6.61 | 4.772 | | 7.50 | 88.07 | 8.52 | 1.750 |
+| 3.00 | 43.71 | 6.86 | 4.375 | | 7.75 | 90.71 | 8.54 | 1.693 |
+| 3.25 | 45.87 | 7.09 | 4.038 | | 8.00 | 93.36 | 8.57 | 1.641 |
+| 3.50 | 48.09 | 7.28 | 3.750 | | 8.25 | 96.01 | 8.59 | 1.591 |
+| 3.75 | 50.37 | 7.44 | 3.500 | | 8.50 | 98.67 | 8.61 | 1.544 |
+| 4.00 | 52.70 | 7.59 | 3.281 | | 8.75 | 101.34 | 8.63 | 1.500 |
+| 4.25 | 55.06 | 7.72 | 3.088 | | 9.00 | 104.01 | 8.65 | 1.458 |
+| 4.50 | 57.47 | 7.83 | 2.916 | | 9.25 | 106.69 | 8.67 | 1.419 |
+| 4.75 | 59.91 | 7.93 | 2.763 | | 9.50 | 109.38 | 8.69 | 1.381 |
+| 5.00 | 62.37 | 8.02 | 2.625 | | 9.75 | 112.07 | 8.70 | 1.346 |
+| 5.25 | 64.86 | 8.09 | 2.500 | | 10.00 | 114.76 | 8.71 | 1.312 |
+| 5.50 | 67.38 | 8.16 | 2.386 | | | | | |
+
+![SNR and energy ceiling vs coarse gain](images/20260903_snr_energy_vs_gain.png)
+
+The shapes are exactly what the two-component noise model predicts: SNR rises steeply at low gain
+(the fixed ~28.2-count floor dominates the denominator there) and **saturates toward `A/k = 100/11.123
+≈ 8.99`** as gain grows — because at high gain both signal and the gain-dependent noise term scale
+together, so their ratio approaches a constant set purely by `k`, and no further gain buys SNR past
+roughly 8×. Energy ceiling falls monotonically and hyperbolically (`∝ 1/gain`), with no such
+saturation, so every step up in gain keeps costing dynamic range even after SNR has stopped improving.
+The plot's twin axes are independently scaled (SNR against the arbitrary reference `A=100`; energy
+against a MeVee choice), so only the two curves' *shapes* carry physical content, not where they
+happen to numerically cross. The case for 2.19–2.0× rests on the ceiling requirement alone (§ above,
+from the 6 MeVee target and the Cs-137 calibration) — independently checking the SNR curve at that
+gain (≈5.6–6.0, against an asymptote of 8.99) confirms the ceiling-driven choice doesn't sit deep in
+the region of steeply-diminishing SNR returns.
 
 ---
 

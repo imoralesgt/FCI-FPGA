@@ -100,6 +100,10 @@ class SubsystemPanel(QGroupBox):
         self._client: FciClient | None = None
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
+        self._shown_when_none: dict[str, Any] = {}
+        """For optional fields the device reported as None: the placeholder value refresh() put in
+        the widget. apply() diffs against this so an untouched placeholder is never written back --
+        see apply() for the hardware damage that caused."""
 
         grid = QGridLayout(self)
         grid.setColumnStretch(0, 0)
@@ -173,8 +177,14 @@ class SubsystemPanel(QGroupBox):
                     w.setEnabled(not f.read_only)
                     if f.is_bool:
                         w.setChecked(False)
+                        self._shown_when_none[f.name] = False
                     else:
-                        w.setValue(f.default if f.default is not None else f.minimum)
+                        shown = f.default if f.default is not None else f.minimum
+                        w.setValue(shown)
+                        # Remember what we PUT here, so apply() can tell "the user deliberately
+                        # chose this" from "this is just the placeholder we displayed". See
+                        # apply()'s use of _shown_when_none.
+                        self._shown_when_none[f.name] = shown
                 else:
                     # Does not exist in this bitstream; no value written here would ever apply.
                     w.setEnabled(False)
@@ -209,9 +219,20 @@ class SubsystemPanel(QGroupBox):
             if f.optional and old_value is None:
                 if not f.settable_when_none:
                     continue  # genuinely absent in this bitstream -- see Field.optional's docstring
-                # First value ever for this field: no baseline to diff against, always include it.
+                # No device-side baseline to diff against, so diff against the placeholder
+                # refresh() displayed instead: send this only if the user actually moved it.
+                #
+                # This used to unconditionally include the field ("first value ever, always send
+                # it"), which was actively destructive for VgaConfig.fine_dac_code: that field is a
+                # RAW override of the same physical DAC channel as fine_gain_milli (both are
+                # command 0x31, "DAC A" -- see vga_dac.c), and it is written LAST, so every VGA
+                # Apply silently clobbered the fine gain the user had just set with a raw code of
+                # 0, i.e. essentially zero gain. On hardware that read as "event rate drops to zero
+                # after any VGA change, whatever value you set". Found 2026-09-03.
                 w = self._controls[f.name]
-                kwargs[f.name] = w.isChecked() if f.is_bool else w.value()
+                current = w.isChecked() if f.is_bool else w.value()
+                if current != self._shown_when_none.get(f.name, current):
+                    kwargs[f.name] = current
                 continue
             w = self._controls[f.name]
             new_value = w.isChecked() if f.is_bool else w.value()
