@@ -460,7 +460,7 @@ class AppController(QObject):
 
     def open_fom_wizard(self) -> None:
         dlg = FomWizard(self.config_client, self.worker, self.view.live_view.get_accumulated_events,
-                         self.view)
+                         self.view.histogram_view.calibration(), self.view)
         dlg.exec()
 
     # -------------------------------------------------------------------------------------- misc

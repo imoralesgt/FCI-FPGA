@@ -24,7 +24,7 @@ aggressive: a full batch is direct evidence events are being lost, and the round
 already paces the loop -- at 4 Mbaud a full 1024-record binary frame is ~64 ms of wire time. The
 loop falls back to BATCH_POLL_INTERVAL_MS as soon as a batch comes back short, so an idle
 instrument costs the same as before."""
-SCOPE_INTERVAL_MS = 500
+SCOPE_INTERVAL_MS = 1
 """How often continuous ("Start") scope mode requests a trace. NOT a render setting -- it is a
 bandwidth budget. A `$RT 2048` reply is ~11 kB of ASCII, 28 ms of wire time at 4 Mbaud, so
 requesting one per worker iteration (~30/s once adaptive polling removed the fixed delay) consumed

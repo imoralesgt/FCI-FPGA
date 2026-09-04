@@ -55,9 +55,13 @@ from fom_sweep_worker import DiscriminatorSweepPlan, FomSweepWorker, SweepPlan
 logger = logging.getLogger(__name__)
 
 LLD_RANGE = (0.0, 1_000_000_000.0)
-"""Both LLD and ULD's range -- the Energy axis (energy_long) shared with the FCI/PSD-vs-Energy
-plots. This project has no calibrated physical energy, and different sessions/files can span very
-different scales, so this stays fixed and wide rather than trying to bound it in advance."""
+"""Both LLD and ULD's range -- calibrated energy, `c0 + c1*peak + c2*peak^2` against the same
+(c0, c1, c2) HistogramView owns (see FomWizard.__init__'s `calibration` parameter), the same
+quantity live_view's FCI/PSD-vs-Energy plots and the Spectrum tab histogram show. Defaults to the
+identity map (c0=0, c1=1, c2=0) when no calibration has been set, so an uncalibrated session still
+filters on a sensible raw-peak scale rather than a meaningless one. The range itself stays fixed
+and wide rather than bounded to a specific calibration, since different sessions/files/calibrations
+can span very different scales."""
 
 
 class _EnergyCutFields(QWidget):
@@ -278,20 +282,25 @@ class _ComputeDiscriminatorPanel(QGroupBox):
 
 
 def _load_csv(path: Path) -> tuple[list[float], list[float], list[float]]:
-    """Reads energy_long/fci/psd columns from a CSV matching CsvLogger's schema -- `#`-prefixed
-    comment lines (its header block) are skipped, same convention used throughout this project."""
+    """Reads peak/fci/psd columns from a CSV matching CsvLogger's schema -- `#`-prefixed comment
+    lines (its header block) are skipped, same convention used throughout this project.
+
+    `peak` (the FPGA's whole-pulse amplitude, raw ADC-code units), not `energy_long`: this is the
+    same energy channel the Optimize tab's live sweep and live_view's FCI/PSD-vs-Energy plots use
+    (see fom_sweep_worker.FomSweepWorker._filter()), so an LLD/ULD region set here on a loaded file
+    means the same amplitude range it would against a live session."""
     energy, fci, psd = [], [], []
     with open(path, newline="", encoding="utf-8") as f:
         rows = (line for line in f if not line.startswith("#"))
         reader = csv.DictReader(rows)
-        if reader.fieldnames is None or not {"energy_long", "fci", "psd"} <= set(reader.fieldnames):
+        if reader.fieldnames is None or not {"peak", "fci", "psd"} <= set(reader.fieldnames):
             raise ValueError(
-                "CSV must have 'energy_long', 'fci', and 'psd' columns (the GUI's own live-log "
+                "CSV must have 'peak', 'fci', and 'psd' columns (the GUI's own live-log "
                 "schema, or a file converted to match it)."
             )
         for row in reader:
             try:
-                energy.append(float(row["energy_long"]))
+                energy.append(float(row["peak"]))
                 fci.append(float(row["fci"]))
                 psd.append(float(row["psd"]))
             except ValueError:
@@ -305,16 +314,25 @@ def _load_csv(path: Path) -> tuple[list[float], list[float], list[float]]:
 
 
 class FomWizard(QDialog):
-    def __init__(self, client: FciClient | None, acquisition_worker, get_live_events, parent=None):
+    def __init__(self, client: FciClient | None, acquisition_worker, get_live_events,
+                 calibration: tuple[float, float, float] = (0.0, 1.0, 0.0), parent=None):
         """`client`/`acquisition_worker` are None when not connected -- the Optimize tab disables
         itself in that case, but Compute FoM still works (it can analyze a file, or whatever this
         session already accumulated before disconnecting). `get_live_events` is a zero-arg
         callable returning (energy, fci, psd) parallel numpy arrays -- injected rather than importing
-        LiveView here, to keep this dialog's only dependency on the rest of the GUI narrow."""
+        LiveView here, to keep this dialog's only dependency on the rest of the GUI narrow.
+
+        `calibration` is HistogramView's (c0, c1, c2) at the moment this dialog was opened -- a
+        snapshot, not a live subscription, because this dialog is modal (the Spectrum tab cannot be
+        touched while it's open) so it cannot go stale mid-session. Applied to raw `peak` for the
+        Optimize tab's live sweep (SweepPlan.calibration) and for a loaded CSV's `peak` column here;
+        the live-events source (get_live_events) already returns calibrated energy on its own, since
+        live_view applies the same coefficients internally."""
         super().__init__(parent)
         self._client = client
         self._acq_worker = acquisition_worker
         self._get_live_events = get_live_events
+        self._calibration = calibration
         self._sweep_worker: FomSweepWorker | None = None
 
         self._energy: np.ndarray | None = None
@@ -413,7 +431,7 @@ class FomWizard(QDialog):
             return
 
         plan = SweepPlan(steps=self.spin_steps.value(), events_per_point=self.spin_events.value(),
-                          discriminators=plans)
+                          discriminators=plans, calibration=self._calibration)
         self._sweep_worker = FomSweepWorker(self._client, self._acq_worker, plan)
         self._sweep_worker.log_line.connect(self._on_log_line)
         self._sweep_worker.grid_result.connect(self._on_grid_result)
@@ -517,15 +535,20 @@ class FomWizard(QDialog):
         if not path:
             return
         try:
-            energy, fci, psd = _load_csv(Path(path))
+            peak, fci, psd = _load_csv(Path(path))
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "Load Failed", str(e))
             return
         self.radio_file.setChecked(True)
-        self._energy = np.asarray(energy, dtype=np.float64)
+        # _load_csv returns raw peak (its own CSV column); calibrated here to the same (c0, c1, c2)
+        # the live-events source already applies internally, so LLD/ULD mean the same energy region
+        # regardless of which source is active -- see FomWizard.__init__'s calibration docstring.
+        peak_arr = np.asarray(peak, dtype=np.float64)
+        c0, c1, c2 = self._calibration
+        self._energy = c0 + c1 * peak_arr + c2 * peak_arr * peak_arr
         self._fci = np.asarray(fci, dtype=np.float64)
         self._psd = np.asarray(psd, dtype=np.float64)
-        self.lbl_source_status.setText(f"{Path(path).name}: {len(energy)} events loaded")
+        self.lbl_source_status.setText(f"{Path(path).name}: {len(peak)} events loaded")
 
     def _load_active_source(self) -> bool:
         if self.radio_live.isChecked():

@@ -51,6 +51,12 @@ class SweepPlan:
     steps: int
     events_per_point: int
     discriminators: dict[str, DiscriminatorSweepPlan] = field(default_factory=dict)
+    calibration: tuple[float, float, float] = (0.0, 1.0, 0.0)
+    """(c0, c1, c2) from HistogramView -- the same session-wide coefficients live_view's
+    FCI/PSD-vs-Energy plots and the Spectrum tab apply to `peak`. One set for the whole plan, not
+    per-discriminator, because it is one calibration for one session. Defaults to the identity map
+    so a caller that never wired it through still filters on raw peak, same as before this field
+    existed."""
 
 
 class FomSweepWorker(QThread):
@@ -131,7 +137,7 @@ class FomSweepWorker(QThread):
                     continue
 
                 events = self._collect_events(self._plan.events_per_point)
-                values = self._filter(events, disc)
+                values = self._filter(events, disc, self._plan.calibration)
                 if len(values) == 0:
                     self.log_line.emit(key, f"{param.label}={v}: 0 usable events, skipping")
                     completed += 1
@@ -183,14 +189,25 @@ class FomSweepWorker(QThread):
         return collected
 
     @staticmethod
-    def _filter(events: list[AcqEvent], disc: DiscriminatorSweepPlan) -> np.ndarray:
+    def _filter(events: list[AcqEvent], disc: DiscriminatorSweepPlan,
+                calibration: tuple[float, float, float]) -> np.ndarray:
+        """LLD/ULD select on CALIBRATED energy, `c0 + c1*peak + c2*peak^2` (see AcqEvent.peak),
+        rather than `energy_long` -- the same energy channel the Spectrum tab histograms and
+        live_view's FCI/PSD-vs-Energy plots use, through the SAME coefficients (SweepPlan.calibration,
+        sourced from HistogramView), so a cut set here means the same energy region there.
+        `energy_long <= 0` remains a SEPARATE validity guard, not an energy-region cut: it excludes
+        the low-energy BLR pathology (project log section 8d) where the long-gate integral goes
+        non-positive and firmware's PSD ratio is a 0.0 "undefined" sentinel, not a real
+        measurement -- unrelated to which amplitude range LLD/ULD ask for."""
+        c0, c1, c2 = calibration
         out = []
         for e in events:
             if e.energy_long <= 0:
                 continue
-            if e.energy_long < disc.lld:
+            energy = c0 + c1 * e.peak + c2 * e.peak * e.peak
+            if energy < disc.lld:
                 continue
-            if disc.uld is not None and e.energy_long > disc.uld:
+            if disc.uld is not None and energy > disc.uld:
                 continue
             out.append(getattr(e, disc.value_field))
         return np.asarray(out, dtype=np.float64)

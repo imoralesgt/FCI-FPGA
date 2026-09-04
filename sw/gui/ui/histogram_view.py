@@ -439,14 +439,30 @@ class HistogramView(QWidget):
         # BarGraphItem does not respond to ViewBox.setLogMode() (it draws literal rectangles in
         # whatever coordinate space it is given, with no log-aware repaint logic), so the bars
         # themselves are pre-transformed to log10 space above rather than relying on that. The axis
-        # is told separately -- AxisItem.setLogMode() alone, NOT the ViewBox's -- to relabel its
-        # ticks as 10^x and to lay out proper log-spaced minor ticks (1,2,3..9,10,20,30..) for
-        # whatever linear range it is actually showing; it does this independent of the ViewBox, so
-        # it correctly matches data that is already pre-transformed rather than double-transforming
-        # it. The one artifact: an empty bin sits at log10(0+1)=0, which this labels "1" rather than
-        # "0" -- the standard convention for a log-scale spectrum, since 0 has no position on a true
-        # log axis at all.
-        self.plot_widget.getAxis("left").setLogMode(log_y)
+        # is told separately -- AxisItem.setLogMode() -- to relabel its ticks as 10^x and to lay out
+        # proper log-spaced minor ticks (1,2,3..9,10,20,30..) for whatever linear range it is
+        # actually showing, matching data that is already pre-transformed rather than
+        # double-transforming it. The one artifact: an empty bin sits at log10(0+1)=0, which this
+        # labels "1" rather than "0" -- the standard convention for a log-scale spectrum, since 0
+        # has no position on a true log axis at all.
+        axis_left = self.plot_widget.getAxis("left")
+        # Despite the name, AxisItem.setLogMode() does NOT stay confined to the axis: it also flips
+        # the linked ViewBox's own logMode flag as a side effect (see AxisItem.setLogMode()'s
+        # "inform the linked views of the change"). That flag only affects the ViewBox's *clamping*
+        # of a future range, not the range already sitting in ViewBox.state['viewRange'] -- so right
+        # after this toggles into log mode, that stale range is still whatever linear-scale value
+        # was on screen a moment ago (a single saturated bin can hold tens of thousands of counts).
+        # ViewBox.addItem()/removeItem() below only QUEUE a recompute (queueUpdateAutoRange()); they
+        # don't apply one synchronously. If a repaint lands in that gap, AxisItem.updateAutoSIPrefix()
+        # computes 10**np.array(self.range) against that still-linear range now that self.logMode is
+        # True, which overflows float64 (RuntimeWarning: overflow encountered in power) since counts
+        # in the tens of thousands are far past log-safe magnitude. Setting the axis's own .range
+        # directly -- bypassing the ViewBox's deferred auto-range entirely -- closes that window
+        # without disabling the ViewBox's continuous Y auto-range this live view otherwise relies on
+        # (unlike setYRange(), which would turn that off for good).
+        top = float(heights.max()) if heights.size else 1.0
+        axis_left.setRange(0.0, max(top, 1.0))
+        axis_left.setLogMode(log_y)
         self.plot_widget.setLabel("left", "Counts")
         # ALL bins, not just nonzero ones: BarGraphItem's own bounding box is what pyqtgraph's
         # "view all" / autoscale button fits to, and masking to nonzero bins would make that button
