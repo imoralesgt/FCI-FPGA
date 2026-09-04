@@ -2844,6 +2844,88 @@ Spectrum tab end to end, not just that the reader process picks the right comman
 
 ---
 
+## 8n. End-to-end validation: DD generator, Cs-137, and Co-60
+
+The confirmation that §8l/§8m's Spectrum and Live FCI/PSD tabs work as a real instrument, not just
+in isolated tests: three source runs, each captured live against hardware with Record on.
+
+### DD generator: the Li-6 capture peak lands where the paper's own calibration puts it
+
+![DD generator energy spectrum, log scale](images/dd_spectrum.png)
+![DD generator FCI/PSD vs Energy, heatmap view](images/dd_fci_psd.png)
+
+`dd_spectrum.png` (2,961,633 counts, 1161 cps instantaneous / 1216 cps average, `c1 = 0.48`): the
+dominant peak sits at **~3160 keVee** -- exactly the ⁶Li(n,α)t capture peak Morales et al. use as
+one of their own three energy-calibration points (Table 1, §4.2.4 -- already used the same way in
+this log's §8m, "Energy calibration and what the spectrum shows"). It shows up here as a genuine
+spectral feature, not a calibration input, which is an independent cross-check that `c1 = 0.48` is
+correct rather than merely self-consistent.
+
+`dd_fci_psd.png` shows the pairing at work: a diffuse gamma/Compton band rises from low energy and
+saturates around FCI ≈ 0.80-0.81, while a tight, well-separated cluster sits at FCI ≈ 0.84-0.85
+directly on the 3160 keVee capture peak -- the same "gamma band below a roughly horizontal
+separation line, neutron cluster above it, across the full energy range" picture as the paper's own
+Fig. 5b/6b (PSD vs FCI classification, γ/n limit and class-separation lines) -- reproduced here from
+live hardware in real time, not an offline recomputation from stored traces. PSD vs Energy shows the
+same two-population structure, with a shorter reach: the neutron cluster sits closer to the gamma
+band than FCI's does, consistent with the paper's own finding that FCI separates more cleanly at low
+energy (Section 6.2/Table 2: `Ours 1.88` FoM for FCI, no lower energy limit, vs `1.35` for the
+nearest reference method with an energy cut applied).
+
+Settings in effect for this run (read directly off the screenshot's configuration panels):
+
+| | parameter | value |
+|---|---|---|
+| FCI | `PSA_l` | 0-15 |
+| FCI | `PSA_w` | 0-150 |
+| PSD | `pre_trigger` | 100 (fixed) |
+| PSD | `pre_gate` | 21 |
+| PSD | `short_gate` | 14 |
+| PSD | `long_gate` | 40 |
+| PSD | `baseline_ref` | 0 |
+
+Notably narrower than this project's long-running `PSD_SHORT_GATE=80`/`PSD_LONG_GATE=250` defaults
+(`acquisition.c`), and in the same direction as (though not identical to) the paper-derived
+translation worked out earlier this session (`pre_gate≈25`, `short_gate≈28`, `long_gate=60` from the
+paper's own tuned `Ws=[50-105]`/`Wl=[50-170]` at half the sample rate) -- this run's `short_gate=14`/
+`long_gate=40` are narrower still. Whatever produced this exact configuration, it is the one that
+achieved the clean separation shown above and is worth treating as a concrete alternative starting
+point, alongside the paper-translated figures, the next time PSD windows are swept.
+
+### Co-60: a single population, as expected from a pure-gamma source
+
+![Co-60 energy spectrum](images/co60_spectrum.png)
+![Co-60 FCI/PSD vs Energy, heatmap view](images/co60_fci_psd.png)
+
+147,295 counts, 853 cps instantaneous / 775 cps average. The spectrum shows the blended two-Compton-
+edge shape expected from the 1173/1332 keV pair at this resolution. `co60_fci_psd.png` shows exactly
+one population in both FCI vs Energy and PSD vs Energy -- curving and saturating with energy, no
+second cluster -- consistent with a source that emits no neutrons at all. This is the useful negative
+control against the DD plot above: the second band there is not an artifact of the plotting or
+pairing path, since the same path produces a single population here.
+
+### Cs-137: photopeak confirmed; an unexplained second FCI/PSD band
+
+![Cs-137 energy spectrum](images/cs137_spectrum.png)
+![Cs-137 FCI/PSD vs Energy, heatmap view](images/cs137_fci_psd.png)
+
+32,762 counts, 216 cps instantaneous / 220 cps average. The spectrum itself is unremarkable and
+correct: a photopeak near 662 keVee sitting on the expected Compton continuum. `cs137_fci_psd.png`,
+however, shows **two parallel bands** rising together from roughly 100-700 keVee in both FCI vs
+Energy and PSD vs Energy, where Co-60 (also pure gamma, same acquisition path) shows only one.
+
+This is genuinely unexpected, not a benign continuum feature: Cs-137 is a pure gamma source, and a
+Compton-continuum event is still a gamma interaction in the same crystal as a photopeak event --
+same pulse shape regardless of deposited energy, hence one smooth FCI/PSD-vs-energy band, which is
+exactly what Co-60 shows despite having its own continuum, backscatter, and two photopeaks all at
+once. Physics gives no reason for a second population from this source, so the second band is not
+explained by "it's just the continuum" -- something else produced it (candidates not yet checked:
+pile-up, a room-background contamination, or something specific to how this one run was captured or
+labelled) and it should be treated as an open problem to diagnose, not a feature to note and move
+past.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
