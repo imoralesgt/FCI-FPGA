@@ -61,15 +61,18 @@
 #define UART_BAUD_DIVISOR 1u
 #define UART_BAUD_HZ (UART_XIN_HZ / (16u * UART_BAUD_DIVISOR))
 
-/* Programs the baud divisor. No-op on uartlite, whose rate is fixed at synthesis. Call once during
- * bring-up, BEFORE anything is printed: it reconfigures the line, so any character in flight is
- * corrupted, and the host must already be at the matching rate. */
+/**
+ * @brief Programs the baud divisor (16550 builds only; no-op on uartlite, whose rate is fixed at
+ *        synthesis). Call once during bring-up, BEFORE anything is printed: it reconfigures the
+ *        line, so any character in flight is corrupted, and the host must already be at the
+ *        matching rate (UART_BAUD_HZ) to read anything printed afterward.
+ */
 void Uart_Init(void);
 
-/* Non-zero when at least one received byte is waiting. */
+/** @brief Non-zero when at least one received byte is waiting. */
 int Uart_HasByte(void);
 
-/* Reads one byte. Only valid when Uart_HasByte() is non-zero. */
+/** @brief Reads one byte. Only valid when Uart_HasByte() is non-zero. */
 char Uart_GetByte(void);
 
 #endif /* SRC_UART_H_ */

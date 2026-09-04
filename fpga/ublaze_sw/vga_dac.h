@@ -56,19 +56,34 @@
 #define AD8330_DEFAULT_GAIN_FINE_LINEAR 1.0
 #define AD8330_DEFAULT_GAIN_COARSE_LINEAR 2.0
 
-/* Enables the AD5697's internal 2.5V reference. Call once before any SetGain* call. Returns 1 on
- * success, 0 on I2C failure. */
+/**
+ * @brief Enables the AD5697's internal 2.5V reference. Call once before any SetGain* call.
+ * @return 1 on success, 0 on I2C failure.
+ */
 int VgaDac_Init(void);
 
-/* gain_linear is clamped to the valid range for the channel (fine 1.0..2.0, coarse 1.0..21.0).
- * Returns 1 on success, 0 on I2C failure. */
+/**
+ * @brief Sets the AD8330's fine (linear, channel A / DAC A) gain.
+ * @param gain_linear Clamped to the valid range for this channel, 1.0..2.0.
+ * @return 1 on success, 0 on I2C failure.
+ */
 int VgaDac_SetGainFine(double gain_linear);
+
+/**
+ * @brief Sets the AD8330's coarse (logarithmic, channel B / DAC B) gain.
+ * @param gain_linear Clamped to the valid range for this channel, 1.0..21.0.
+ * @return 1 on success, 0 on I2C failure.
+ */
 int VgaDac_SetGainCoarse(double gain_linear);
 
-/* DIAGNOSTIC ONLY -- writes a raw 12-bit code to the fine channel (DAC A), bypassing the gain
- * formula and its range clamp. Exists so the bring-up firmware can reproduce the historical
- * fine-gain-code-0 condition on demand and bisect it against the corrected code 819; see the
- * HISTORY note above. Not for normal operation -- use VgaDac_SetGainFine() for that. */
+/**
+ * @brief DIAGNOSTIC ONLY -- writes a raw 12-bit code to the fine channel (DAC A), bypassing the
+ *        gain formula and its range clamp. Exists so the bring-up firmware can reproduce the
+ *        historical fine-gain-code-0 condition on demand and bisect it against the corrected code
+ *        819; see the HISTORY note above. Not for normal operation -- use VgaDac_SetGainFine().
+ * @param code12 Raw 12-bit DAC code, masked to 12 bits.
+ * @return 1 on success, 0 on I2C failure.
+ */
 int VgaDac_SetFineCodeRaw(u16 code12);
 
 #endif /* SRC_VGA_DAC_H_ */

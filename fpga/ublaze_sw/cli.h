@@ -26,36 +26,59 @@
 
 #include "xil_types.h"
 
-/* Longest raw trace $RT will return. Matches bringup.c's RAW_TRACE_MAX_SAMPLES. */
+/** @brief Longest raw trace $RT will return. Matches bringup.c's RAW_TRACE_MAX_SAMPLES. */
 #define CLI_TRACE_MAX 2048
 
-/* Points *out_buf at the most recent captured trace (up to max_samples long, in bringup.c's own
- * static storage -- not copied), writing the sample count to *out_count. Returns 1 on success, 0
- * if no trace could be captured, in which case *out_buf and *out_count are untouched.
+/**
+ * @brief Signature for the raw-trace provider registered via Cli_SetTraceProvider().
+ *
+ * Points *out_buf at the most recent captured trace (up to max_samples long, in the provider's
+ * own static storage -- not copied), writing the sample count to *out_count.
  *
  * A pointer rather than a copy into a buffer cli.c supplies: MicroBlaze here is single-threaded
  * with no preemption, so the returned storage stays valid for as long as h_rt() needs it (it is
  * read out and the reply sent before Cli_Poll() returns, well before the next capture could
  * overwrite it) -- a second 2048-sample (4 KB) static buffer in cli.c to receive a copy would only
- * duplicate storage bringup.c already owns, and that duplication is exactly what overflowed the
+ * duplicate storage the provider already owns, and that duplication is exactly what overflowed the
  * MicroBlaze's 64 KB local memory the first time this was tried.
  *
- * Registered rather than called directly because the capture path owns the DMA and the raw-trace
- * BRAM, and cli.c has no business knowing about either. */
+ * @param out_buf     Set to point at the trace's storage on success.
+ * @param max_samples Caller's buffer/interest limit on sample count.
+ * @param out_count   Set to the number of samples available, on success.
+ * @return 1 on success, 0 if no trace could be captured (out_buf/out_count then untouched).
+ */
 typedef int (*CliTraceFn)(const s16 **out_buf, u32 max_samples, u32 *out_count);
+
+/**
+ * @brief Registers the raw-trace provider $RT calls into.
+ *
+ * Registered rather than called directly because the capture path owns the DMA and the raw-trace
+ * BRAM, and cli.c has no business knowing about either.
+ *
+ * @param fn Provider matching CliTraceFn, e.g. Bringup_CaptureTrace().
+ */
 void Cli_SetTraceProvider(CliTraceFn fn);
 
-/* Call once after the cores are configured. */
+/** @brief Call once after the cores are configured. */
 void Cli_Init(void);
 
-/* Non-blocking. Drains whatever the UART has received, and executes a command once a full line has
- * arrived. Call from the main loop as often as convenient; one call handles at most one command so
- * a flood of input cannot starve the rest of the loop. */
+/**
+ * @brief Non-blocking command poll: drains whatever the UART has received, and executes a command
+ *        once a full line has arrived.
+ *
+ * Call from the main loop as often as convenient; one call handles at most one command so a flood
+ * of input cannot starve the rest of the loop.
+ */
 void Cli_Poll(void);
 
-/* True while acquisition is enabled ($AE / $AD). $RV consults this internally; exposed for a
- * caller that wants to reflect the state elsewhere (a status LED, a log line) without adding a
- * second $ES round trip. */
+/**
+ * @brief Whether acquisition is enabled ($AE / $AD).
+ *
+ * $RV consults this internally; exposed for a caller that wants to reflect the state elsewhere (a
+ * status LED, a log line) without adding a second $ES round trip.
+ *
+ * @return 1 if acquisition is enabled, 0 otherwise.
+ */
 int Cli_AcquisitionEnabled(void);
 
 #endif /* SRC_CLI_H_ */

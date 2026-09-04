@@ -54,6 +54,7 @@
  * FIFOs are 32 deep, so a watermark of 8 leaves 24 events of headroom for interrupt latency. */
 #define ACQ_WATERMARK 8
 
+/** @brief See acquisition.h. */
 void Acq_Configure(u32 trigger_delay, u32 sigma) {
   u32 gate_thr = (sigma > 0u) ? Blr_GateThresholdForSigma(sigma) : BLR_DEFAULT_GATE_THR;
 
@@ -78,6 +79,7 @@ void Acq_Configure(u32 trigger_delay, u32 sigma) {
   FciSink_Clear(FCI_SINK_BASEADDR);
 }
 
+/** @brief See acquisition.h. */
 void Acq_ResetStats(AcqStats *stats) {
   stats->paired = 0;
   stats->dropped_psd = 0;
@@ -87,10 +89,18 @@ void Acq_ResetStats(AcqStats *stats) {
   stats->fci_framing_errors = 0;
 }
 
-/* CAEN's PSD parameter: (Long - Short) / Long, i.e. the fraction of the charge that arrives in the
- * tail. Scaled by 10000 for integer printing. Returns 0 when energy_long <= 0, which happens for
- * noise triggers whose integral is negative -- those carry no shape information and the caller
- * should treat a 0 here as "not meaningful" rather than as a real ratio. */
+/**
+ * @brief Computes CAEN's PSD parameter, (Long - Short) / Long, scaled by 10000 for integer
+ *        printing.
+ *
+ * The fraction of the charge that arrives in the tail. Returns 0 when energy_long <= 0, which
+ * happens for noise triggers whose integral is negative -- those carry no shape information and
+ * the caller should treat a 0 here as "not meaningful" rather than as a real ratio.
+ *
+ * @param energy_short PSD short-gate charge integral.
+ * @param energy_long  PSD long-gate charge integral.
+ * @return (long-short)/long * 10000, or 0 if energy_long <= 0.
+ */
 static s32 psd_parameter_scaled(s32 energy_short, s32 energy_long) {
   s64 num;
   if (energy_long <= 0)
@@ -99,6 +109,7 @@ static s32 psd_parameter_scaled(s32 energy_short, s32 energy_long) {
   return (s32)(num / (s64)energy_long);
 }
 
+/** @brief See acquisition.h. */
 int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   PsdResult p;
   FciResult f;
@@ -160,15 +171,23 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   return 1;
 }
 
-/* Magnitude first, sign printed separately -- scaled/10000 truncates toward zero, so for any
+/**
+ * @brief Prints "label=[-]D.DDDD" for a value carried as an integer scaled by 10000.
+ *
+ * Magnitude first, sign printed separately -- scaled/10000 truncates toward zero, so for any
  * |scaled| < 10000 (i.e. any FCI or PSD value between -1.0 and 0, squarely within this project's
  * real range) the whole-number part alone loses the sign entirely and -0.5 would print as 0.5000.
- * Same fix as bringup.c's print_fixed4, which exists for exactly this reason. */
+ * Same fix as bringup.c's print_fixed4, which exists for exactly this reason.
+ *
+ * @param label  Field name printed before '='.
+ * @param scaled Value scaled by 10000 (e.g. AcqEvent.fci_scaled).
+ */
 static void print_scaled(const char *label, s32 scaled) {
   s32 mag = (scaled < 0) ? -scaled : scaled;
   xil_printf("%s=%s%d.%04d", label, (scaled < 0) ? "-" : "", mag / 10000, mag % 10000);
 }
 
+/** @brief See acquisition.h. */
 void Acq_PrintEvent(const AcqEvent *ev) {
   xil_printf("  ts=%u:%08u  ", (u32)(ev->timestamp >> 32), (u32)ev->timestamp);
   print_scaled("FCI", (s32)ev->fci_scaled);
@@ -177,20 +196,26 @@ void Acq_PrintEvent(const AcqEvent *ev) {
   xil_printf("\r\n");
 }
 
-/* Machine-readable form for host-side capture: one row per event, so a PC-side tool can plot PSD
+/**
+ * @brief See acquisition.h.
+ *
+ * Machine-readable form for host-side capture: one row per event, so a PC-side tool can plot PSD
  * against FCI directly and see whether the two separate the same populations. That comparison is
  * the reason this whole path exists. peak is appended at the end to keep the existing field order
- * stable for anything already parsing this format. */
+ * stable for anything already parsing this format.
+ */
 void Acq_PrintCsvHeader(void) {
   xil_printf("EVT,ts_hi,ts_lo,psa_l,psa_w,fci_x10000,energy_short,energy_long,psd_x10000,peak\r\n");
 }
 
+/** @brief See acquisition.h. Row format matches Acq_PrintCsvHeader()'s column order. */
 void Acq_PrintEventCsv(const AcqEvent *ev) {
   xil_printf("EVT,%u,%u,%u,%u,%u,%d,%d,%d,%d\r\n", (u32)(ev->timestamp >> 32), (u32)ev->timestamp,
              ev->psa_l, ev->psa_w, ev->fci_scaled, ev->energy_short, ev->energy_long,
              ev->psd_scaled, ev->peak);
 }
 
+/** @brief See acquisition.h. */
 void Acq_PrintStats(const AcqStats *stats) {
   xil_printf("  [STATS] paired=%u  dropped(psd=%u fci=%u)  overflow(psd=%u fci=%u)  framing=%u\r\n",
              stats->paired, stats->dropped_psd, stats->dropped_fci, stats->psd_overflows,

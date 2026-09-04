@@ -22,29 +22,54 @@
 
 #include "xil_types.h"
 
+/** @brief Outcome of DmaS2mm_PollComplete(). */
 typedef enum { DMA_S2MM_DONE, DMA_S2MM_TIMEOUT, DMA_S2MM_ERROR } DmaS2mmResult;
 
-/* Resets the whole DMA core at dma_baseaddr (both channels -- shared reset per PG021) and waits
- * for the reset to self-clear. Returns 1 on success, 0 on timeout. */
+/**
+ * @brief Resets the whole DMA core (both channels -- shared reset per PG021) and waits for it to
+ *        self-clear.
+ * @param dma_baseaddr Base address of the axi_dma instance.
+ * @return 1 on success, 0 on timeout.
+ */
 int Dma_ResetCore(u32 dma_baseaddr);
 
-/* Arms an S2MM transfer of length_bytes into dest_addr and starts it. */
+/**
+ * @brief Arms an S2MM (stream-to-memory) transfer and starts it.
+ * @param dma_baseaddr Base address of the axi_dma instance.
+ * @param dest_addr    Destination memory address for the incoming stream.
+ * @param length_bytes Transfer length in bytes.
+ */
 void DmaS2mm_ArmTransfer(u32 dma_baseaddr, u32 dest_addr, u32 length_bytes);
 
-/* Arms an MM2S transfer of length_bytes from src_addr and starts it; the data streams out to
- * whichever microblaze_0/SN_AXIS this DMA's M_AXIS_MM2S is wired to. Consume it with blocking
- * getfslx(val, N, FSL_DEFAULT) calls (fsl.h) -- that blocking read is the synchronization point,
- * no status polling needed. Note: if this DMA's stream data width is narrower than its memory
- * data width (e.g. axi_dma_1's 16-bit stream into a 32-bit memory bus), each 32-bit FSL word
- * packs multiple narrow samples -- see the caller for unpacking. */
+/**
+ * @brief Arms an MM2S (memory-to-stream) transfer and starts it.
+ *
+ * The data streams out to whichever microblaze_0/SN_AXIS this DMA's M_AXIS_MM2S is wired to.
+ * Consume it with blocking getfslx(val, N, FSL_DEFAULT) calls (fsl.h) -- that blocking read is the
+ * synchronization point, no status polling needed. Note: if this DMA's stream data width is
+ * narrower than its memory data width (e.g. axi_dma_1's 16-bit stream into a 32-bit memory bus),
+ * each 32-bit FSL word packs multiple narrow samples -- see the caller for unpacking.
+ *
+ * @param dma_baseaddr Base address of the axi_dma instance.
+ * @param src_addr     Source memory address to stream out from.
+ * @param length_bytes Transfer length in bytes.
+ */
 void DmaMm2s_ArmTransfer(u32 dma_baseaddr, u32 src_addr, u32 length_bytes);
 
-/* Polls S2MM_DMASR up to max_iters times for completion (IOC_Irq) or a DMA error. Does not clear
- * the status bits -- call DmaS2mm_AckComplete() afterward. */
+/**
+ * @brief Polls S2MM_DMASR for completion or error. Does not clear the status bits -- call
+ *        DmaS2mm_AckComplete() afterward.
+ * @param dma_baseaddr Base address of the axi_dma instance.
+ * @param max_iters    Maximum poll iterations before giving up.
+ * @return DMA_S2MM_DONE, DMA_S2MM_ERROR, or DMA_S2MM_TIMEOUT.
+ */
 DmaS2mmResult DmaS2mm_PollComplete(u32 dma_baseaddr, u32 max_iters);
 
-/* Write-1-clears the sticky IRQ/error status bits in S2MM_DMASR, needed before the next
- * DmaS2mm_ArmTransfer(). */
+/**
+ * @brief Write-1-clears the sticky IRQ/error status bits in S2MM_DMASR, needed before the next
+ *        DmaS2mm_ArmTransfer().
+ * @param dma_baseaddr Base address of the axi_dma instance.
+ */
 void DmaS2mm_AckComplete(u32 dma_baseaddr);
 
 #endif /* SRC_DMA_S2MM_H_ */

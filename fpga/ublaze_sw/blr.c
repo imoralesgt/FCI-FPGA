@@ -9,6 +9,7 @@
 #include "registers.h"
 #include "xil_io.h"
 
+/** @brief See blr.h. */
 void Blr_Configure(u32 base, u32 shift, u32 gate_thr, u32 holdoff) {
   Xil_Out32(base + BLR_SHIFT_OFFSET, shift);
   Xil_Out32(base + BLR_GATE_THR_OFFSET, gate_thr);
@@ -16,6 +17,7 @@ void Blr_Configure(u32 base, u32 shift, u32 gate_thr, u32 holdoff) {
   /* Leave ctrl alone: bypass/hold are operator controls, not part of a nominal configuration. */
 }
 
+/** @brief See blr.h. */
 s32 Blr_GetBaseline(u32 base) {
   u32 raw = Xil_In32(base + BLR_STATUS_OFFSET) & BLR_STATUS_BASELINE_MASK;
   /* The register field is BLR_BASELINE_BITS wide and SIGNED. Sign-extend explicitly: the detector
@@ -26,10 +28,12 @@ s32 Blr_GetBaseline(u32 base) {
   return (s32)raw;
 }
 
+/** @brief See blr.h. */
 int Blr_GateOpen(u32 base) {
   return (Xil_In32(base + BLR_STATUS_OFFSET) & BLR_STATUS_GATE_OPEN_MASK) ? 1 : 0;
 }
 
+/** @brief Read-modify-writes one bit of the ctrl register (set if @p on, clear otherwise). */
 static void set_ctrl_bit(u32 base, u32 mask, int on) {
   u32 ctrl = Xil_In32(base + BLR_CTRL_OFFSET);
   if (on)
@@ -39,10 +43,13 @@ static void set_ctrl_bit(u32 base, u32 mask, int on) {
   Xil_Out32(base + BLR_CTRL_OFFSET, ctrl);
 }
 
+/** @brief See blr.h. */
 void Blr_SetBypass(u32 base, int on) { set_ctrl_bit(base, BLR_CTRL_BYPASS_MASK, on); }
 
+/** @brief See blr.h. */
 void Blr_SetHold(u32 base, int on) { set_ctrl_bit(base, BLR_CTRL_HOLD_MASK, on); }
 
+/** @brief See blr.h. */
 int Blr_SelfTest(u32 base) {
   u32 saved_shift = Xil_In32(base + BLR_SHIFT_OFFSET);
   u32 saved_thr = Xil_In32(base + BLR_GATE_THR_OFFSET);
@@ -68,6 +75,7 @@ int Blr_SelfTest(u32 base) {
   return ok;
 }
 
+/** @brief See blr.h. */
 u32 Blr_GateThresholdForSigma(u32 sigma) {
   u32 thr = sigma * 4u;
   if (thr < 32u)

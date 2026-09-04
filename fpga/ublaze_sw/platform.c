@@ -49,6 +49,7 @@
  #define UART_BAUD 9600
 #endif
 
+/** @brief Enables the MicroBlaze I/D caches over CACHEABLE_REGION_MASK, if this build has them. */
 void
 enable_caches()
 {
@@ -65,6 +66,7 @@ enable_caches()
 #endif
 }
 
+/** @brief Disables the MicroBlaze I/D caches enabled by enable_caches(). */
 void
 disable_caches()
 {

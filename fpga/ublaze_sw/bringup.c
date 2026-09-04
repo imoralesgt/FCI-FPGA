@@ -43,6 +43,7 @@ static int g_fail_count = 0;
  * named constant when the transform moved to 2048 so the next change is one edit, not a grep. */
 #define CAPTURE_DEPTH 2048
 
+/** @brief Prints PASS/FAIL for one register write/read-back check, counting failures in g_fail_count. */
 static void check_u32(const char *name, u32 expected, u32 actual) {
   if (expected == actual) {
     xil_printf("  [PASS] %s = 0x%08x\r\n", name, actual);
@@ -52,6 +53,7 @@ static void check_u32(const char *name, u32 expected, u32 actual) {
   }
 }
 
+/** @brief Prints PASS/FAIL for one boolean (typically I2C ACK) check, counting failures. */
 static void check_ok(const char *name, int ok) {
   if (ok) {
     xil_printf("  [PASS] %s\r\n", name);
@@ -61,6 +63,8 @@ static void check_ok(const char *name, int ok) {
   }
 }
 
+/** @brief Bring-up register write/read-back check for trigger_core, leaving it parked (threshold
+ *         at full scale) until start_raw_trace_pipeline() has armed the raw-trace consumer. */
 static void test_trigger_core(void) {
   xil_printf("-- trigger_core @ 0x%08x --\r\n", TRIGGER_CORE_BASEADDR);
 
@@ -110,6 +114,8 @@ static void test_trigger_core(void) {
 /* FCI_RESULT_VIA_FCI_SINK now comes from registers.h -- see the comment there for why it is
  * defined once centrally rather than re-derived in each file that needs it. */
 
+/** @brief Bring-up register self-test for blr_core, plus a sanity check that its baseline
+ *         estimate is tracking (nonzero). */
 static void test_blr_core(void) {
   xil_printf("-- blr_core registers --\r\n");
   check_ok("blr register write/read", Blr_SelfTest(BLR_CORE_BASEADDR));
@@ -123,6 +129,7 @@ static void test_blr_core(void) {
   check_ok("blr baseline is tracking (nonzero)", baseline != 0);
 }
 
+/** @brief Bring-up register self-test for psd_core, plus confirming its FIFO empties on Clear. */
 static void test_psd_core(void) {
   xil_printf("-- psd_core registers --\r\n");
   check_ok("psd register write/read", Psd_SelfTest(PSD_CORE_BASEADDR));
@@ -131,6 +138,8 @@ static void test_psd_core(void) {
 }
 
 #if FCI_RESULT_VIA_FCI_SINK
+/** @brief Bring-up register check for fci_sink: watermark write/read-back, and FIFO-empties-on-
+ *         Clear, mirroring test_psd_core(). Only built when this bitstream has fci_sink. */
 static void test_fci_sink(void) {
   xil_printf("-- fci_sink registers --\r\n");
   FciSink_SetWatermark(FCI_SINK_BASEADDR, 7);
@@ -141,9 +150,13 @@ static void test_fci_sink(void) {
 }
 #endif
 
-/* The RTL core free-runs: it has no ap_start/auto_restart handshake to program (the HLS core's
+/**
+ * @brief Bring-up register write/read-back check for fci_core's FFT-bin window registers.
+ *
+ * The RTL core free-runs: it has no ap_start/auto_restart handshake to program (the HLS core's
  * ap_ctrl_hs is gone with it), so this is now purely a register read/write check. It processes
- * whatever frames arrive on its stream and pushes each result into its own FIFO. */
+ * whatever frames arrive on its stream and pushes each result into its own FIFO.
+ */
 static void test_fci_core(void) {
   xil_printf("-- fci_core @ 0x%08x --\r\n", FCI_CORE_BASEADDR);
 
@@ -163,6 +176,8 @@ static void test_fci_core(void) {
   check_u32("psa_w_hi", 90, Xil_In32(FCI_CORE_BASEADDR + FCI_CORE_PSA_W_HI_OFFSET));
 }
 
+/** @brief Bring-up check for the AD5697 VGA gain DAC: I2C init, reference enable, and sets both
+ *         channels to their default operating gains. */
 static void test_vga_dac(void) {
   xil_printf("-- vga_dac (AD5697 @ 0x0D via axi_iic_0) --\r\n");
 
@@ -179,9 +194,13 @@ static void test_vga_dac(void) {
            VgaDac_SetGainCoarse(AD8330_DEFAULT_GAIN_COARSE_LINEAR));
 }
 
-/* PSA sums are plain 32-bit unsigned magnitude accumulations now (bin_accumulator.vhd), not the
+/**
+ * @brief Prints one PSA accumulator value, decimal and hex.
+ *
+ * PSA sums are plain 32-bit unsigned magnitude accumulations now (bin_accumulator.vhd), not the
  * HLS core's Q12.16 ap_ufixed<28,12> -- so there is no fractional part to decode and the old
- * >>16 / &0xFFFF split would have printed a meaningless number against the new format. */
+ * >>16 / &0xFFFF split would have printed a meaningless number against the new format.
+ */
 static void print_psa(const char *label, u32 raw) {
   xil_printf("  %s = %u (0x%08x)\r\n", label, raw, raw);
 }
@@ -229,6 +248,8 @@ static volatile u32 g_raw_ready_depth = 0;
  * once set). Used by set_trigger_threshold() below to wait out its own self-inflicted trigger. */
 static volatile u32 g_raw_event_count = 0;
 
+/** @brief axi_dma_1 S2MM completion ISR body: acks the interrupt, re-arms into the other raw-trace
+ *         buffer (double-buffered), and publishes the just-completed one via g_raw_ready_*. */
 static void service_dma1_event(void) {
   DmaS2mm_AckComplete(AXI_DMA_1_BASEADDR);
 
@@ -250,7 +271,11 @@ static void service_dma1_event(void) {
   g_raw_event_count++;
 }
 
-/* trigger_core's `above` comparator (trigger.vhd) is continuously live, re-evaluated every clk_i
+/**
+ * @brief Reprograms the trigger threshold, parking at full scale first so nothing can fire
+ *        mid-update.
+ *
+ * trigger_core's `above` comparator (trigger.vhd) is continuously live, re-evaluated every clk_i
  * cycle against whatever threshold is currently programmed, and a threshold write never resets
  * it. Reconfiguring is therefore a two-step operation (flush to a known state, then write the
  * real value) so the outcome doesn't depend on whatever `above` happened to be left at by the
@@ -265,7 +290,10 @@ static void service_dma1_event(void) {
  *
  * Whether or not this flush happens to fire a capture, it doesn't matter to correctness: callers
  * needing a guaranteed-fresh, uncontaminated trace (test_raw_trace_capture()) wait for
- * g_raw_event_count to advance from their *own* entry value, not from anything recorded here. */
+ * g_raw_event_count to advance from their *own* entry value, not from anything recorded here.
+ *
+ * @param threshold New trigger threshold, signed ADC code.
+ */
 static void set_trigger_threshold(s32 threshold) {
   /* Park at the top of the signed range first so nothing can fire mid-update. 32767 is the most
    * positive 16-bit signed level, unreachable by any real sample. */
@@ -296,6 +324,9 @@ static volatile u32 g_last_psa_l = 0;
 static volatile u32 g_last_psa_w = 0;
 static u32 g_write_buf = RESULT_BUF_A; /* ISR-only */
 
+/** @brief axi_dma_0 S2MM completion ISR body: acks, re-arms into the other PSA result buffer
+ *         (double-buffered), then reads the just-completed one back via MM2S/FSL into
+ *         g_last_psa_l/g_last_psa_w. Legacy path -- see fci_sink.c for the FIFO-based replacement. */
 static void service_dma0_event(void) {
   DmaS2mm_AckComplete(AXI_DMA_BASEADDR);
 
@@ -313,9 +344,12 @@ static void service_dma0_event(void) {
 }
 #endif /* XPAR_AXI_DMA_0_BASEADDR */
 
-/* Single registered handler for MicroBlaze's one external interrupt line -- axi_intc funnels
- * every enabled source into it, so the handler must check IPR to see which is actually pending
- * rather than assume. */
+/**
+ * @brief Single registered handler for MicroBlaze's one external interrupt line.
+ *
+ * axi_intc funnels every enabled source into it, so the handler must check IPR to see which is
+ * actually pending rather than assume.
+ */
 static void intc_isr(void *callback_ref) {
   (void)callback_ref;
   u32 ipr = Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IPR_OFFSET);
@@ -332,7 +366,10 @@ static void intc_isr(void *callback_ref) {
 #endif
 }
 
-/* Arms axi_dma_1's first raw-trace buffer and brings up interrupts with only its bit enabled.
+/**
+ * @brief Arms axi_dma_1's first raw-trace buffer and brings up interrupts with only its bit
+ *        enabled.
+ *
  * Must run before any real trigger can occur: axis_broadcaster_0 (trigger_core's raw output,
  * split to both fci_core and axi_dma_1) won't accept a beat on EITHER branch until BOTH
  * consumers are ready, so an unarmed axi_dma_1 stalls fci_core too, not just the raw-trace tap --
@@ -373,7 +410,10 @@ static void start_raw_trace_pipeline(void) {
  * below-baseline sample as ~65000 and turn the noise statistics into nonsense. */
 static s16 g_trace[RAW_TRACE_MAX_SAMPLES];
 
-/* A stalled MM2S transfer needs axi_dma_1 reset and its S2MM side (the continuous background
+/**
+ * @brief Recovers a stalled raw-trace FSL/MM2S transfer: resets axi_dma_1 and re-arms S2MM.
+ *
+ * A stalled MM2S transfer needs axi_dma_1 reset and its S2MM side (the continuous background
  * raw-trace capture, serviced by service_dma1_event()) re-armed, or the next capture would just
  * stall again with nothing left driving it. Deliberately does NOT call Intc_Init() again the way
  * start_raw_trace_pipeline() does at startup: that call resets IER wholesale, which would silently
@@ -408,7 +448,10 @@ static void recover_raw_trace_pipeline(void) {
   microblaze_enable_interrupts();
 }
 
-/* Called whenever software changes the trigger's depth register at runtime ($ST index 3), to
+/**
+ * @brief See bringup.h.
+ *
+ * Called whenever software changes the trigger's depth register at runtime ($ST index 3), to
  * close the window that would otherwise exist between that write and the next real trigger:
  * axi_dma_1's S2MM channel stays armed at whatever depth it last saw (from start/recover/service
  * above) until service_dma1_event() opportunistically re-arms it at the NEXT completion -- but
@@ -455,10 +498,12 @@ void Bringup_ReconfigureRawTraceDepth(u32 new_depth) {
  * a precisely measured cycle count, just comfortably on the generous side of both. */
 #define RAW_TRACE_FSL_TIMEOUT_ITERS 2000000
 
-/* Non-blocking "test get" (the MicroBlaze tget instruction, which sets the carry flag rather than
- * blocking when no data is available) with a bounded retry count, instead of a plain blocking
- * getfslx. Returns 1 with *out_word set on success, 0 if the stream never delivered a word within
- * the timeout.
+/**
+ * @brief Non-blocking, bounded-retry read of one word from FSL stream 1 (the raw-trace MM2S
+ *        stream).
+ *
+ * Uses the MicroBlaze tget instruction, which sets the carry flag rather than blocking when no
+ * data is available, with a bounded retry count instead of a plain blocking getfslx.
  *
  * The tget and the carry-flag read are ONE inline asm block, not fsl.h's separate tgetfslx() +
  * fsl_isinvalid() macros called back to back: those are two independent asm volatile statements
@@ -477,10 +522,15 @@ static int fsl1_get_timeout(u32 *out_word) {
   return 1;
 }
 
-/* Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace. Kept separate from
- * printing so calibrate_threshold() can analyse a trace without dumping it over the UART.
+/**
+ * @brief Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace.
  *
- * Returns 1 on success, 0 if the FSL stream stalled -- in which case g_trace's contents are
+ * Kept separate from printing so calibrate_threshold() can analyse a trace without dumping it
+ * over the UART.
+ *
+ * @param buf_addr Raw-trace BRAM buffer address (RAW_TRACE_BUF_A or _B).
+ * @param depth    Sample count to read.
+ * @return 1 on success, 0 if the FSL stream stalled -- in which case g_trace's contents are
  * whatever was read so far, not meaningful, and axi_dma_1 has already been reset and re-armed for
  * the background capture pipeline (recover_raw_trace_pipeline()) before returning.
  *
@@ -510,6 +560,8 @@ static int read_raw_trace(u32 buf_addr, u32 depth) {
   return 1;
 }
 
+/** @brief Reads (via read_raw_trace()) and prints one raw trace as "RAW,&lt;depth&gt;" followed
+ *         by one sample per line, or "RAW,0" if the FSL stream stalled. */
 static void print_raw_trace(u32 buf_addr, u32 depth) {
   if (!read_raw_trace(buf_addr, depth)) {
     xil_printf("RAW,0\r\n");
@@ -521,9 +573,11 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
     xil_printf("%d\r\n", g_trace[i]);
 }
 
-/* Hands the most recent completed capture to the CLI ($RT). Signature matches CliTraceFn.
+/**
+ * @brief See bringup.h. Hands the most recent completed capture to the CLI ($RT).
  *
- * Reports whatever the background raw-trace pipeline last completed rather than arming a capture
+ * Signature matches CliTraceFn. Reports whatever the background raw-trace pipeline last completed
+ * rather than arming a capture
  * and waiting for one: a $RT that blocked until the next trigger would stall the command interface
  * for however long the source takes to produce an event, which at background rates is seconds. */
 int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
@@ -563,7 +617,10 @@ int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
   return 1;
 }
 
-/* When the raw-trace path yields nothing, "no capture" alone cannot distinguish the three very
+/**
+ * @brief Prints DMA/interrupt diagnostic registers to distinguish why no raw trace arrived.
+ *
+ * When the raw-trace path yields nothing, "no capture" alone cannot distinguish the three very
  * different causes: the trigger never fired, or it fired but axi_dma_1 never completed (the
  * lockstep-broadcaster stall), or it completed but the interrupt never reached us. These registers
  * separate them:
@@ -634,6 +691,7 @@ static s32 g_calibrated_threshold; /* 0 until calibrate_threshold() succeeds */
  * hardware reset default rather than deriving a threshold from a number it does not have. */
 static u32 g_last_sigma;
 
+/** @brief Integer square root (binary digit-by-digit method), for baseline sigma from variance. */
 static u32 isqrt_u32(u32 v) {
   u32 r = 0, bit = 1UL << 30;
   while (bit > v)
@@ -659,8 +717,11 @@ static u32 isqrt_u32(u32 v) {
  * The downward sweep is what makes this self-starting: a threshold above everything never fires,
  * and as it descends past the top of the noise distribution captures begin -- so the first hit
  * lands near the noise peak without needing to know the signal levels beforehand. */
-/* Locates the baseline by finding which thresholds the NOISE crosses, instead of waiting for the
- * detector to produce an event.
+/**
+ * @brief Locates the baseline noise band by sweeping the trigger threshold up from 0 and
+ *        recording which values the noise itself crosses.
+ *
+ * Instead of waiting for the detector to produce an event.
  *
  * This replaces a downward probe sweep that waited ~100 ms at each of 62 steps for a real pulse to
  * cross. Background here runs ~30 cps, so that dwell would have caught an event ~95% of the time
@@ -683,8 +744,13 @@ static u32 isqrt_u32(u32 v) {
  *
  * The noise band has none of those problems: it is always present, independent of the detector, and
  * fires at kHz so a few milliseconds of dwell is decisive. Sweeping UP from 0 and recording the
- * first and last threshold that fire brackets it directly. Returns 0 if nothing ever fires, which
- * now genuinely means the raw path is broken rather than "no event happened to arrive". */
+ * first and last threshold that fire brackets it directly.
+ *
+ * @param out_lo Set to the lowest threshold the noise crossed.
+ * @param out_hi Set to the highest threshold the noise crossed.
+ * @return 1 if a band was found, 0 if nothing ever fired (genuinely means the raw path is broken,
+ *         not merely "no event happened to arrive").
+ */
 static int find_noise_band(u32 *out_lo, u32 *out_hi) {
   /* STEP must be well UNDER the noise width or the scan steps straight over the band and reports
    * nothing. Measured sigma on a quiet baseline (background only, no source) is ~7 counts, so the
@@ -735,6 +801,16 @@ static int find_noise_band(u32 *out_lo, u32 *out_hi) {
   return found;
 }
 
+/**
+ * @brief Measures the live baseline noise (via find_noise_band()) and sets the trigger threshold
+ *        to mean + THRESHOLD_SIGMA_MULT*sigma above it.
+ *
+ * Also configures depth/delay/CFD registers to their known-good defaults first, and updates
+ * g_calibrated_threshold/g_last_sigma on success.
+ *
+ * @return 1 on success, 0 if no noise band was found or no capture followed (see xil_printf
+ *         output / report_raw_path_state() for which).
+ */
 static int calibrate_threshold(void) {
   xil_printf("-- threshold calibration (auto, %d sigma over baseline) --\r\n",
              THRESHOLD_SIGMA_MULT);
@@ -819,7 +895,9 @@ static int calibrate_threshold(void) {
  * a stale capture (spurious or otherwise) sitting in g_raw_ready_buf -- so a plain "is it
  * non-zero" check could return old data instead of a fresh one. Waiting for the count to move
  * guarantees whatever we read was captured after this function started looking. */
-/* Cumulative charge as a function of long-gate length, over the trace currently in g_trace.
+/**
+ * @brief (Documents report_gate_scan() below.) Prints cumulative charge as a function of long-gate
+ *        length, over the trace currently in g_trace.
  *
  * This exists because the long gate cannot be derived from the pulse decay alone. The AFE's
  * response undershoots after a pulse, so past some length the gate starts integrating NEGATIVE
@@ -829,13 +907,18 @@ static int calibrate_threshold(void) {
  *
  * The useful long gate is the one at the maximum of this curve: long enough to collect the tail,
  * short enough to stop before the undershoot. Printing the curve turns that into a measurement
- * instead of a guess. */
-/* Prints a value scaled by 10000 as a decimal, e.g. -5000 -> "-0.5000".
+ * instead of a guess.
+ */
+/**
+ * @brief Prints a value scaled by 10000 as a decimal, e.g. -5000 -> "-0.5000".
  *
  * The sign has to be handled before the split, not after: in C, -5000/10000 truncates toward zero
  * and gives 0, so printing the quotient and remainder separately would render -0.5000 as "0.5000"
  * -- correct magnitude, silently wrong sign. It only shows up for values between -1 and 0, which
- * is exactly the range a marginally-negative tail integral lands in. */
+ * is exactly the range a marginally-negative tail integral lands in.
+ *
+ * @param scaled Value scaled by 10000.
+ */
 static void print_fixed4(s32 scaled) {
   s32 mag = (scaled < 0) ? -scaled : scaled;
   if (scaled < 0)
@@ -857,6 +940,8 @@ static void report_gate_scan(u32 depth) {
   }
 }
 
+/** @brief Bring-up check: waits (up to ~2s) for a new background raw-trace capture, then prints
+ *         it and its long-gate charge scan (report_gate_scan()). */
 static void test_raw_trace_capture(void) {
   xil_printf("-- raw_trace: latest capture via axi_dma_1 --\r\n");
 
@@ -914,10 +999,12 @@ static void test_raw_trace_capture(void) {
 static const u16 VGA_BISECT_CODES[] = {0, 205, 410, 819, 1638};
 #define VGA_BISECT_N (sizeof(VGA_BISECT_CODES) / sizeof(VGA_BISECT_CODES[0]))
 
-/* Full 1024-sample dumps only at the two codes that answer the question; the rest report metrics
- * only, to keep the UART log readable. */
+/** @brief Whether test_vga_fine_bisect() should dump the full trace for this DAC code: only the
+ *         two codes that answer the bisect question, to keep the UART log readable. */
 static int vga_bisect_should_dump(u16 code) { return code == 0 || code == 819; }
 
+/** @brief Prints peak/amplitude/plateau/undershoot metrics for the trace in g_trace, the signature
+ *         test_vga_fine_bisect() uses to distinguish a clean pulse from an overload-recovery one. */
 static void report_trace_metrics(u32 depth, s32 mean, u32 sigma) {
   /* Seeded from a real sample rather than 0: on a signed, zero-centred stream a fixed unsigned
    * seed is not a valid starting extreme -- an all-negative trace would report a peak of 0 that
@@ -951,6 +1038,9 @@ static void report_trace_metrics(u32 depth, s32 mean, u32 sigma) {
 
 
 
+/** @brief Diagnostic: sweeps VGA_BISECT_CODES on the fine-gain DAC, recalibrating and measuring
+ *         pulse-shape metrics at each, then restores the normal operating gain. See the "VGA
+ *         fine-gain bisect" section comment above for what question this settles. */
 static void test_vga_fine_bisect(void) {
   xil_printf("\r\n-- VGA fine-gain bisect: is fine code 0 the cause of the distortion? --\r\n");
 
@@ -1030,8 +1120,10 @@ static void test_vga_fine_bisect(void) {
 #define ANALOG_ZERO_CODE 8192
 #if ENCODING_FOLD_DEMO_ENABLE
 
-/* Reproduces the original bring-up artifact on demand, which is the one thing none of the earlier
- * hypotheses could do.
+/**
+ * @brief Diagnostic: drives gain to maximum to force a pulse across analog zero, then prints it
+ *        both corrected and as pre-fix firmware would have misread it, reproducing the original
+ *        bring-up artifact on demand -- the one thing none of the earlier hypotheses could do.
  *
  * The ADC's MODE pin is strapped to 2/3 VDD, so it emits 2's complement; trigger_core_top.vhd now
  * converts to offset binary with a single MSB flip before anything downstream sees it. Before that
@@ -1131,11 +1223,16 @@ static void test_encoding_fold_demo(void) {
  *
  * Both consumers are now serviced continuously by start_result_pipeline()/start_raw_trace_pipeline()
  * from before the first trigger, so neither can starve the other. */
-/* Two independent bodies for the same proof ("fci_core produced a live, triggered event"), kept
+/**
+ * @brief Bring-up check: waits (up to ~10s) for a live triggered event and prints its FCI ratio,
+ *        proving trigger_core -> fci_core -> {fci_sink|BRAM} end to end.
+ *
+ * Two independent bodies for the same proof ("fci_core produced a live, triggered event"), kept
  * deliberately narrow to fci_core's own output either way -- neither touches psd_core, so this can
  * run this early in Bringup_Init(), before the Psd_Configure/Acq_Configure block near the end,
  * without depending on it. Reading via Acq_PopPaired here instead would silently start requiring
- * that ordering, for no benefit: this test was never about psd_core. */
+ * that ordering, for no benefit: this test was never about psd_core.
+ */
 #if FCI_RESULT_VIA_FCI_SINK
 static void test_live_event(void) {
   xil_printf("-- live event: trigger_core -> fci_core -> fci_sink (interrupt-free polling) --\r\n");
@@ -1213,7 +1310,11 @@ static void test_live_event(void) {
 }
 #endif /* FCI_RESULT_VIA_FCI_SINK */
 
-/* Arms axi_dma_0's pipeline and hands it over to service_dma0_event() (defined earlier alongside
+/**
+ * @brief Brings axi_dma_0 (fci_core's legacy PSA result stream) up interrupt-driven and
+ *        double-buffered. Legacy path -- see fci_sink.c for the FIFO-based replacement.
+ *
+ * Arms axi_dma_0's pipeline and hands it over to service_dma0_event() (defined earlier alongside
  * axi_dma_1's pipeline) -- from here on main()'s loop is free to do anything else (print, service
  * UART, etc.) without blocking acquisition; this is the real-time property the original
  * block-design audit called for ("even if the MicroBlaze is attending UART character parsing or
@@ -1240,8 +1341,13 @@ static void start_result_pipeline(void) {
 }
 #endif /* XPAR_AXI_DMA_0_BASEADDR */
 
-/* Both DMA channels have been running interrupt-driven since start_result_pipeline(); all this does
- * is restore the operating threshold that the bisect perturbed and hand over to the print loop. */
+/**
+ * @brief Restores the operating trigger config/threshold and hands acquisition over to the
+ *        background interrupt-driven pipelines.
+ *
+ * Both DMA channels have been running interrupt-driven since start_result_pipeline(); all this does
+ * is restore the operating threshold that the bisect perturbed and hand over to the print loop.
+ */
 static void start_continuous_capture(void) {
   xil_printf("-- continuous interrupt-driven capture --\r\n");
 
@@ -1255,6 +1361,8 @@ static void start_continuous_capture(void) {
   xil_printf("  [INFO] armed -- events now serviced by interrupt in the background\r\n");
 }
 
+/** @brief See bringup.h. Runs every test_*()/start_*() bring-up step in sequence, then leaves the
+ *         acquisition chain running under interrupt-driven capture. */
 void Bringup_Init(void) {
   xil_printf("\r\n=== FCI register bring-up test ===\r\n");
   test_trigger_core();
@@ -1339,10 +1447,13 @@ void Bringup_Init(void) {
 #endif
 }
 
-/* The legacy free-running acquisition loop, kept so a build can still stream CSV without a
- * host attached. main() now calls Bringup_Init() and hands the UART to the CLI instead: the
- * two cannot coexist, because this loop prints unsolicited lines that would interleave with
- * command replies. */
+/**
+ * @brief See bringup.h. The legacy free-running acquisition loop, kept so a build can still
+ *        stream CSV without a host attached.
+ *
+ * main() now calls Bringup_Init() and hands the UART to the CLI instead: the two cannot coexist,
+ * because this loop prints unsolicited lines that would interleave with command replies.
+ */
 void Bringup_Run(void) {
   Bringup_Init();
 

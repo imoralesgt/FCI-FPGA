@@ -10,6 +10,7 @@
 
 #if UART_IS_16550
 
+/** @brief See uart.h (16550 build: programs the divisor latch, 8N1, and enables both FIFOs). */
 void Uart_Init(void) {
   u32 lcr;
 
@@ -44,18 +45,23 @@ void Uart_Init(void) {
                       XUN_FIFO_ENABLE | XUN_FIFO_RX_RESET | XUN_FIFO_TX_RESET);
 }
 
+/** @brief See uart.h (16550 build). */
 int Uart_HasByte(void) { return XUartNs550_IsReceiveData(UART_BASEADDR) ? 1 : 0; }
 
+/** @brief See uart.h (16550 build). */
 char Uart_GetByte(void) {
   return (char)XUartNs550_ReadReg(UART_BASEADDR, XUN_RBR_OFFSET);
 }
 
 #else /* axi_uartlite: baud is fixed at synthesis, nothing to program */
 
+/** @brief See uart.h (uartlite build: no-op, baud is fixed at synthesis). */
 void Uart_Init(void) {}
 
+/** @brief See uart.h (uartlite build). */
 int Uart_HasByte(void) { return !XUartLite_IsReceiveEmpty(UART_BASEADDR); }
 
+/** @brief See uart.h (uartlite build). */
 char Uart_GetByte(void) { return (char)XUartLite_RecvByte(UART_BASEADDR); }
 
 #endif

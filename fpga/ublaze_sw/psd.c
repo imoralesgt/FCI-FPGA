@@ -9,6 +9,7 @@
 #include "registers.h"
 #include "xil_io.h"
 
+/** @brief See psd.h. */
 void Psd_Configure(u32 base, u32 pre_trigger, u32 pre_gate, u32 short_gate, u32 long_gate,
                    u32 baseline_ref) {
   Xil_Out32(base + PSD_PRE_TRIGGER_OFFSET, pre_trigger);
@@ -18,6 +19,7 @@ void Psd_Configure(u32 base, u32 pre_trigger, u32 pre_gate, u32 short_gate, u32 
   Xil_Out32(base + PSD_BASELINE_REF_OFFSET, baseline_ref);
 }
 
+/** @brief See psd.h. */
 int Psd_Peek(u32 base, PsdResult *out) {
   u32 status = Xil_In32(base + PSD_STATUS_OFFSET);
   if (status & PSD_STATUS_EMPTY_MASK)
@@ -31,8 +33,10 @@ int Psd_Peek(u32 base, PsdResult *out) {
   return 1;
 }
 
+/** @brief See psd.h. */
 void Psd_Discard(u32 base) { Xil_Out32(base + PSD_CTRL_OFFSET, PSD_CTRL_POP_MASK); }
 
+/** @brief See psd.h. */
 int Psd_Pop(u32 base, PsdResult *out) {
   if (!Psd_Peek(base, out))
     return 0;
@@ -40,20 +44,26 @@ int Psd_Pop(u32 base, PsdResult *out) {
   return 1;
 }
 
+/** @brief See psd.h. */
 u32 Psd_Level(u32 base) {
   return (Xil_In32(base + PSD_STATUS_OFFSET) >> PSD_STATUS_LEVEL_SHIFT) & PSD_STATUS_LEVEL_MASK;
 }
 
+/** @brief See psd.h. */
 u32 Psd_EventCount(u32 base) { return Xil_In32(base + PSD_EVENT_COUNT_OFFSET); }
 
+/** @brief See psd.h. */
 int Psd_Overflowed(u32 base) {
   return (Xil_In32(base + PSD_STATUS_OFFSET) & PSD_STATUS_OVERFLOW_MASK) ? 1 : 0;
 }
 
+/** @brief See psd.h. */
 void Psd_Clear(u32 base) { Xil_Out32(base + PSD_CTRL_OFFSET, PSD_CTRL_CLEAR_MASK); }
 
+/** @brief See psd.h. */
 void Psd_SetWatermark(u32 base, u32 level) { Xil_Out32(base + PSD_WATERMARK_OFFSET, level); }
 
+/** @brief See psd.h. */
 int Psd_SelfTest(u32 base) {
   u32 saved_pt = Xil_In32(base + PSD_PRE_TRIGGER_OFFSET);
   u32 saved_pg = Xil_In32(base + PSD_PRE_GATE_OFFSET);
