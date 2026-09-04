@@ -2926,6 +2926,83 @@ past.
 
 ---
 
+## 8o. FCI FoM live sweep: a result, and a parameter-coupling gap in the sweep itself
+
+A live Optimize-tab run against the DD generator, sweeping FCI's four PSA window bounds one at a
+time (`fom_sweep_worker.py`'s coordinate-wise scan, §8n's fix applying peak-amplitude LLD/ULD):
+
+```
+--- Sweeping PSA_l low [0, 5] ---
+PSA_l low=0: n=806  FoM=0.9942  <- best so far
+PSA_l low=1: n=786  FoM=1.0968  <- best so far
+PSA_l low=2: n=779  FoM=0.1004
+PSA_l low=3: n=782  FoM=0.0189
+PSA_l low=4: n=791  FoM=0.1072
+PSA_l low=5: n=786  FoM=0.0284
+Best PSA_l low = 1 (FoM=1.0968) -- applied.
+
+--- Sweeping PSA_l high [5, 40] ---
+PSA_l high=5: n=796  FoM=0.1317  <- best so far
+PSA_l high=9: n=782  FoM=0.0263
+PSA_l high=13: n=773  FoM=1.0260  <- best so far
+PSA_l high=17: n=768  FoM=0.1899
+PSA_l high=21: n=765  FoM=0.1187
+PSA_l high=24: n=787  FoM=0.1434
+PSA_l high=28: n=782  FoM=1.0421  <- best so far
+PSA_l high=32: n=795  FoM=1.0197
+PSA_l high=36: n=752  FoM=0.2280
+PSA_l high=40: n=783  FoM=1.3484  <- best so far
+Best PSA_l high = 40 (FoM=1.3484) -- applied.
+
+--- Sweeping PSA_w low [0, 5] ---
+PSA_w low=0: n=781  FoM=0.9654  <- best so far
+PSA_w low=1: n=771  FoM=1.0678  <- best so far
+PSA_w low=2: n=763  FoM=1.1130  <- best so far
+PSA_w low=3: n=789, fit failed (double-Gaussian fit did not converge: Optimal parameters not found: The maximum number of function evaluations is exceeded.)
+PSA_w low=4: n=748  FoM=0.9083
+PSA_w low=5: n=790  FoM=0.2610
+Best PSA_w low = 2 (FoM=1.1130) -- applied.
+
+--- Sweeping PSA_w high [10, 150] ---
+PSA_w high=10: n=803  FoM=0.1200  <- best so far
+PSA_w high=26: n=783, fit failed (double-Gaussian fit did not converge: Optimal parameters not found: The maximum number of function evaluations is exceeded.)
+PSA_w high=41: n=749  FoM=0.1103
+PSA_w high=57: n=783  FoM=0.2201  <- best so far
+PSA_w high=72: n=765  FoM=1.4179  <- best so far
+PSA_w high=88: n=796, fit failed (double-Gaussian fit did not converge: Optimal parameters not found: The maximum number of function evaluations is exceeded.)
+PSA_w high=103: n=804  FoM=1.0372
+PSA_w high=119: n=817  FoM=1.0324
+PSA_w high=134: n=767  FoM=1.1959
+PSA_w high=150: n=776  FoM=1.6780  <- best so far
+Best PSA_w high = 150 (FoM=1.6780) -- applied.
+
+Optimization complete.
+```
+
+Final applied window: `PSA_l` 1-40, `PSA_w` 2-150, FoM 1.6780.
+
+**A real gap this run exposes, not just a one-off**: `PSA_l low` and `PSA_w low` landed on different
+values (1 vs. 2). `FCI_SWEEP_PARAMS` (`fom_core.py:46-50`) lists `psa_l_lo` and `psa_w_lo` as two
+fully independent `SweepParam` entries, and `FomSweepWorker` sweeps every selected parameter
+one-at-a-time (its own module docstring: "independently, one at a time, in a coordinate-wise scan
+rather than a combinatorial joint grid") -- there is no constraint anywhere that keeps them equal.
+But the FCI definition, `FCI = (PSA_w - PSA_l) / PSA_w`, only has its intended reading -- "energy
+outside the narrow low-frequency band, as a fraction of the whole" -- when `PSA_l` is a clean subset
+of `PSA_w`, i.e. the same low bound and a smaller high bound (`bringup.c:166,172` writes both low
+bounds as 1 at bring-up, for exactly this reason). A sweep free to drift them apart can land on a
+configuration that scores well by FoM while no longer expressing that subset relationship -- this
+run's own result already did, even if the 1-vs-2 drift here is small enough not to matter much in
+practice. Worth coupling the two low-bound sweeps (or dropping one of them, always deriving
+`psa_w_lo` from `psa_l_lo`) before trusting a sweep result that moves both independently.
+
+**Follow-up, not done here**: worth trying the same optimization idea offline against the raw traces
+from this session's DD run, recorded at `/home/ivan/datasets/clyc-FCI-test-20260904-DD` -- six DD
+captures (`dd_0001` through `dd_0006`, each with a paired `_scope_traces.csv`/`_fci_live.csv`), plus
+`cs137_0001` and `co60_0001` the same way, and `Cs137.spe`/`mixedSpectrum.spe` exports. To be
+analyzed later.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
