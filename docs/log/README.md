@@ -2725,6 +2725,125 @@ removed a debugging capability that has no other route, but a future ILA session
 
 ---
 
+## 8m. Spectrum tab iteration: a decoupled readout path, shared calibration, two real display bugs
+
+After §8l's bitstream rebuild succeeded and firmware confirmed booting on hardware, the Spectrum
+tab went through a fast hands-on iteration cycle. Everything below is software/firmware only -- no
+RTL or bitstream change, running on exactly the bitstream §8l already confirmed synthesizes and
+fits. Firmware still fits comfortably after the additions: **51944 / 65536 bytes (~14.6% margin)**
+at `-Os`, confirmed via a clean rebuild.
+
+### `$RA`: a lightweight amplitude-only readout path
+
+The Spectrum tab's live data turned out to depend entirely on Live FCI/PSD's own Start button: both
+tabs were fed from the same `$RQ` poll, and firmware only pops events from that path while
+`g_running` is set (i.e. `$AE` has been called) -- so with Live FCI/PSD stopped, `$RQ` legitimately
+returned nothing, and the Spectrum tab's Run/Stop had no live data to gate at all.
+
+The fix is a new command rather than relaxing `g_running`: **`$RA`** pops timestamp + peak directly
+from `psd_core`'s own FIFO (`Psd_Pop()`), skipping `Acq_PopPaired()`'s FCI-pairing step entirely --
+and deliberately ignoring `g_running`, since `psd_core` integrates every triggered frame regardless
+of whether `$AE` was ever called; that flag only ever controlled whether firmware's *read* handlers
+pop and pair results. No RTL change was needed: `peak` and `timestamp` were already in `psd_core`'s
+register map from §8l. New 12-byte binary record (`ts_lo`, `ts_hi`, `peak`), same self-delimiting
+`$RQ`-style framing reused via the same `g_rq_sum`/`rq_put_u32()` (moved out from behind
+`CLI_HAVE_RESULTS`, since `$RA` must work even in a build with no FCI path at all). See
+`docs/sw/CLI_documentation.md` §2.5c.
+
+`fci_api/reader_process.py`'s poll loop now mode-switches: `$RQ` (paired) whenever Live FCI/PSD
+acquisition is running, `$RA` (amplitude-only) when only the Spectrum tab's Run is active, and
+**no poll at all** when neither wants data -- the two are mutually exclusive by design, never
+polled together, since both draw from the same `psd_core` FIFO and would otherwise starve each
+other of events the other side already consumed. A new `AmpEvent` type (`timestamp`, `peak` only)
+keeps this path from ever being mistaken for a real paired `AcqEvent` with the rest of its fields
+silently zeroed.
+
+### GUI ergonomics
+
+- Tab order: File Management, Configuration, Trigger, Spectrum, Live FCI/PSD.
+- Independent Run/Stop for the Spectrum tab, driving `$RA` polling via the mode-switch above.
+- Binning slider, 256..16384 channels (64x). Corrected mid-session: the first cut assumed 8192
+  channels / 32x, on the (wrong) guess that the low 2 bits of `peak` were structurally always zero
+  from a 14-into-16-bit left-shift. Checked against the actual RTL rather than left as a guess:
+  `blr_core_top.vhd` packs the restored sample in the LOW bits with `resize(signed(...), 16)` --
+  sign-extension, not a shift -- and `peak` is a *difference* of two ADC_WIDTH=14-bit signed values,
+  which genuinely needs up to 16 bits (not 14) to represent without overflow. 16384 = 2^14, the
+  ADC's own resolution, is the correct full span; no bits are structurally wasted.
+- Binning and calibration combined into one compact row (was two stacked boxes eating vertical
+  space the plot should have).
+- Calibration coefficients accept scientific notation. Needed a custom `QDoubleSpinBox` subclass:
+  Qt's default validator accepts a *complete* string like `1.5e-05` but rejects the *intermediate*
+  states typing produces one keystroke at a time (`1.5e`, `1.5e-` both validate Invalid, not
+  Intermediate), which makes the widget refuse the keystroke outright -- a `QDoubleValidator` in
+  `ScientificNotation` mode accepts those same intermediate strings correctly.
+- Log-scale Y axis, fixed twice. First cut plotted `log10(counts+1)` on a linear axis -- functional
+  but mislabeled, ticks read as raw log10 values instead of counts. Corrected via
+  `AxisItem.setLogMode()` on the axis alone (not the `ViewBox`'s), which `BarGraphItem` does not
+  respond to: the bars stay pre-transformed to log10 space, and the axis independently relabels its
+  own ticks as `10^x` with proper log-spaced minor ticks, verified to match real count values.
+- X-axis fixed to the full theoretical span with working pan/zoom/Autoscale: `BarGraphItem` is now
+  given *all* bins, not just nonzero ones, since pyqtgraph's Autoscale button fits to the item's own
+  bounding box -- masking to nonzero bins made both the initial view and Autoscale track whatever
+  happened to be populated instead of the true span.
+- `.spe` extension enforced on export (appended if missing, not trusted to the save dialog's own
+  platform-inconsistent handling).
+- Rate/Avg count-rate labels next to the total, on the same row as the buttons, separated by a
+  vertical divider -- see `sw/README.md`'s new "Spectrum tab: count-rate labels" section for the
+  exact windowing.
+
+### Shared calibration: Live FCI/PSD's plots now read keVee, not `energy_long`
+
+`HistogramView` is now the single owner of this session's energy calibration; it emits
+`calibration_changed(c0, c1, c2)`, which `LiveView.set_calibration()` consumes to compute its own
+x-axis as `c0 + c1*peak + c2*peak^2` -- replacing `energy_long` (a PSD charge integral never meant
+as an energy proxy) on both the FCI-vs-Energy and PSD-vs-Energy plots. `LiveView` now stores each
+event's raw `peak` alongside the derived energy specifically so a *later* calibration change
+rescales every already-plotted point, not just events that arrive afterwards. The `energy_long <=
+0` exclusion (project log §8d) stays exactly as it was -- it guards PSD *value* validity (a 0.0
+sentinel for "undefined"), which has nothing to do with what unit the x-axis happens to be in --
+and `filter_for_recording()`'s LLD/ULD comparison now uses the same peak-derived keVee the region
+is actually dragged in, which it did not before this change.
+
+### Two real display bugs found by hands-on testing
+
+1. **PSD/FCI heatmap Y-range.** Auto-ranged to `values.min()/max()` since an earlier heatmap
+   resolution pass (§8g), on the reasoning that FCI/PSD occupy a narrow slice of `[0,1]` and a fixed
+   axis would waste bins on empty space. True on a clean run, but a single pathological point (e.g. PSD
+   briefly negative from `short > long` on a noisy pulse -- nothing currently excludes that) could
+   stretch the axis far past the real cluster, compressing it into a handful of rows: unreadable for
+   the *opposite* reason the auto-range was added to fix. Fixed to `[0, 1]`, matching what the
+   scatter plots already use (`setYRange(0, 1, padding=0)`) -- `histogram2d` silently excludes any
+   point outside that range rather than letting it distort the scale.
+2. **`watermark` leaking into the CSV settings header.** `PsdConfig.watermark`/`FciConfig.watermark`
+   are already excluded from the config panel UI, by their own docstrings' account: no ISR is
+   registered for the watermark interrupt in this firmware (`$RB`/`$RV` drain by polling instead),
+   so the field has no observable effect on anything. `_device_settings_lines()`'s blanket
+   `dataclasses.asdict(cfg)` dump still recorded it into every dataset's settings header regardless,
+   contradicting the reason it was hidden from the panel in the first place. Excluded from the dump.
+
+### An SPE interop finding -- not a bug in this project
+
+Exporting at 256 channels with a -2000 keV `c0` produced a file InterSpec rejected: *"Energy cal
+provided invalid: EnergyCalibration::set_polynomial: Coefficients are unreasonable."* Traced to
+InterSpec's own source (`SpecUtils/EnergyCalibration.cpp`), not this project's writer: it hard-caps
+the offset to `[-500, 5500]` keV and the gain to `|c1| <= 450` keV/channel. `-2000` keV already
+violates the offset bound on its own. Separately worth knowing: `_rebin_calibration()`'s rescaling
+of `c1` by the decimation factor is correct (a coarser channel axis needs a proportionally larger
+keV/channel for the same physical calibration), but it means a perfectly reasonable raw-channel
+gain can cross InterSpec's 450 keV/channel ceiling once multiplied by a large decimation factor
+(e.g. 64x at 256 channels) -- exporting at finer binning keeps the un-multiplied gain further from
+that bound.
+
+### Status
+
+Headless-tested (accumulation, calibration rebasing/rescaling, the sci-notation validator, the
+log-axis tick labels, the fixed x/y ranges, the `$RA` mode-switch helper functions, the CSV
+`watermark` exclusion) but **not yet exercised live against hardware** by this round of work --
+worth a real acquisition run with Live FCI/PSD stopped to confirm `$RA` actually drives the
+Spectrum tab end to end, not just that the reader process picks the right command in isolation.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**

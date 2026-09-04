@@ -224,6 +224,50 @@ Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream.
 than 2026-09-01 answers `!XX 0` (unknown command); hosts wanting to work with both should fall back
 to `$RB`.
 
+### 2.5c Read Amplitudes, binary (`$RA`)
+
+`$RA [n]` — pops up to `n` events (default and maximum 1024, stops early if the FIFO empties), each
+carrying **only** the timestamp and peak amplitude, popped directly from `psd_core`'s own FIFO
+rather than through the FCI-pairing path `$RV`/`$RB`/`$RQ` use.
+
+Two things make this a genuinely different command rather than a slimmer `$RQ`:
+
+- **Not gated by `$AE`/`$AD`.** `psd_core` integrates every triggered frame regardless of whether
+  acquisition is enabled -- `g_running` only controls whether `$RV`/`$RB`/`$RQ` pop and pair
+  events, a firmware bookkeeping choice, not a hardware one. `$RA` returns real data whether or not
+  `$AE` has ever been called.
+- **No FCI pairing, and no `CLI_HAVE_RESULTS` dependency.** It never touches `fci_sink` or
+  `Acq_PopPaired()`, so it works in any build that has `psd_core` at all -- today, every build --
+  even one with no FCI result path present.
+
+Intended use: a host that wants a live energy spectrum (peak amplitude) but not FCI/PSD pairing --
+e.g. this project's own GUI, whose Spectrum tab switches to `$RA` precisely when Live FCI/PSD
+acquisition is not running, rather than polling a `$RQ` that `$AE` has not enabled and that would
+return empty. When Live FCI/PSD acquisition IS running, the GUI takes `peak` from the `$RQ` batches
+it is already fetching instead, since polling both would draw from the same `psd_core` FIFO and
+starve one path of events the other already consumed.
+
+Framing is identical to `$RQ`'s (ASCII header, `0xA5`-tagged records, `0x5A` end tag with count and
+checksum -- see 2.5b for the full rationale), just a smaller per-record payload:
+
+```
+!RA <bytes_per_event>\n          ASCII header; bytes_per_event is 12
+0xA5 <12 bytes>                  one per event, repeated
+...
+0x5A <u16 count> <u32 checksum>  end tag; little-endian
+```
+
+| offset | field | type |
+|---|---|---|
+| 0 | `ts_lo` | u32 |
+| 4 | `ts_hi` | u32 |
+| 8 | `peak` | s32 |
+
+At 4 Mbaud, a 13-byte-on-the-wire record (12 payload + 1 tag) puts the ceiling around
+400000/13 ~= 30 800 events/s -- well above what this instrument's trigger rate needs, since the
+point of `$RA` is avoiding wasted bandwidth on fields the caller does not want, not maximizing
+throughput for its own sake.
+
 ### 2.6 Read Trace (`$RT`)
 
 `$RT [n]` — captures one raw trace.

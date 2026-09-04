@@ -1,4 +1,4 @@
-"""Low-level framing over the CLI's wire protocol (docs/CLI_documentation.md section 1).
+"""Low-level framing over the CLI's wire protocol (docs/sw/CLI_documentation.md section 1).
 
 This module is the entire thread-safety mechanism for fci_api: FciTransport.transact() takes an
 RLock for the full round trip of one request, so concurrent callers serialize instead of
@@ -310,9 +310,11 @@ class FciTransport:
     RQ_TAG_END = 0x5A
 
     def transact_framed(self, code: str, *args: int) -> tuple[int, list[bytes]]:
-        """Sends `$<code> ...` and reads a self-delimiting BINARY frame, for $RQ.
+        """Sends `$<code> ...` and reads a self-delimiting BINARY frame, for $RQ and $RA (any
+        future binary-batch command can reuse this too -- it is generic over the record size, which
+        the device's own header line reports).
 
-        Frame (see cli.c's h_rq): an ASCII header `!<code> <bytes_per_event>\n`, then a sequence of
+        Frame (see cli.c's h_rq/h_ra): an ASCII header `!<code> <bytes_per_event>\n`, then a sequence of
         0xA5-tagged fixed-size records, terminated by a 0x5A tag followed by a u16 count and a u32
         additive checksum, both little-endian.
 

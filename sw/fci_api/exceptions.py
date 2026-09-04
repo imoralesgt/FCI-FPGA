@@ -1,6 +1,6 @@
 """Exceptions raised by fci_api.
 
-Maps directly onto docs/CLI_documentation.md:
+Maps directly onto docs/sw/CLI_documentation.md:
   - section 1.3 (error replies, `!XX <code>`) -> FciUnknownCommandError / FciParamError
   - the "-1 = not present in the loaded bitstream" sentinel used throughout section 2
     -> FciNotPresentError, raised by the client so callers don't have to remember to check

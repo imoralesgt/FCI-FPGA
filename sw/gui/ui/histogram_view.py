@@ -12,11 +12,12 @@ plots have to exclude (see live_view.py's module docstring) -- every triggered p
 from __future__ import annotations
 
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QDoubleValidator
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -52,6 +53,16 @@ Cs-137 (~40 keV FWHM at 662 keV) -- far coarser than one ADC code -- so 16384 ra
 resolution than the physics can use and just makes every bin wait longer for the same statistical
 significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (64x range end to end), so
 rebinning is always an exact integer grouping with no remainder."""
+
+RATE_WINDOW_S = 3.0
+"""Instantaneous-rate sliding window -- same value and reasoning as live_view.py's own
+RATE_WINDOW_S: long enough to smooth batch-to-batch noise, short enough to track a real rate
+change and settle to 0 promptly once events stop."""
+
+RATE_MIN_DT_S = 0.25
+"""Below this much span between the oldest retained rate sample and now, report 0 rather than
+count/dt -- avoids a divide-by-near-zero spike on the first sample after a gap. Same reasoning as
+live_view.py's constant of the same name."""
 
 
 class _SciDoubleSpinBox(QDoubleSpinBox):
@@ -147,6 +158,15 @@ class HistogramView(QWidget):
     peak) can stay in sync -- the same cross-tab live-wiring pattern main_window.py already uses
     for PSD pre_trigger / Trigger delay."""
 
+    run_clicked = Signal()
+    stop_clicked = Signal()
+    """Tell the controller to start/stop the device-side amplitude poll ($RA) -- see
+    AcquisitionWorker.request_spectrum_poll(). _running itself (gating add_events()) is purely
+    local UI state and needs no controller involvement; these signals exist because ACTUALLY
+    getting live data into add_events() while Live FCI/PSD is not running requires telling the
+    reader process to start polling $RA, which this widget cannot do on its own -- it has no
+    device connection of its own, by design (see set_controls_enabled())."""
+
     def __init__(self):
         super().__init__()
         self._counts = np.zeros(HIST_CHANNELS, dtype=np.int64)
@@ -194,9 +214,9 @@ class HistogramView(QWidget):
 
         self.chk_log_y = QCheckBox("Log scale")
         self.chk_log_y.setToolTip(
-            "Plots log10(counts + 1) instead of raw counts -- the +1 keeps empty bins at 0 rather "
-            "than -inf. BarGraphItem does not support pyqtgraph's native log-axis mode, so this "
-            "transforms the plotted heights directly rather than relabeling the axis."
+            "Y-axis in log scale: proper log-spaced ticks labeled with real count values, not a "
+            "linear axis showing log10(counts). An empty bin reads as \"1\" rather than \"0\" -- "
+            "the standard convention, since 0 has no position on a true log axis."
         )
         self.chk_log_y.toggled.connect(self._redraw)
         controls_layout.addWidget(self.chk_log_y)
@@ -250,9 +270,41 @@ class HistogramView(QWidget):
         self.btn_export = QPushButton("Export to SPE...")
         self.btn_export.clicked.connect(self._export_spe)
         ctrl_layout.addWidget(self.btn_export)
-        self.lbl_status = QLabel("0 events")
-        ctrl_layout.addWidget(self.lbl_status, stretch=1)
+
+        ctrl_divider = QFrame()
+        ctrl_divider.setFrameShape(QFrame.Shape.VLine)
+        ctrl_divider.setFrameShadow(QFrame.Shadow.Sunken)
+        ctrl_layout.addWidget(ctrl_divider)
+
+        self.lbl_status = QLabel("Total: 0 counts")
+        ctrl_layout.addWidget(self.lbl_status)
+        ctrl_layout.addWidget(QLabel("|"))
+        self.lbl_rate = QLabel("Rate: 0.0 cps")
+        self.lbl_rate.setToolTip(f"Instantaneous rate -- a {RATE_WINDOW_S:.0f} s sliding window, "
+                                  "not a lifetime average. Decays to 0 shortly after events stop "
+                                  "arriving (e.g. Stop, or a paused device).")
+        ctrl_layout.addWidget(self.lbl_rate)
+        ctrl_layout.addWidget(QLabel("|"))
+        self.lbl_avg_rate = QLabel("Avg: 0.0 cps")
+        self.lbl_avg_rate.setToolTip("Cumulative rate: total counts / elapsed time since the "
+                                      "first event after the last Clear.")
+        ctrl_layout.addWidget(self.lbl_avg_rate)
+
+        ctrl_layout.addStretch(1)
         layout.addLayout(ctrl_layout)
+
+        self._rate_samples: deque[tuple[float, int]] = deque()
+        """(monotonic_time, batch_size) pairs within RATE_WINDOW_S, oldest first -- same sliding-
+        window pattern as live_view.py's LiveView._rate_samples, for the same reason: a rate that
+        never decays once the source stops is misleading, and a lifetime average masks the current
+        rate behind however long the session has been open."""
+        self._rate_timer = QTimer(self)
+        self._rate_timer.setInterval(1000)
+        self._rate_timer.timeout.connect(self._update_rate_labels)
+        self._rate_timer.start()
+        """Ticks independent of add_events(): the window must keep pruning (and the instantaneous
+        rate keep decaying toward 0) even while nothing is arriving, which a purely
+        event-driven update would never do once events stop."""
 
         self.plot_widget = pg.PlotWidget(title="Energy spectrum")
         self.plot_widget.setLabel("bottom", "Energy (keVee)")
@@ -269,6 +321,9 @@ class HistogramView(QWidget):
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
 
+    def is_running(self) -> bool:
+        return self._running
+
     # ------------------------------------------------------------------------------------- run/stop
 
     def _on_run(self) -> None:
@@ -276,16 +331,18 @@ class HistogramView(QWidget):
         self.btn_run.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self._update_status_label()
+        self.run_clicked.emit()
 
     def _on_stop(self) -> None:
         self._running = False
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self._update_status_label()
+        self.stop_clicked.emit()
 
     def _update_status_label(self) -> None:
         suffix = "" if self._running else "  (stopped)"
-        self.lbl_status.setText(f"{self._total} events{suffix}")
+        self.lbl_status.setText(f"Total: {self._total} counts{suffix}")
 
     # ------------------------------------------------------------------------------------- data
 
@@ -302,15 +359,43 @@ class HistogramView(QWidget):
         np.clip(peaks, 0, HIST_CHANNELS - 1, out=peaks)
         self._counts += np.bincount(peaks, minlength=HIST_CHANNELS)
         self._total += len(events)
+        self._rate_samples.append((time.monotonic(), len(events)))
         self._update_status_label()
+        self._update_rate_labels()
         self._redraw()
 
     def clear(self) -> None:
         self._counts[:] = 0
         self._total = 0
         self._start_time = None
+        self._rate_samples.clear()
         self._update_status_label()
+        self._update_rate_labels()
         self._redraw()
+
+    # ------------------------------------------------------------------------------------- rate
+
+    def _instantaneous_rate_hz(self) -> float:
+        now = time.monotonic()
+        cutoff = now - RATE_WINDOW_S
+        while self._rate_samples and self._rate_samples[0][0] < cutoff:
+            self._rate_samples.popleft()
+        if not self._rate_samples:
+            return 0.0
+        dt = now - self._rate_samples[0][0]
+        if dt < RATE_MIN_DT_S:
+            return 0.0
+        return sum(n for _, n in self._rate_samples) / dt
+
+    def _cumulative_rate_hz(self) -> float:
+        if self._start_time is None:
+            return 0.0
+        elapsed = time.time() - self._start_time
+        return (self._total / elapsed) if elapsed > 0 else 0.0
+
+    def _update_rate_labels(self) -> None:
+        self.lbl_rate.setText(f"Rate: {self._instantaneous_rate_hz():.1f} cps")
+        self.lbl_avg_rate.setText(f"Avg: {self._cumulative_rate_hz():.1f} cps")
 
     # ------------------------------------------------------------------------------------- span
 
@@ -349,9 +434,20 @@ class HistogramView(QWidget):
         idx = np.arange(n, dtype=np.float64)
         x = c0 + c1 * idx + c2 * idx * idx
         width = abs(x[1] - x[0]) if len(x) > 1 else 1.0
-        heights = np.log10(counts.astype(np.float64) + 1.0) if self.chk_log_y.isChecked() else counts
-        self.plot_widget.setLabel("left", "Counts (log10, N+1)" if self.chk_log_y.isChecked()
-                                   else "Counts")
+        log_y = self.chk_log_y.isChecked()
+        heights = np.log10(counts.astype(np.float64) + 1.0) if log_y else counts
+        # BarGraphItem does not respond to ViewBox.setLogMode() (it draws literal rectangles in
+        # whatever coordinate space it is given, with no log-aware repaint logic), so the bars
+        # themselves are pre-transformed to log10 space above rather than relying on that. The axis
+        # is told separately -- AxisItem.setLogMode() alone, NOT the ViewBox's -- to relabel its
+        # ticks as 10^x and to lay out proper log-spaced minor ticks (1,2,3..9,10,20,30..) for
+        # whatever linear range it is actually showing; it does this independent of the ViewBox, so
+        # it correctly matches data that is already pre-transformed rather than double-transforming
+        # it. The one artifact: an empty bin sits at log10(0+1)=0, which this labels "1" rather than
+        # "0" -- the standard convention for a log-scale spectrum, since 0 has no position on a true
+        # log axis at all.
+        self.plot_widget.getAxis("left").setLogMode(log_y)
+        self.plot_widget.setLabel("left", "Counts")
         # ALL bins, not just nonzero ones: BarGraphItem's own bounding box is what pyqtgraph's
         # "view all" / autoscale button fits to, and masking to nonzero bins would make that button
         # (and the initial view) fit to whatever happened to be populated instead of the full
@@ -395,12 +491,18 @@ class HistogramView(QWidget):
         path, _ = QFileDialog.getSaveFileName(self, "Export Spectrum", "", "SPE files (*.spe)")
         if not path:
             return
+        # Enforced here rather than trusted to the dialog's own filter: that behavior is native and
+        # not consistent across platforms/window managers, and a user typing a bare name with no
+        # extension (or a different one) should still get a valid, openable .spe file.
+        out_path = Path(path)
+        if out_path.suffix.lower() != ".spe":
+            out_path = out_path.with_name(out_path.name + ".spe")
         elapsed = (time.time() - self._start_time) if self._start_time is not None else 0.0
         counts = _rebin_counts(self._counts, self._display_channels())
         try:
-            write_spe(Path(path), counts, self._display_calibration(),
+            write_spe(out_path, counts, self._display_calibration(),
                       live_time_s=elapsed, real_time_s=elapsed)
         except OSError as e:
             QMessageBox.warning(self, "Export Failed", str(e))
             return
-        QMessageBox.information(self, "Export Complete", f"Wrote {path}")
+        QMessageBox.information(self, "Export Complete", f"Wrote {out_path}")

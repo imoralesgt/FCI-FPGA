@@ -132,6 +132,7 @@ class RemoteFciClient:
 
 class AcquisitionWorker(QThread):
     batch_received = Signal(list)  # list[AcqEvent]
+    amplitude_batch_received = Signal(list)  # list[AmpEvent] -- see reader_process.py's $RA mode
     trace_received = Signal(object)  # TraceResult | None
     stats_received = Signal(object)  # fci_api.Stats
     acquisition_state_changed = Signal(bool)
@@ -225,6 +226,13 @@ class AcquisitionWorker(QThread):
     def request_stop_acquisition(self) -> None:
         self._cmd_q.put({"type": "stop_acq"})
 
+    def request_spectrum_poll(self, enabled: bool) -> None:
+        """Tells the reader process whether the Spectrum tab wants amplitude-only data via $RA.
+        Only takes effect while full acquisition (request_start_acquisition/stop) is NOT running --
+        see reader_process.py's mode-selection comment for why the two are mutually exclusive
+        rather than both polled."""
+        self._cmd_q.put({"type": "spectrum_poll", "enabled": enabled})
+
     def stop(self) -> None:
         """Signals the reader process to shut down and this thread's evt_q pump to exit, then
         blocks until both have actually finished."""
@@ -277,6 +285,8 @@ class AcquisitionWorker(QThread):
             self.connection_changed.emit(False)
         elif t == "batch":
             self.batch_received.emit(msg["events"])
+        elif t == "amplitude_batch":
+            self.amplitude_batch_received.emit(msg["events"])
         elif t == "trace":
             self.trace_received.emit(msg["trace"])
         elif t == "stats":

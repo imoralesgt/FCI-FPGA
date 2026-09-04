@@ -110,6 +110,16 @@ class MainWindow(QMainWindow):
         psd_pre_trigger.valueChanged.connect(trig_delay.setValue)
         trig_delay.valueChanged.connect(psd_pre_trigger.setValue)
 
+        # HistogramView owns the one set of energy calibration coefficients this session has;
+        # LiveView's FCI/PSD-vs-Energy plots compute their own keVee axis from the same
+        # coefficients applied to each event's peak (see live_view.py's module docstring), so they
+        # need to stay live-synced the same way pre_trigger/delay do above. Also synced once here,
+        # not just on change, since the signal only fires on a later edit and both views must agree
+        # from the start (they already do, by matching identity defaults, but this makes it
+        # explicit rather than relying on that coincidence).
+        self.histogram_view.calibration_changed.connect(self.live_view.set_calibration)
+        self.live_view.set_calibration(*self.histogram_view.calibration())
+
         self.set_connected_controls_enabled(False)
 
     @staticmethod

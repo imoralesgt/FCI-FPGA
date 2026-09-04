@@ -1,4 +1,4 @@
-"""FciClient: a typed method per command in docs/CLI_documentation.md, built entirely on top of
+"""FciClient: a typed method per command in docs/sw/CLI_documentation.md, built entirely on top of
 FciTransport.transact(). No method here touches the serial port directly -- that keeps the
 thread-safety story in one place (transport.py) rather than duplicated per method.
 
@@ -20,6 +20,7 @@ from .exceptions import FciNotPresentError, FciProtocolError
 from .transport import FciTransport
 from .types import (
     AcqEvent,
+    AmpEvent,
     BlrConfig,
     Counts,
     FciConfig,
@@ -195,6 +196,31 @@ class FciClient:
                     peak=peak,
                 )
             )
+        return out
+
+    def read_amplitude_batch(self, n: int = 1024) -> list[AmpEvent]:
+        """`$RA [n]`. Timestamp + peak amplitude only, popped directly from psd_core's own FIFO --
+        NOT gated by $AE/$AD, and no FCI pairing involved (see CLI doc section 2.5c).
+
+        For a host that wants a live energy spectrum but not FCI/PSD pairing, e.g. this project's
+        own GUI's Spectrum tab while Live FCI/PSD acquisition is not running. When that acquisition
+        IS running, take `peak` from read_batch_binary()'s AcqEvent objects instead -- polling both
+        would draw from the same psd_core FIFO and starve one path of events the other already
+        consumed.
+
+        Raises FciProtocolError on a checksum or framing failure -- see transact_framed().
+        """
+        rec_size, records = self._t.transact_framed("RA", n)
+        truncated = getattr(self._t, "_last_frame_truncated", None)
+        if truncated:
+            logger.warning("$RA: %s", truncated)
+        if rec_size != 12:
+            raise FciProtocolError(f"$RA: expected 12-byte records, device reports {rec_size}")
+        out: list[AmpEvent] = []
+        for rec in records:
+            ts_lo, ts_hi = struct.unpack_from("<2I", rec, 0)
+            (peak,) = struct.unpack_from("<i", rec, 8)
+            out.append(AmpEvent(timestamp=(ts_hi << 32) | ts_lo, peak=peak))
         return out
 
     def read_pending(self) -> Pending:

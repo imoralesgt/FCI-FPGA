@@ -18,7 +18,7 @@
  * deliberate constraint -- the acquisition loop this replaces printed CSV continuously, which would
  * interleave with replies and break any host-side parser. Events are now pulled with $RV.
  *
- * See docs/CLI_documentation.md for the full command reference.
+ * See docs/sw/CLI_documentation.md for the full command reference.
  */
 
 #ifndef SRC_CLI_H_

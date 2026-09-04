@@ -74,6 +74,8 @@ class AppController(QObject):
         self.view.scope_view.single_clicked.connect(self.scope_single)
         self.view.scope_view.calibrate_clicked.connect(self.open_calibration_wizard)
         self.view.live_view.fom_wizard_clicked.connect(self.open_fom_wizard)
+        self.view.histogram_view.run_clicked.connect(self._on_spectrum_run)
+        self.view.histogram_view.stop_clicked.connect(self._on_spectrum_stop)
 
     # ---------------------------------------------------------------------------- port discovery
 
@@ -123,6 +125,7 @@ class AppController(QObject):
                                          config.SCOPE_INTERVAL_MS / 1000.0)
         self.config_client = self.worker.make_client()
         self.worker.batch_received.connect(self.on_batch_received)
+        self.worker.amplitude_batch_received.connect(self.on_amplitude_batch_received)
         self.worker.trace_received.connect(self.on_trace_received)
         self.worker.stats_received.connect(self.view.live_view.update_stats)
         self.worker.connection_changed.connect(self.on_connection_changed)
@@ -172,6 +175,12 @@ class AppController(QObject):
             self.view.config_panel.set_client(self.config_client)
             self.view.live_view.set_client(self.config_client)
             self.view.scope_view.set_client(self.config_client)
+            # Spectrum's Run/Stop is local UI state that predates this connection (it defaults to
+            # running -- see HistogramView), so a fresh worker needs to be told where it already
+            # stands rather than only learning about it on the NEXT click. Harmless if Live FCI/PSD
+            # also starts running afterwards: the reader process's own mode selection prioritizes
+            # that over this regardless of what was sent here.
+            self.worker.request_spectrum_poll(self.view.histogram_view.is_running())
         else:
             self.view.set_connected_controls_enabled(False)
             self.view.config_panel.set_client(None)
@@ -234,6 +243,25 @@ class AppController(QObject):
         self.view.histogram_view.add_events(events)
         if self.csv_logger is not None:
             self.csv_logger.append_many(self.view.live_view.filter_for_recording(events))
+
+    @Slot(list)
+    def on_amplitude_batch_received(self, events) -> None:
+        """$RA batches (list[AmpEvent]): amplitude-only data the reader process polls in place of
+        $RQ while Live FCI/PSD acquisition is not running (see reader_process.py's mode selection).
+        Goes to the Spectrum tab only -- LiveView needs real fci/psd/energy_long, which these
+        events do not carry, and is not recorded to CSV for the same reason (that log's schema is
+        one row per PAIRED event)."""
+        self.view.histogram_view.add_events(events)
+
+    # ---------------------------------------------------------------------------------- spectrum
+
+    def _on_spectrum_run(self) -> None:
+        if self.worker is not None:
+            self.worker.request_spectrum_poll(True)
+
+    def _on_spectrum_stop(self) -> None:
+        if self.worker is not None:
+            self.worker.request_spectrum_poll(False)
 
     @Slot(object)
     def on_trace_received(self, trace) -> None:
@@ -353,7 +381,14 @@ class AppController(QObject):
                 continue
             # dataclasses.asdict(), not vars(): every Config dataclass uses slots=True (no
             # instance __dict__), so vars(cfg) raises TypeError here.
-            fields = ", ".join(f"{k}={v}" for k, v in dataclasses.asdict(cfg).items())
+            #
+            # watermark excluded: PsdConfig/FciConfig's own docstrings note it has no observable
+            # effect on anything this firmware build does (no ISR is registered for it; $RB/$RV
+            # drain by polling instead) and that the config panel already omits it from its UI for
+            # the same reason -- recording it here would contradict that and suggest a dataset
+            # depends on a value that, in fact, does nothing.
+            fields = ", ".join(f"{k}={v}" for k, v in dataclasses.asdict(cfg).items()
+                                if k != "watermark")
             lines.append(f"{label}: {fields}")
         return lines
 

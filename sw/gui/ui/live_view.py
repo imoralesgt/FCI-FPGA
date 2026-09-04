@@ -286,7 +286,7 @@ class LiveView(QWidget):
         self._redraw_timer.setInterval(int(1000 / self.REDRAW_HZ))
         self._redraw_timer.timeout.connect(self._on_redraw_tick)
         self._redraw_timer.start()
-        """(monotonic_time, energy_long) once per event within RATE_WINDOW_S, oldest first (all
+        """(monotonic_time, energy) once per event within RATE_WINDOW_S, oldest first (all
         events in the same batch share that batch's arrival time -- the granularity add_events()
         actually receives data at). Per-EVENT, not a running cumulative count like this used to
         be: the displayed rate is now AND-ed with each discriminator's own LLD/ULD cut
@@ -425,21 +425,13 @@ class LiveView(QWidget):
     HEATMAP_YBINS = 512
     """Raised from 120x60, which could not resolve the features this instrument exists to measure.
 
-    At YBINS=60 over a fixed 0..1 discriminant axis a bin is 0.0167 wide. The paper's gamma peak
+    At YBINS=60 over the fixed 0..1 discriminant axis a bin is 0.0167 wide. The paper's gamma peak
     has an FCI FWHM of 0.0093 -- HALF a bin -- and the PSD Li-6 capture band is ~0.0015, a tenth of
     one. Any structure that narrow was being flattened into a single row before it could be seen.
-
-    The y range is also auto-scaled to the data now (see _update_heatmap). A fixed 0..1 axis spent
-    almost every bin on empty space: PSD lives in roughly 0.96..1.00, so 96% of the resolution went
-    where there were no events. Auto-ranging plus 512 bins puts ~19 bins across a 0.0015 FWHM
-    instead of a tenth of one.
+    512 bins puts ~19 bins across a 0.0015 FWHM instead of a tenth of one.
 
     Cost is dominated by the point count, not the bin count -- histogram2d over the full retained
     window is ~83 ms at 1,000,000 points either way, i.e. ~8% duty at the 1 Hz redraw."""
-
-    HEATMAP_MIN_YSPAN = 0.01
-    """Floor on the auto-ranged discriminant span. Without it, a run where every event lands in a
-    very tight cluster would zoom until the display showed only quantisation structure."""
 
     @staticmethod
     def _heatmap_lut() -> np.ndarray:
@@ -506,10 +498,13 @@ class LiveView(QWidget):
         (an unchecked cut imposes no constraint) -- the same AND-of-enabled-cuts a reader would
         expect from "this row's FCI value is in-range AND its PSD value is in-range". Does not
         re-apply the energy_long <= 0 exclusion; that's unconditional already (see add_events())
-        and unrelated to this cut."""
+        and unrelated to this cut. The energy each event is compared against is computed fresh
+        from e.peak and the CURRENT calibration, matching what the region's own bounds mean now
+        that the plot's axis is keVee rather than energy_long -- see the module docstring."""
+        c0, c1, c2 = self._cal
         out = []
         for e in events:
-            energy = e.energy_long
+            energy = c0 + c1 * e.peak + c2 * e.peak * e.peak
             if self.fci_controls.chk_cut_enabled.isChecked():
                 lo, hi = self.fci_energy_region.getRegion()
                 if not (lo <= energy <= hi):
@@ -568,14 +563,16 @@ class LiveView(QWidget):
         x_min, x_max = float(energy.min()), float(energy.max())
         if x_max <= x_min:
             x_max = x_min + 1.0
-        # Auto-range the discriminant axis too, not just energy. Both FCI and PSD occupy a narrow
-        # band of their 0..1 range (PSD typically ~0.96..1.00), so a fixed axis spent most of its
-        # bins on empty space and left a thin peak unresolved. Padded slightly so the extreme
-        # points are not clipped to the edge rows, and floored at a minimum span so a single
-        # cluster does not blow up to full scale.
-        y_min, y_max = float(values.min()), float(values.max())
-        pad = max((y_max - y_min) * 0.05, self.HEATMAP_MIN_YSPAN / 2.0)
-        y_min, y_max = y_min - pad, y_max + pad
+        # Fixed [0, 1], NOT auto-ranged to the data's own min/max: FCI and PSD are both normalized
+        # ratios with that theoretical range (the scatter plots already fix their Y axis the same
+        # way, setYRange(0, 1, padding=0)). An auto-ranged axis was tried first, on the reasoning
+        # that both discriminators occupy a narrow slice of [0,1] (PSD typically ~0.96..1.00) and a
+        # fixed axis would waste bins on empty space -- but that let a single pathological point
+        # (e.g. PSD briefly negative from short > long on a noisy pulse, which is not otherwise
+        # excluded by anything add_events() does) stretch the axis far past where the real
+        # population sits, compressing it into a handful of rows: unreadable for the opposite
+        # reason. Fixed bounds do lose some resolution on a tightly-clustered run, but never break.
+        y_min, y_max = 0.0, 1.0
         hist, _, _ = np.histogram2d(
             energy, values, bins=(self.HEATMAP_XBINS, self.HEATMAP_YBINS),
             range=[[x_min, x_max], [y_min, y_max]],
@@ -641,11 +638,26 @@ class LiveView(QWidget):
             return
         while self._cap < needed:
             self._cap *= 2
-        for name in ("_energy", "_fci", "_psd"):
+        for name in ("_energy", "_peak", "_fci", "_psd"):
             old = getattr(self, name)
             new = np.empty(self._cap, dtype=np.float64)
             new[: self._n] = old[: self._n]
             setattr(self, name, new)
+
+    def set_calibration(self, c0: float, c1: float, c2: float) -> None:
+        """Receives (c0, c1, c2) from HistogramView.calibration_changed. Rescales every
+        already-plotted point (see _recompute_energy()) rather than only affecting events that
+        arrive afterwards -- the stored ground truth is each event's raw `peak`, not a pre-baked
+        energy, precisely so a mid-session calibration change can do this."""
+        self._cal = (c0, c1, c2)
+        self._recompute_energy()
+        self._refresh_plots()
+        self._refresh_side_panels()
+
+    def _recompute_energy(self) -> None:
+        c0, c1, c2 = self._cal
+        peak = self._peak[: self._n]
+        self._energy[: self._n] = c0 + c1 * peak + c2 * peak * peak
 
     @staticmethod
     def _cut_mask(controls: "_ControlsPanel", region: pg.LinearRegionItem,
@@ -673,35 +685,42 @@ class LiveView(QWidget):
         # here runs on the GUI thread. _total_events stays a true cumulative count, independent of
         # the sliding-window trim below -- it must NOT be derived from the array length, or it
         # would stop counting (or go backwards) once MAX_POINTS starts discarding the oldest.
-        e_arr = np.fromiter((e.energy_long for e in events), dtype=np.float64, count=len(events))
-        keep = e_arr > 0
+        # energy_long still decides which events are valid at all (see module docstring), even
+        # though it is no longer what gets plotted -- a 0.0 PSD sentinel is still not a real
+        # measurement no matter what the x-axis represents.
+        el_arr = np.fromiter((e.energy_long for e in events), dtype=np.float64, count=len(events))
+        keep = el_arr > 0
         self._excluded_events += int((~keep).sum())
         k = int(keep.sum())
         if k == 0:
             return
-        e_arr = e_arr[keep]
+        peak_arr = np.fromiter((e.peak for e in events), dtype=np.float64, count=len(events))[keep]
         f_arr = np.fromiter((e.fci for e in events), dtype=np.float64, count=len(events))[keep]
         p_arr = np.fromiter((e.psd for e in events), dtype=np.float64, count=len(events))[keep]
         self._total_events += k
 
+        c0, c1, c2 = self._cal
+        energy_arr = c0 + c1 * peak_arr + c2 * peak_arr * peak_arr
+
         self._grow(self._n + k)
-        self._energy[self._n:self._n + k] = e_arr
+        self._energy[self._n:self._n + k] = energy_arr
+        self._peak[self._n:self._n + k] = peak_arr
         self._fci[self._n:self._n + k] = f_arr
         self._psd[self._n:self._n + k] = p_arr
         self._n += k
 
-        self._rate_samples.append((now, e_arr))
+        self._rate_samples.append((now, energy_arr))
 
         # Tallied at arrival under whichever cut is active now -- see the counters' own docstring
         # for why this is not derived from the plotted arrays.
         self._fci_captured += int(
-            self._cut_mask(self.fci_controls, self.fci_energy_region, e_arr).sum())
+            self._cut_mask(self.fci_controls, self.fci_energy_region, energy_arr).sum())
         self._psd_captured += int(
-            self._cut_mask(self.psd_controls, self.psd_energy_region, e_arr).sum())
+            self._cut_mask(self.psd_controls, self.psd_energy_region, energy_arr).sum())
 
         if self._n > self.MAX_POINTS:
             drop = self._n - self.MAX_POINTS
-            for a in (self._energy, self._fci, self._psd):
+            for a in (self._energy, self._peak, self._fci, self._psd):
                 a[: self.MAX_POINTS] = a[drop : drop + self.MAX_POINTS]
             self._n = self.MAX_POINTS
 

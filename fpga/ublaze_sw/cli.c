@@ -1,7 +1,7 @@
 /*
  * cli.c
  *
- * Command parser for the ASCII interface described in cli.h and docs/CLI_documentation.md.
+ * Command parser for the ASCII interface described in cli.h and docs/sw/CLI_documentation.md.
  *
  * Structure: a byte pump assembles lines from the UART, a tokenizer turns the tail into signed
  * 32-bit arguments, and a dispatch table routes the two-character code to a handler. Handlers own
@@ -682,7 +682,13 @@ static int h_rb(const char *c, const s32 *a, int n) {
 #define RQ_TAG_EVENT 0xA5u /* one record follows */
 #define RQ_TAG_END 0x5Au   /* end of frame; u16 count then u32 checksum follow */
 
-#if CLI_HAVE_RESULTS
+/* Not guarded by CLI_HAVE_RESULTS: $RA below reuses this same checksum accumulator and helper, and
+ * $RA must work in builds with no FCI result path at all (it only ever touches psd_core). Neither
+ * this accumulator nor rq_put_u32() has anything conceptually to do with FCI's presence -- they are
+ * generic "write a u32 to the wire, folding it into a running checksum" plumbing. Shared rather
+ * than duplicated per command because $RQ and $RA never stream a frame at the same instant (this
+ * file's command dispatch is single-threaded: one command's handler returns before the next byte
+ * off the wire is even read), so there is no interleaving to guard against. */
 static u32 g_rq_sum; /* additive checksum accumulator for the frame being streamed */
 
 /* Streams one little-endian u32 and folds it into the checksum. Bytes go out through outbyte()
@@ -696,7 +702,6 @@ static void rq_put_u32(u32 v) {
     outbyte((char)b);
   }
 }
-#endif
 
 /* Binary counterpart of $RB. Streams with NO staging buffer: this firmware has under 1 KB of LMB
  * headroom, and buffering 256 events to put the count in a leading header would have cost 8 KB.
@@ -743,6 +748,60 @@ static int h_rq(const char *c, const s32 *a, int n) {
   (void)got;
   reply_one(c, -1);
 #endif
+  return 0;
+}
+
+/* ---------------------------------------------------------------- $RA, amplitude+timestamp only
+ *
+ * Binary batch of JUST peak amplitude and timestamp, popped directly from psd_core's own FIFO
+ * (Psd_Pop()) rather than through Acq_PopPaired() -- no FCI pairing, and deliberately NOT gated by
+ * g_running. psd_core integrates every triggered frame regardless of whether $AE has been called;
+ * g_running only controls whether $RV/$RB/$RQ pop and pair events, a firmware-side bookkeeping
+ * choice, not a hardware one. $RA exists so a host that only wants a live energy spectrum (peak
+ * amplitude) is not forced to pay for FCI pairing it does not want, and does not need Live
+ * acquisition ($AE) running at all to get one -- see docs/sw/CLI_documentation.md and the GUI's
+ * Spectrum tab, which switches to this command precisely when Live FCI/PSD is not running, to
+ * avoid wasting bandwidth on a $RQ that $AE has not enabled and would return empty.
+ *
+ * Unconditional (no CLI_HAVE_RESULTS guard): psd_core is not tied to the FCI result path's
+ * presence the way Acq_PopPaired() is, so this command works in any build that has psd_core at
+ * all, which today is every build.
+ *
+ * Same framing convention as $RQ (ASCII header, 0xA5-tagged records, 0x5A end tag with count and
+ * checksum) -- see there for why self-delimiting rather than length-prefixed, and for why sharing
+ * g_rq_sum/rq_put_u32() with $RQ is safe.
+ *
+ * Per event, in order (12 bytes): u32 ts_lo, u32 ts_hi, s32 peak. */
+#define RA_BYTES_PER_EVENT 12
+
+static int h_ra(const char *c, const s32 *a, int n) {
+  u32 want = RB_MAX_BATCH, got = 0;
+  PsdResult r;
+  if (n > 1)
+    return ERR_PARAM;
+  if (n == 1) {
+    if (!in_range(a[0], 1, RB_MAX_BATCH))
+      return ERR_PARAM;
+    want = (u32)a[0];
+  }
+  xil_printf("!%c%c %d\n", c[0], c[1], RA_BYTES_PER_EVENT);
+  g_rq_sum = 0;
+  while (got < want && Psd_Pop(PSD_CORE_BASEADDR, &r)) {
+    outbyte((char)(u8)RQ_TAG_EVENT);
+    rq_put_u32((u32)(r.timestamp & 0xFFFFFFFFu));
+    rq_put_u32((u32)(r.timestamp >> 32));
+    rq_put_u32((u32)r.peak);
+    got++;
+  }
+  {
+    u32 sum = g_rq_sum; /* over event payload bytes only; the trailer is not part of it */
+    int k;
+    outbyte((char)(u8)RQ_TAG_END);
+    outbyte((char)(u8)(got & 0xFFu));
+    outbyte((char)(u8)((got >> 8) & 0xFFu));
+    for (k = 0; k < 4; k++)
+      outbyte((char)(u8)(sum >> (8 * k)));
+  }
   return 0;
 }
 
@@ -837,6 +896,7 @@ static const struct {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
     {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'Q'}, h_rq},  {{'R', 'T'}, h_rt},
+    {{'R', 'A'}, h_ra},
     {{'G', 'T'}, h_gt},   {{'S', 'T'}, h_st},  {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},
     {{'G', 'P'}, h_gp},   {{'S', 'P'}, h_sp},  {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},
     {{'G', 'V'}, h_gv},   {{'S', 'V'}, h_sv},  {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},

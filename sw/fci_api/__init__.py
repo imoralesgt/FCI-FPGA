@@ -1,4 +1,4 @@
-"""Pure-Python client for the FCI-FPGA MicroBlaze CLI (docs/CLI_documentation.md).
+"""Pure-Python client for the FCI-FPGA MicroBlaze CLI (docs/sw/CLI_documentation.md).
 
 No PySide6/Qt dependency anywhere in this package -- see gui/ for the application built on top
 of it. Typical use:
@@ -26,6 +26,7 @@ from .exceptions import (
 from .transport import FciTransport, find_port, list_matching_ports
 from .types import (
     AcqEvent,
+    AmpEvent,
     BlrConfig,
     Counts,
     FciConfig,
@@ -44,6 +45,7 @@ __all__ = [
     "find_port",
     "list_matching_ports",
     "AcqEvent",
+    "AmpEvent",
     "BlrConfig",
     "Counts",
     "FciConfig",
