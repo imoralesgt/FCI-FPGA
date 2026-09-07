@@ -177,6 +177,8 @@ class HistogramView(QWidget):
         gates whether add_events() accumulates incoming batches into the histogram. Defaults to
         running so behavior is unchanged for anyone not using the button."""
         self.bars: pg.BarGraphItem | None = None
+        self._export_dir: Path | None = None
+        """Set to the open project's SPECTRA/ by the controller -- see set_export_directory()."""
         self._init_ui()
         self._redraw()
         self._reset_view_to_full_span()
@@ -320,6 +322,45 @@ class HistogramView(QWidget):
 
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
+
+    # ------------------------------------------------------------------- project save/restore
+
+    def set_export_directory(self, directory: Path | None) -> None:
+        """Where the SPE export dialog opens. Set to a project's SPECTRA/ while one is open, None
+        otherwise (Qt's own last-used directory then applies, which is the behavior this had before
+        projects existed)."""
+        self._export_dir = directory
+
+    def project_settings(self) -> dict:
+        """Spectrum-tab state a project stores. Not the accumulated counts: a spectrum is data, and
+        belongs in the project's SPECTRA/ as an .spe export rather than inside settings.json."""
+        c0, c1, c2 = self.calibration()
+        return {
+            "calibration": [c0, c1, c2],
+            "display_channels": self._display_channels(),
+            "log_scale": self.chk_log_y.isChecked(),
+        }
+
+    def apply_project_settings(self, settings: dict) -> None:
+        """Restores what project_settings() captured. Each key is optional -- a project saved by a
+        build without one of these fields must still open, leaving that control as it was."""
+        calibration = settings.get("calibration")
+        if isinstance(calibration, list) and len(calibration) == 3:
+            # All three set with signals blocked, then one manual notification: setting them one at
+            # a time would emit calibration_changed three times, and the two intermediate states are
+            # coefficient triples the user never chose -- LiveView would recompute its whole energy
+            # axis against each of them.
+            for spin, value in zip((self.spin_c0, self.spin_c1, self.spin_c2), calibration):
+                spin.blockSignals(True)
+                spin.setValue(float(value))
+                spin.blockSignals(False)
+            self._on_calibration_changed()
+        channels = settings.get("display_channels")
+        if channels in DISPLAY_CHANNEL_CHOICES:
+            self.slider_channels.setValue(DISPLAY_CHANNEL_CHOICES.index(channels))
+        log_scale = settings.get("log_scale")
+        if isinstance(log_scale, bool):
+            self.chk_log_y.setChecked(log_scale)
 
     def is_running(self) -> bool:
         return self._running
@@ -504,7 +545,13 @@ class HistogramView(QWidget):
         if self._total == 0:
             QMessageBox.information(self, "Nothing to Export", "No events accumulated yet.")
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export Spectrum", "", "SPE files (*.spe)")
+        # With a project open the dialog opens in its SPECTRA/ with a name already suggested, so
+        # the default action puts the export where the rest of that campaign's data is. Without
+        # one, "" keeps Qt's own last-used directory, exactly as before projects existed.
+        start = ""
+        if self._export_dir is not None:
+            start = str(self._export_dir / f"spectrum_{time.strftime('%Y%m%d_%H%M%S')}.spe")
+        path, _ = QFileDialog.getSaveFileName(self, "Export Spectrum", start, "SPE files (*.spe)")
         if not path:
             return
         # Enforced here rather than trusted to the dialog's own filter: that behavior is native and

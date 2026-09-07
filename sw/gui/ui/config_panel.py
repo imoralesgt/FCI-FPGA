@@ -97,6 +97,12 @@ class SubsystemPanel(QGroupBox):
         self._fields = fields
         self._get_name = get_name
         self._set_name = set_name
+        self.key = get_name.removeprefix("get_")
+        """Stable subsystem identifier ("trigger", "psd", "fci", "blr", "vga", "shaper") -- the key
+        a project's settings.json stores this panel's values under (project.py). Derived from the
+        accessor name rather than passed in at construction: every panel already names its getter,
+        so there is no second place for the two to drift apart, and no construction site needs
+        touching to gain one."""
         self._client: FciClient | None = None
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
@@ -204,6 +210,59 @@ class SubsystemPanel(QGroupBox):
             else:
                 w.setValue(int(value))
         self.config_changed.emit(cfg)
+
+    # ------------------------------------------------------------------- project save/restore
+
+    def get_values(self) -> dict[str, int | bool]:
+        """This panel's writable fields, as they currently stand in the CONTROLS -- for a project
+        to store (project.py). The controls, not `self._last`: what the user sees is what a Save is
+        expected to capture, and after any successful Apply the two agree anyway (apply() refreshes).
+
+        Read-only fields are excluded because writing them back is meaningless. Optional fields the
+        device reported as None are excluded unless the user has actually moved them, for the same
+        reason apply() skips them: VgaConfig.fine_dac_code is a raw override of the same DAC channel
+        as fine_gain_milli, written last, so capturing its placeholder into a project and applying
+        that project later would silently zero the fine gain -- the hardware failure documented in
+        apply() below. When no device value has ever been read (`_last` is None, e.g. saving while
+        disconnected) every optional field is skipped, since there is then no way to tell a
+        deliberate value from a placeholder.
+        """
+        values: dict[str, int | bool] = {}
+        for f in self._fields:
+            if f.read_only:
+                continue
+            w = self._controls[f.name]
+            current = w.isChecked() if f.is_bool else w.value()
+            if f.optional:
+                if self._last is None or not f.settable_when_none:
+                    continue
+                if getattr(self._last, f.name) is None and \
+                        current == self._shown_when_none.get(f.name, current):
+                    continue
+            values[f.name] = current
+        return values
+
+    def set_values(self, values: dict[str, Any]) -> None:
+        """Loads project-stored values INTO the controls. Does not write to the device -- that is
+        apply()'s job, and keeping the two separate is what lets a project be opened while
+        disconnected (or opened and inspected before deciding to push it to hardware).
+
+        Unknown keys are logged and ignored rather than raising: a project written by a build with
+        an extra field must still open here, and the field lists are the authority on what this
+        build has.
+        """
+        for name, value in values.items():
+            field = next((f for f in self._fields if f.name == name), None)
+            if field is None:
+                logger.warning(f"{self.title()}: project sets unknown field '{name}'; ignored")
+                continue
+            if field.read_only:
+                continue
+            w = self._controls[name]
+            if field.is_bool:
+                w.setChecked(bool(value))
+            else:
+                w.setValue(int(value))
 
     def apply(self) -> None:
         if self._last is None:

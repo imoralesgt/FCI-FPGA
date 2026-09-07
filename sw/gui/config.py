@@ -3,6 +3,7 @@ identification, timing, and storage paths in one place -- adapted to this projec
 (fci_api owns the wire-level constants like baud rate; this file only holds GUI-level concerns).
 """
 
+import os
 from pathlib import Path
 
 # --- Hardware target filtering (Digilent FT2232H bridge -- confirmed via `udevadm` this session)
@@ -45,4 +46,14 @@ RECONNECT_INTERVAL_MS = 2000
 # --- Storage
 BASE_DIR = Path.cwd()
 LOG_DIR = BASE_DIR / "logs"
-DEFAULT_CSV_DIR = Path.home() / "FciData"
+
+DEFAULT_PROJECT_DIR = Path.home() / "FciProjects"
+"""Default parent directory the New/Open Project dialogs start in. Only a starting point: a project
+folder can live anywhere, and its recorded data follows the folder rather than this path."""
+
+APP_STATE_PATH = Path(
+    os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+) / "fci-fpga" / "gui_state.json"
+"""Installation-level state that is NOT part of any project -- currently just which project to
+reopen at startup. Follows XDG_CONFIG_HOME where the environment sets it, since that is what the
+desktop convention on this platform expects and it keeps the file out of the user's home root."""
