@@ -24,19 +24,51 @@ uv run examples/read_batch_demo.py          # auto-detects the board by USB VID:
 uv run gui/main.py
 ```
 
+## Projects
+
+![No project open -- everything but the Project menu is locked](images/no_project_locked.png)
+
+A project (`gui/project.py`) is a folder holding one campaign's settings AND its data -- modeled on
+CAEN CoMPASS, deliberately a directory rather than a settings file:
+
+```
+<project>/
+    settings.json     every subsystem's writable register values, energy calibration, file naming
+    RAW/               scope-trace CSVs (raw ADC frames)
+    LIST/              per-event CSVs (the list-mode data: timestamp, FCI, PSD, peak)
+    SPECTRA/           .spe exports
+```
+
+**Nothing in the window is usable until a project is open** -- not the port list, not Connect, not
+any tab. There is no "unmanaged" fallback directory any more: a project's `LIST/`/`RAW/` are the
+only place recordings go, so a connection has nowhere to write until one exists. Use **Project >
+New Project...** or **Project > Open Project...** to unlock the rest of the window.
+
+Opening a project loads its settings into every configuration form (Trigger, PSD, FCI, BLR, VGA,
+Pulse Shaper) and the Spectrum tab's calibration -- if a device is already connected, or connects
+afterward, you are asked once whether to write those settings to hardware immediately. Declining
+leaves them sitting in the forms, where each panel's own Apply can still push them individually.
+**Project > Save Settings** captures the forms' current values back into `settings.json` (also
+offered automatically when closing a project or exiting with one open); **Save As New Project...**
+starts a fresh project folder from the current settings without touching the old one's data.
+
+Project switches are blocked while a recording session is in progress (uncheck Record first) --
+a project owns where its files go, so switching mid-recording would split one dataset across two
+projects with no record of the break.
+
 ## The GUI: tab by tab
 
-The window has one always-visible connection bar and Record control at the top, and five tabs
-below. Order matches the tab bar left to right.
+Five tabs, in the order they appear left to right, all disabled until a project is open (above).
 
 ### File Management
 
 ![File Management tab](images/file_management_tab.png)
 
-Where recorded CSVs go and how they're named: an output directory, a filename prefix, and an
-autoincrementing index so repeated recording sessions don't collide. The Record checkbox (top of
-the window, visible from every tab) is what actually starts a session -- this tab only sets *where*
-it goes and *what it's called*.
+How recordings are named within the open project: a filename prefix and an autoincrementing index
+so repeated recording sessions don't collide. There is no output-directory control here -- the
+project's own `LIST/` and `RAW/` (above) own that, and are shown read-only. The Record checkbox
+(top of the window, visible from every tab) is what actually starts a session -- this tab only sets
+*what the files are called*.
 
 ### Configuration
 
