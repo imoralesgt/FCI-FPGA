@@ -56,8 +56,11 @@ fpga/
   hls/            fci_core's HLS source (pre-RTL-migration path; see docs/log for the migration)
   bd/             the Vivado block design as a reproducible .tcl script (fci_bd.tcl)
   ublaze_sw/      MicroBlaze firmware: acquisition, CLI, per-subsystem drivers (psd.c, blr.c, ...)
-  projects/       the Vivado and Vitis projects are created here by the developer upon clonning the repository. The projects are recreated from the rest of the source files: block design, constraints, IP cores, etc.
-  bitstream/      built bitstreams: XSA export from Vivado and compiled bitstream with MicroBlaze firmware (download.bit)
+  projects/       where the Vivado/Vitis projects live once created (gitignored) -- see "Building
+                  the bitstream and firmware" below for how to recreate them from ip/, constraints/
+                  and bd/
+  bitstream/      pre-built outputs: XSA export from Vivado and the bitstream merged with the
+                  compiled MicroBlaze firmware (download.bit)
 sw/
   fci_api/        pure-Python protocol client (no Qt dependency) -- framing, retries, one typed
                   method per CLI command
@@ -95,12 +98,34 @@ uv run examples/read_batch_demo.py          # auto-detects the board by USB VID:
 uv run gui/main.py
 ```
 
-## Building the bitstream
+## Building the bitstream and firmware
 
-Open [`fpga/projects/project_fci/project_fci.xpr`](fpga/projects/project_fci/project_fci.xpr) in
-Vivado 2022.2 and run Generate Bitstream, or drive the same flow in batch mode. The RTL sources
-under `fpga/rtl/` and the block design (`fpga/bd/fci_bd.tcl`) are both plain text and diff cleanly;
-the `.xpr`/`.runs` artifacts are the reproducible-build entry point.
+Neither the Vivado project nor the Vitis workspace is checked in (see `.gitignore`'s
+`project_*`/`fpga/**/project_*/` rules) -- what's committed instead is the minimum needed to
+*recreate* them: the packaged IP cores (`fpga/ip/`), constraints (`fpga/constraints/`), and the
+block design as a reproducible Tcl script (`fpga/bd/fci_bd.tcl`). A pre-built result of this flow
+(XSA export plus the bitstream already merged with the compiled MicroBlaze firmware) ships in
+`fpga/bitstream/` for anyone who just wants to program the board.
+
+**Vivado (2022.2):**
+1. Create a new RTL project targeting the CMOD-A7 (XC7A35T), with `fpga/ip/` added as a local IP
+   repository so the block design's custom cells (`blr_core`, `trigger_core`, `psd_core`,
+   `fci_core_rtl`, `fci_sink`) resolve.
+2. Add `fpga/constraints/*.xdc`.
+3. Source `fpga/bd/fci_bd.tcl` to rebuild the block design, then Generate Bitstream.
+4. Export the hardware platform (`File > Export > Export Hardware`, include bitstream) to get a
+   fresh `.xsa` -- or reuse `fpga/bitstream/bd_fci_wrapper.xsa` if the block design hasn't changed.
+
+**Vitis:** create a new workspace from that XSA, then a platform + application project against it,
+and copy the sources under `fpga/ublaze_sw/` into the application project's `src/`.
+
+Build the application in **Release**, not Debug -- MicroBlaze is allocated a 64 KB LMB block RAM in
+this design, and Debug's larger stack/heap footprint and lack of optimization do not fit; only a
+Release (`-Os`) build links within that budget.
+
+Program the board with the resulting `.bit`/`.elf` pair (or `updatemem` the ELF into the exported
+bitstream, as `fpga/bitstream/download.bit` already is) to get a single bitstream that boots
+straight into the acquisition firmware.
 
 ## Documentation
 
