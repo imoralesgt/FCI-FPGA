@@ -141,9 +141,9 @@ enough events accumulate that a scatter plot is just a solid cloud:
 ![Live FCI/PSD tab, heatmap view](images/live_fci_psd_tab_heatmap.png)
 
 The discriminant (FCI or PSD) axis is fixed to `[0, 1]` on both representations -- both are
-normalized ratios with that theoretical range, and a heatmap auto-ranged to whatever is in the
-retained window turned out to be fragile: a single pathological point (e.g. PSD briefly negative
-from a noisy pulse) could stretch the axis far past where the real population sits.
+normalized ratios with that theoretical range, rather than auto-ranged to whatever is in the
+retained window: auto-ranging is fragile against a single pathological point (e.g. PSD briefly
+negative from a noisy pulse), which can stretch the axis far past where the real population sits.
 
 "FoM Optimization..." opens a separate wizard for sweeping discrimination parameters against a
 figure of merit, either live against the device or against an already-recorded CSV -- out of scope

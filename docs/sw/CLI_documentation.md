@@ -2,7 +2,8 @@
 
 **Target:** Digilent Cmod A7-35T, MicroBlaze soft CPU
 **Interface:** Serial/UART over USB (AXI UART 16550)
-**Protocol:** Raw ASCII serial commands, with one binary reply (`$RQ`, section 2.5b)
+**Protocol:** Raw ASCII serial commands, with two binary replies (`$RQ`, section 2.5b; `$RA`,
+section 2.5c)
 
 ## UART interface settings
 
@@ -137,7 +138,7 @@ calling `$RV` observes a value that cannot move. `$RC` is the field to poll for 
 ### 2.5 Read Batch (`$RB`)
 
 `$RB [n]` — pops up to `n` paired events (default and maximum 1024, the result FIFO's depth) in one
-request, stopping early if the FIFO empties. The maximum was 32 before 2026-09-01.
+request, stopping early if the FIFO empties.
 
 `!RB [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd peak] ... <count>`
 
@@ -151,10 +152,9 @@ one. On a link where round-trip latency dominates over per-event data volume, th
 achievable event rate roughly in proportion to `n`; it does not by itself reach a rate limited by
 the link's raw round-trip count. The reply is `!RB -1` if the FCI result path is not present in the loaded bitstream, matching `$RV`.
 
-Measured cost: **49.4 bytes per event** (that figure predates the `peak` field, so it now
-undercounts by one field's worth of digits). At 4 Mbaud (8N1, so 10 bits per byte = 400 kB/s) that
-caps readout around **~8 000 events/s**. Use `$RQ` where throughput matters; `$RB` remains the
-readable, scriptable form and is unchanged.
+Measured cost: **~49.4 bytes per event** (varies slightly with the ASCII digit width of each
+field). At 4 Mbaud (8N1, so 10 bits per byte = 400 kB/s) that caps readout around **~8 000
+events/s**. Use `$RQ` where throughput matters; `$RB` remains the readable, scriptable form.
 
 ### 2.5b Read Batch, binary (`$RQ`)
 
@@ -164,9 +164,7 @@ plus the ASCII digits for `peak`). That roughly halves the bytes on the wire ver
 readout ceiling of 400000/29 ~= **~13 800 events/s** at 4 Mbaud.
 
 That is the wire ceiling, not the achieved rate: per-transaction round trips and firmware overhead
-take a further bite, the same way the previous, smaller record size measured ~12 000 events/s
-sustained against its own ~16 000 events/s wire ceiling. The instrument is readout-bound at this
-figure, not trigger-bound.
+take a further bite. The instrument is readout-bound at this figure, not trigger-bound.
 
 **Use a large `n`.** The FTDI adapter's latency timer defaults to 16 ms and must be assumed
 unconfigurable — an off-the-shelf host, no root, no udev rule. It delays only the final partial USB
@@ -179,12 +177,11 @@ packet, so a big reply pays it once and batch size amortizes it:
 | 512 | 1763/s | 3306/s |
 | **1024** | 1813/s | **3486/s** |
 
-Measured against the 24-byte (25-on-the-wire) `$RQ` record, before `peak` was added -- the shape of
-the curve (batching amortizes the FTDI latency timer's flush) still holds; these exact figures want
-re-measuring against the new 28-byte record. At full depth `$RQ` reached 95% of its link ceiling
-with the timer left alone. Asking for the maximum is free when little is pending, since the device
-stops early; a full-FIFO transaction only occurs when draining fast matters more than command
-latency.
+Figures are approximate -- record size affects them slightly -- but the shape of the curve (batching
+amortizes the FTDI latency timer's flush) holds regardless. At full depth `$RQ` reaches roughly 95%
+of its link ceiling with the timer left alone. Asking for the maximum is free when little is
+pending, since the device stops early; a full-FIFO transaction only occurs when draining fast
+matters more than command latency.
 
 ```
 !RQ <bytes_per_event>\n          ASCII header; bytes_per_event is 28
@@ -220,9 +217,9 @@ other field in this record.
 The frame is self-delimiting rather than length-prefixed because firmware cannot know the count
 until the FIFO runs dry, and staging a batch to find out would not fit in its remaining RAM.
 
-Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream. Firmware older
-than 2026-09-01 answers `!XX 0` (unknown command); hosts wanting to work with both should fall back
-to `$RB`.
+Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream. Firmware that
+predates this command answers `!XX 0` (unknown command); hosts wanting to work with both should
+fall back to `$RB`.
 
 ### 2.5c Read Amplitudes, binary (`$RA`)
 
@@ -230,7 +227,7 @@ to `$RB`.
 carrying **only** the timestamp and peak amplitude, popped directly from `psd_core`'s own FIFO
 rather than through the FCI-pairing path `$RV`/`$RB`/`$RQ` use.
 
-Two things make this a genuinely different command rather than a slimmer `$RQ`:
+Two things make this a different command rather than a slimmer `$RQ`:
 
 - **Not gated by `$AE`/`$AD`.** `psd_core` integrates every triggered frame regardless of whether
   acquisition is enabled -- `g_running` only controls whether `$RV`/`$RB`/`$RQ` pop and pair
@@ -303,8 +300,9 @@ A get with no index returns every parameter of that subsystem in index order.
 | 4 | cfd_fraction | 1 … 255 | CFD fraction, as value/256; boots at **64** (= 1/4) |
 | 5 | cfd_delay | **4** … 31 | CFD delay in samples; boots at **24** |
 
-`$GT` returns **six** values as of 2026-09-02. Firmware predating the CFD returns four; a host that
-must work with both should treat indices 4 and 5 as optional rather than assuming the length.
+`$GT` returns **six** values on firmware built with the CFD trigger. Firmware predating the CFD
+returns four; a host that must work with both should treat indices 4 and 5 as optional rather than
+assuming the length.
 
 The trigger is a **constant-fraction discriminator**, not a cross-level comparator. A level trigger
 fires at a time that depends on pulse amplitude, and since the capture window is anchored to the
@@ -313,8 +311,8 @@ trigger, that walk moves the pulse around inside the frame the FFT transforms. T
 the same point on the leading edge regardless of height (measured: 0 samples of walk over a 15×
 amplitude range, against 9 for the level trigger it replaced).
 
-`threshold` did not change meaning — it still decides **whether** an event is real, by arming the
-discriminator. The zero crossing decides **when**.
+`threshold` decides **whether** an event is real, by arming the discriminator. The zero crossing
+decides **when**.
 
 Three consequences that are not obvious from the register map:
 
@@ -326,9 +324,7 @@ Three consequences that are not obvious from the register map:
 - **Both delays have a minimum of 4**, and for the same reason: the CFD pipeline is ~3 samples
   deep. For `delay` (pre-trigger) a smaller value puts the trigger point outside the captured
   window; for `cfd_delay` it puts the crossing at `n = D/(1-f) < 5.3` samples, inside the
-  pipeline's own settling, so what is discriminated is transient rather than signal. `cfd_delay`
-  accepted 1…3 before 2026-09-02 and those values were never usable — at this detector's
-  37-sample rise they put the sensitivity floor above 9× threshold, i.e. a silently deaf trigger.
+  pipeline's own settling, so what is discriminated is transient rather than signal.
 - **The baseline must be zero-centred.** At a resting level `b` the bipolar signal sits at
   `b(1-f)` and never crosses zero. `blr_core` guarantees this — but setting its **bypass** bit
   (`$SB` index 2) stops the trigger working entirely.
