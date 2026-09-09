@@ -17,6 +17,7 @@
 
 #include "fci_sink.h"
 #include "psd.h"
+#include "pulse_shaper.h"
 #include "xil_types.h"
 
 /** @brief One pulse's paired FCI + PSD result -- this project's list-mode event record. */
@@ -30,17 +31,27 @@ typedef struct {
   s32 energy_short; /**< PSD short-gate charge integral. */
   s32 energy_long;  /**< PSD long-gate charge integral. */
   s32 psd_scaled;   /**< (long-short)/long * 10000, the CAEN PSD parameter. */
-  s32 peak;         /**< Max baseline-subtracted sample over the whole frame -- the spectroscopy
-                      *   energy channel, independent of the PSD gates. */
+  s32 peak;         /**< Shaped-pulse plateau amplitude from pulse_shaper_core (a Jordanov-Knoll
+                      *   recursive trapezoidal filter) -- the spectroscopy energy channel,
+                      *   independent of the PSD gates. Field name/position/type are unchanged
+                      *   from the raw single-sample peak this replaced (psd_core's former
+                      *   PSD_PEAK_OFFSET), so nothing downstream of AcqEvent -- the CLI wire
+                      *   format, fci_api, the GUI -- needed to change; only the hardware source
+                      *   did. Reads 0 if this firmware was built against a bitstream that predates
+                      *   pulse_shaper_core (see PULSE_SHAPER_CORE_PRESENT in registers.h): there is
+                      *   no fallback amplitude source in that configuration any more, since the
+                      *   raw-peak logic this replaced was removed from psd_core at the same time. */
 } AcqEvent;
 
 /** @brief Running health counters, so a desync shows up as a number rather than as puzzling data. */
 typedef struct {
-  u32 paired;             /**< Events successfully matched on both sides. */
+  u32 paired;             /**< Events successfully matched on all sides. */
   u32 dropped_psd;        /**< PSD results discarded while resynchronizing. */
   u32 dropped_fci;        /**< FCI results discarded while resynchronizing. */
+  u32 dropped_shaper;     /**< Pulse-shaper results discarded while resynchronizing. */
   u32 psd_overflows;      /**< Times psd_core reported a full FIFO. */
   u32 fci_overflows;      /**< Times fci_sink reported a full FIFO. */
+  u32 shaper_overflows;   /**< Times pulse_shaper_core reported a full FIFO. */
   u32 fci_framing_errors; /**< FCI result frames received out of sequence. */
 } AcqStats;
 

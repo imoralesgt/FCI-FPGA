@@ -93,7 +93,6 @@
 #define PSD_TS_HI_OFFSET 0x28        /* RO */
 #define PSD_EVENT_COUNT_OFFSET 0x2C  /* RO */
 #define PSD_WATERMARK_OFFSET 0x30    /* irq_o asserts at this FIFO level; 0 disables */
-#define PSD_PEAK_OFFSET 0x34         /* RO, signed -- max deviation over the whole frame */
 
 #define PSD_CTRL_POP_MASK (1U << 0)
 #define PSD_CTRL_CLEAR_MASK (1U << 1)
@@ -102,6 +101,63 @@
 #define PSD_STATUS_OVERFLOW_MASK (1U << 2)
 #define PSD_STATUS_LEVEL_SHIFT 8
 #define PSD_STATUS_LEVEL_MASK 0x3FU
+
+/* ---------------------------------------------------------------------------------------------
+ * pulse_shaper_core (fpga/rtl/pulse_shaper_core) -- hand-written AXI4-Lite register map, keep in
+ * sync with pulse_shaper_axi4lite_regs.vhd.
+ *
+ * Jordanov-Knoll recursive trapezoidal filter, replacing psd_core's former single-sample raw-peak
+ * estimate (PSD_PEAK_OFFSET, removed above) as the spectroscopy energy channel: same broadcaster
+ * tap as psd_core/fci_core, same result-FIFO-plus-timestamp shape, one amplitude field instead of
+ * PSD's three.
+ *
+ * Guarded on the cell's own XPAR symbol, not assumed present, so firmware still builds -- and
+ * $GH/$SH still work in their pre-shaper shadow form -- against an older bitstream that predates
+ * this core. Mirrors FCI_CORE_HAS_RESULT_FIFO's presence-detection precedent above.
+ * ------------------------------------------------------------------------------------------- */
+#ifdef XPAR_PULSE_SHAPER_CORE_0_BASEADDR
+#define PULSE_SHAPER_CORE_PRESENT 1
+#define PULSE_SHAPER_CORE_BASEADDR XPAR_PULSE_SHAPER_CORE_0_BASEADDR
+#else
+#define PULSE_SHAPER_CORE_PRESENT 0
+#endif
+
+#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..250 */
+#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..250 */
+#define PULSE_SHAPER_DECAY_OFFSET 0x08    /* RW, samples, saturating 2..400 */
+#define PULSE_SHAPER_ENABLE_OFFSET 0x0C   /* RW, [0] */
+#define PULSE_SHAPER_CTRL_OFFSET 0x10     /* W, self-clearing: [0] pop, [1] clear */
+#define PULSE_SHAPER_STATUS_OFFSET 0x14   /* RO */
+#define PULSE_SHAPER_AMPLITUDE_OFFSET 0x18 /* RO, signed -- shaped-peak amplitude */
+#define PULSE_SHAPER_TS_LO_OFFSET 0x1C     /* RO */
+#define PULSE_SHAPER_TS_HI_OFFSET 0x20     /* RO */
+#define PULSE_SHAPER_EVENT_COUNT_OFFSET 0x24 /* RO */
+#define PULSE_SHAPER_WATERMARK_OFFSET 0x28   /* irq_o asserts at this FIFO level; 0 disables --
+                                               * built for parity with psd_core/fci_core but not
+                                               * wired to an interrupt input in the block design
+                                               * (see registers.h's own xlconcat vector-numbering
+                                               * note below); firmware polls. */
+/* Firmware-computed 1/decay, Q2.16 fixed point (SIGNED field, though the value is always
+ * non-negative for a valid decay) -- what the pole-zero correction in trapezoidal_filter.vhd
+ * actually uses. Not part of the $SH/$GH indexed field set: no
+ * CLI command writes this directly. PulseShaper_Configure()/shaper_set()'s decay case write both
+ * this and PULSE_SHAPER_DECAY_OFFSET together, so the CLI-visible `decay` parameter (in samples)
+ * and what the datapath consumes never disagree. See trapezoidal_filter.vhd's header comment for
+ * why the reciprocal is computed in software rather than by a per-sample fabric divider. */
+#define PULSE_SHAPER_DECAY_RECIP_OFFSET 0x2C
+#define PULSE_SHAPER_DECAY_RECIP_FRAC_BITS 16
+
+#define PULSE_SHAPER_CTRL_POP_MASK (1U << 0)
+#define PULSE_SHAPER_CTRL_CLEAR_MASK (1U << 1)
+#define PULSE_SHAPER_STATUS_EMPTY_MASK (1U << 0)
+#define PULSE_SHAPER_STATUS_FULL_MASK (1U << 1)
+#define PULSE_SHAPER_STATUS_OVERFLOW_MASK (1U << 2)
+#define PULSE_SHAPER_STATUS_LEVEL_SHIFT 8
+/* FIFO_DEPTH=1024 in the block design (matching psd_core_0/fci_core_0's own override) ->
+ * LEVEL_WIDTH = clog2(1024)+1 = 11 bits, not the 6 bits psd_core's own PSD_STATUS_LEVEL_MASK
+ * assumes -- that mismatch (RTL package default vs. the BD's actual FIFO_DEPTH override) already
+ * exists for psd_core; computed correctly here instead of repeating it. */
+#define PULSE_SHAPER_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * fci_core (fpga/rtl/fci_core_rtl) -- hand-written VHDL core: 2048-point FFT, two programmable bin

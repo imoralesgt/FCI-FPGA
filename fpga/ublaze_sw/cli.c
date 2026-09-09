@@ -10,8 +10,9 @@
  * Configuration is read back from the cores' own registers rather than from firmware shadows
  * wherever the register is readable. Shadows drift the moment anything else writes a register --
  * bringup, an interrupt handler, a future scheduler -- and a CLI that confidently reports a stale
- * value is worse than one that cannot report at all. The two exceptions are documented at their
- * declarations below.
+ * value is worse than one that cannot report at all. The VGA gain DACs are a permanent exception
+ * (write-only over I2C); the pulse shaper falls back to one conditionally, only when built against
+ * a bitstream that predates pulse_shaper_core. Both are documented at their declarations below.
  */
 
 #include "cli.h"
@@ -23,6 +24,7 @@
 #include "bringup.h"
 #include "fci_sink.h"
 #include "psd.h"
+#include "pulse_shaper.h"
 #include "registers.h"
 #include "vga_dac.h"
 #include "xil_io.h"
@@ -59,11 +61,15 @@ static s32 g_vga_fine_milli = (s32)(AD8330_DEFAULT_GAIN_FINE_LINEAR * 1000.0);
 static s32 g_vga_coarse_milli = (s32)(AD8330_DEFAULT_GAIN_COARSE_LINEAR * 1000.0);
 static s32 g_vga_raw_code = -1; /* -1 until a raw code is written */
 
-/* Shadow 2 of 2: the pulse shaper is not in the FPGA deployment yet, but issue #15 asks for its
- * commands so host-side software can be written against them now. These are stored and reported and
- * applied to nothing. $GH reports a leading `present` flag of 0 so a host cannot mistake a shadowed
- * setting for a live one. */
-static s32 g_shaper[4]; /* peaking, gap, decay, enable */
+/* Shadow 2 of 2, conditional: only used when PULSE_SHAPER_CORE_PRESENT is 0, i.e. this firmware
+ * was built against a bitstream that predates pulse_shaper_core (registers.h). In that
+ * configuration $SH's writes are stored and reported here but applied to nothing; $GH's leading
+ * `present` field reads 0 so a host cannot mistake a shadowed setting for a live one. When the core
+ * IS present, shaper_get()/shaper_set() below read/write its real registers instead and this array
+ * is unused. */
+#if !PULSE_SHAPER_CORE_PRESENT
+static s32 g_shaper[4]; /* peaking, flat_top, decay, enable */
+#endif
 
 /* ---------------------------------------------------------------- reply helpers */
 
@@ -355,6 +361,79 @@ static int psd_set(s32 idx, s32 v) {
   }
 }
 
+/* ---------------------------------------------------------------- pulse_shaper_core */
+
+#if PULSE_SHAPER_CORE_PRESENT
+static const u32 shaper_off[] = {PULSE_SHAPER_PEAKING_OFFSET, PULSE_SHAPER_FLAT_TOP_OFFSET,
+                                 PULSE_SHAPER_DECAY_OFFSET, PULSE_SHAPER_ENABLE_OFFSET};
+#endif
+
+/**
+ * @brief Reads one pulse_shaper_core field by index, for $GH (index form; see h_gh() for the
+ *        no-argument dump's extra leading `present` field).
+ * @param idx 0=peaking, 1=flat_top, 2=decay, 3=enable.
+ * @param out Set to the field's current value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
+static int shaper_get(s32 idx, s32 *out) {
+  if (idx < 0 || idx > 3)
+    return 0;
+#if PULSE_SHAPER_CORE_PRESENT
+  *out = (s32)reg_get(PULSE_SHAPER_CORE_BASEADDR, shaper_off[idx]);
+#else
+  *out = g_shaper[idx];
+#endif
+  return 1;
+}
+
+/**
+ * @brief Validates and writes one pulse_shaper_core field by index, for $SH.
+ *
+ * Range-checked against the VHDL core's own hardware limits when the core is present; the
+ * bitstream-absent fallback keeps the original placeholder's non-negative-only check, since the
+ * shadow has no register file of its own to defer the check to.
+ *
+ * @param idx 0=peaking (10..250), 1=flat_top (0..250), 2=decay (2..400), 3=enable (0..1).
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
+ */
+static int shaper_set(s32 idx, s32 v) {
+#if PULSE_SHAPER_CORE_PRESENT
+  switch (idx) {
+  case 0:
+    if (!in_range(v, 10, 250))
+      return 0;
+    break;
+  case 1:
+    if (!in_range(v, 0, 250))
+      return 0;
+    break;
+  case 2:
+    if (!in_range(v, 2, 400))
+      return 0;
+    /* decay_recip must never disagree with decay: written here, not left for
+     * PulseShaper_Configure() alone, since this path is reachable independently via a bare
+     * '$SH 2 <value>'. */
+    reg_set(PULSE_SHAPER_CORE_BASEADDR, PULSE_SHAPER_DECAY_RECIP_OFFSET,
+            (u32)PulseShaper_DecayRecip((u32)v));
+    break;
+  case 3:
+    if (!in_range(v, 0, 1))
+      return 0;
+    break;
+  default:
+    return 0;
+  }
+  reg_set(PULSE_SHAPER_CORE_BASEADDR, shaper_off[idx], (u32)v);
+  return 1;
+#else
+  if (idx < 0 || idx > 3 || v < 0)
+    return 0;
+  g_shaper[idx] = v;
+  return 1;
+#endif
+}
+
 /* ---------------------------------------------------------------- fci_core / fci_sink */
 
 static const u32 fci_off[] = {FCI_CORE_PSA_L_LO_OFFSET, FCI_CORE_PSA_L_HI_OFFSET,
@@ -551,10 +630,13 @@ static int h_gv(const char *c, const s32 *a, int n) { return generic_get(c, a, n
 static int h_sv(const char *c, const s32 *a, int n) { return generic_set(c, a, n, vga_set); }
 
 /**
- * @brief $GH handler: dumps or reads one shaper parameter.
+ * @brief $GH handler: dumps all shaper parameters (prefixed with a `present` flag) or reads one
+ *        by index.
  *
- * The shaper answers with a leading 0 in the no-argument dump: that field is `present`, and it
- * will read 1 once the core is in the FPGA. A host must check it before trusting the rest.
+ * present is a real hardware-detection flag: 1 when this firmware was built against a bitstream
+ * that has pulse_shaper_core (PULSE_SHAPER_CORE_PRESENT), 0 when built against an older one that
+ * predates it -- in which case $SH's writes land in the firmware shadow above rather than a
+ * register, and a host must check this flag before trusting the rest as live hardware state.
  *
  * @param c Two-character command code echoed in the reply.
  * @param a Argument array (0 or 1 elements expected).
@@ -562,36 +644,25 @@ static int h_sv(const char *c, const s32 *a, int n) { return generic_set(c, a, n
  * @return 0 on success (reply already sent), ERR_PARAM if n or the index is invalid.
  */
 static int h_gh(const char *c, const s32 *a, int n) {
+  s32 v;
   int i;
   if (n == 0) {
     reply_open(c);
-    reply_val(0);
-    for (i = 0; i < 4; i++)
-      reply_val(g_shaper[i]);
+    reply_val(PULSE_SHAPER_CORE_PRESENT);
+    for (i = 0; i < 4; i++) {
+      if (shaper_get((s32)i, &v))
+        reply_val(v);
+    }
     reply_close();
     return 0;
   }
-  if (n != 1 || !in_range(a[0], 0, 3))
+  if (n != 1 || !shaper_get(a[0], &v))
     return ERR_PARAM;
-  reply_sel(c, a[0], g_shaper[a[0]]);
+  reply_sel(c, a[0], v);
   return 0;
 }
 
-/**
- * @brief $SH handler: writes one shaper parameter (placeholder core, not range-checked beyond
- *        non-negative since the shaper's real limits are not yet known).
- * @param c Two-character command code echoed in the reply.
- * @param a Argument array; a[0]=index (0..3), a[1]=value.
- * @param n Argument count (must be exactly 2).
- * @return 0 on success (reply already sent), ERR_PARAM if n or the index is invalid.
- */
-static int h_sh(const char *c, const s32 *a, int n) {
-  if (n != 2 || !in_range(a[0], 0, 3) || a[1] < 0)
-    return ERR_PARAM;
-  g_shaper[a[0]] = a[1];
-  reply_ack(c);
-  return 0;
-}
+static int h_sh(const char *c, const s32 *a, int n) { return generic_set(c, a, n, shaper_set); }
 
 /** @brief $PI handler: liveness check, acks with no side effect. */
 static int h_ping(const char *c, const s32 *a, int n) {
@@ -931,31 +1002,34 @@ static int h_rq(const char *c, const s32 *a, int n) {
 
 /* ---------------------------------------------------------------- $RA, amplitude+timestamp only
  *
- * Binary batch of JUST peak amplitude and timestamp, popped directly from psd_core's own FIFO
- * (Psd_Pop()) rather than through Acq_PopPaired() -- no FCI pairing, and deliberately NOT gated by
- * g_running. psd_core integrates every triggered frame regardless of whether $AE has been called;
- * g_running only controls whether $RV/$RB/$RQ pop and pair events, a firmware-side bookkeeping
- * choice, not a hardware one. $RA exists so a host that only wants a live energy spectrum (peak
- * amplitude) is not forced to pay for FCI pairing it does not want, and does not need Live
- * acquisition ($AE) running at all to get one -- see docs/sw/CLI_documentation.md and the GUI's
- * Spectrum tab, which switches to this command precisely when Live FCI/PSD is not running, to
- * avoid wasting bandwidth on a $RQ that $AE has not enabled and would return empty.
+ * Binary batch of JUST shaped amplitude and timestamp, popped directly from pulse_shaper_core's
+ * own FIFO (PulseShaper_Pop()) rather than through Acq_PopPaired() -- no FCI/PSD pairing, and
+ * deliberately NOT gated by g_running. pulse_shaper_core processes every triggered frame
+ * regardless of whether $AE has been called; g_running only controls whether $RV/$RB/$RQ pop and
+ * pair events, a firmware-side bookkeeping choice, not a hardware one. $RA exists so a host that
+ * only wants a live energy spectrum (amplitude) is not forced to pay for FCI/PSD pairing it does
+ * not want, and does not need Live acquisition ($AE) running at all to get one -- see
+ * docs/sw/CLI_documentation.md and the GUI's Spectrum tab, which switches to this command
+ * precisely when Live FCI/PSD is not running, to avoid wasting bandwidth on a $RQ that $AE has not
+ * enabled and would return empty.
  *
- * Unconditional (no CLI_HAVE_RESULTS guard): psd_core is not tied to the FCI result path's
- * presence the way Acq_PopPaired() is, so this command works in any build that has psd_core at
- * all, which today is every build.
+ * Guarded on PULSE_SHAPER_CORE_PRESENT rather than CLI_HAVE_RESULTS: this command's only hardware
+ * dependency is pulse_shaper_core, independent of whether the FCI result path is present, so a
+ * build with FCI absent but the shaper present must still answer, and vice versa.
  *
  * Same framing convention as $RQ (ASCII header, 0xA5-tagged records, 0x5A end tag with count and
  * checksum) -- see there for why self-delimiting rather than length-prefixed, and for why sharing
  * g_rq_sum/rq_put_u32() with $RQ is safe.
  *
- * Per event, in order (12 bytes): u32 ts_lo, u32 ts_hi, s32 peak. */
+ * Per event, in order (12 bytes): u32 ts_lo, u32 ts_hi, s32 amplitude (still named `peak` on the
+ * wire and in every consumer -- fci_api, the GUI, the CSV schema -- since only the hardware source
+ * changed, not the field). */
 #define RA_BYTES_PER_EVENT 12
 
 /**
- * @brief $RA handler: binary batch of amplitude+timestamp only, popped directly from psd_core.
- *        See the section comment above (RA_BYTES_PER_EVENT etc.) for the frame layout and why
- *        this bypasses FCI pairing and g_running.
+ * @brief $RA handler: binary batch of amplitude+timestamp only, popped directly from
+ *        pulse_shaper_core. See the section comment above (RA_BYTES_PER_EVENT etc.) for the frame
+ *        layout and why this bypasses FCI/PSD pairing and g_running.
  * @param c Two-character command code echoed in the reply.
  * @param a Argument array; a[0], if present, caps the batch (default/max RB_MAX_BATCH).
  * @param n Argument count (0 or 1).
@@ -963,7 +1037,9 @@ static int h_rq(const char *c, const s32 *a, int n) {
  */
 static int h_ra(const char *c, const s32 *a, int n) {
   u32 want = RB_MAX_BATCH, got = 0;
-  PsdResult r;
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaperResult r;
+#endif
   if (n > 1)
     return ERR_PARAM;
   if (n == 1) {
@@ -971,13 +1047,18 @@ static int h_ra(const char *c, const s32 *a, int n) {
       return ERR_PARAM;
     want = (u32)a[0];
   }
+#if !PULSE_SHAPER_CORE_PRESENT
+  (void)want;
+  reply_one(c, -1);
+  return 0;
+#else
   xil_printf("!%c%c %d\n", c[0], c[1], RA_BYTES_PER_EVENT);
   g_rq_sum = 0;
-  while (got < want && Psd_Pop(PSD_CORE_BASEADDR, &r)) {
+  while (got < want && PulseShaper_Pop(PULSE_SHAPER_CORE_BASEADDR, &r)) {
     outbyte((char)(u8)RQ_TAG_EVENT);
     rq_put_u32((u32)(r.timestamp & 0xFFFFFFFFu));
     rq_put_u32((u32)(r.timestamp >> 32));
-    rq_put_u32((u32)r.peak);
+    rq_put_u32((u32)r.amplitude);
     got++;
   }
   {
@@ -990,6 +1071,7 @@ static int h_ra(const char *c, const s32 *a, int n) {
       outbyte((char)(u8)(sum >> (8 * k)));
   }
   return 0;
+#endif /* PULSE_SHAPER_CORE_PRESENT */
 }
 
 /** @brief $RN handler: replies with FIFO occupancy on both sides, so a host can size its polling

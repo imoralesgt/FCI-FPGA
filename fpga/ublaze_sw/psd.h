@@ -13,15 +13,13 @@
 /**
  * @brief One event's worth of PSD output.
  *
- * energy_short/energy_long/peak are SIGNED: undershoot below the baseline reference genuinely
+ * energy_short/energy_long are SIGNED: undershoot below the baseline reference genuinely
  * subtracts, and treating them as unsigned would turn a small negative integral into a huge
  * positive one.
  */
 typedef struct {
   s32 energy_short; /**< PSD short-gate charge integral. */
   s32 energy_long;  /**< PSD long-gate charge integral. */
-  s32 peak;         /**< Max baseline-subtracted sample over the whole frame, signed for the same
-                      *   undershoot reason as energy_short/energy_long. */
   u64 timestamp;    /**< trigger_core's 64-bit cycle count at the moment this pulse fired. */
 } PsdResult;
 
