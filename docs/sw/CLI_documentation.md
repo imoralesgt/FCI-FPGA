@@ -96,7 +96,7 @@ Returns one event matched across the FCI and PSD result FIFOs by its hardware ti
 | `fci` | FCI ratio × 10 000 |
 | `energy_short`, `energy_long` | PSD gate integrals, signed |
 | `psd` | PSD parameter × 10 000 |
-| `peak` | Max baseline-subtracted sample over the whole frame, signed, raw ADC-code units -- the spectroscopy energy channel, independent of the PSD gates |
+| `peak` | Shaped-pulse plateau amplitude from the pulse shaper (section 3.6), signed, raw ADC-code units -- the spectroscopy energy channel, independent of the PSD gates |
 
 `$RV` replies `!RV 0` while acquisition is disabled.
 
@@ -224,24 +224,25 @@ fall back to `$RB`.
 ### 2.5c Read Amplitudes, binary (`$RA`)
 
 `$RA [n]` — pops up to `n` events (default and maximum 1024, stops early if the FIFO empties), each
-carrying **only** the timestamp and peak amplitude, popped directly from `psd_core`'s own FIFO
-rather than through the FCI-pairing path `$RV`/`$RB`/`$RQ` use.
+carrying **only** the timestamp and shaped-peak amplitude, popped directly from the pulse shaper's
+own FIFO (section 3.6) rather than through the FCI-pairing path `$RV`/`$RB`/`$RQ` use.
 
 Two things make this a different command rather than a slimmer `$RQ`:
 
-- **Not gated by `$AE`/`$AD`.** `psd_core` integrates every triggered frame regardless of whether
-  acquisition is enabled -- `g_running` only controls whether `$RV`/`$RB`/`$RQ` pop and pair
-  events, a firmware bookkeeping choice, not a hardware one. `$RA` returns real data whether or not
-  `$AE` has ever been called.
-- **No FCI pairing, and no `CLI_HAVE_RESULTS` dependency.** It never touches `fci_sink` or
-  `Acq_PopPaired()`, so it works in any build that has `psd_core` at all -- today, every build --
-  even one with no FCI result path present.
+- **Not gated by `$AE`/`$AD`.** The pulse shaper processes every triggered frame regardless of
+  whether acquisition is enabled -- `g_running` only controls whether `$RV`/`$RB`/`$RQ` pop and
+  pair events, a firmware bookkeeping choice, not a hardware one. `$RA` returns real data whether
+  or not `$AE` has ever been called.
+- **No FCI/PSD pairing.** It never touches `fci_sink`, `psd_core`, or `Acq_PopPaired()`, so it
+  works independently of whether the FCI result path is present -- its only hardware dependency is
+  the pulse shaper itself, which reports `!RA -1` in place of the ASCII header if absent from the
+  loaded bitstream (an older build; see section 3.6).
 
 Intended use: a host that wants a live energy spectrum (peak amplitude) but not FCI/PSD pairing --
 e.g. this project's own GUI, whose Spectrum tab switches to `$RA` precisely when Live FCI/PSD
 acquisition is not running, rather than polling a `$RQ` that `$AE` has not enabled and that would
 return empty. When Live FCI/PSD acquisition IS running, the GUI takes `peak` from the `$RQ` batches
-it is already fetching instead, since polling both would draw from the same `psd_core` FIFO and
+it is already fetching instead, since polling both would draw from the same pulse-shaper FIFO and
 starve one path of events the other already consumed.
 
 Framing is identical to `$RQ`'s (ASCII header, `0xA5`-tagged records, `0x5A` end tag with count and
@@ -382,18 +383,30 @@ returns −1 until a raw code has been written.
 
 ### 3.6 Pulse shaper (`$SH` / `$GH`)
 
-`$GH` with no index replies `!GH <present> <peaking> <gap> <decay> <enable>`.
+The spectroscopy energy channel: a Jordanov-Knoll recursive trapezoidal filter (V.T. Jordanov,
+G.F. Knoll, *"Digital synthesis of pulse shapes in real time for high resolution radiation
+spectroscopy"*, NIM A 345 (1994) 337-345 -- the same filter, and the same three parameter names,
+CAEN's own DPP-PHA firmware uses). Its shaped-pulse plateau amplitude is `peak` in every event
+record (sections 2.1, 2.5, 2.5b, 2.5c), averaged over many samples rather than picked from one.
 
-`present` is 0 when the shaper core is absent from the loaded bitstream and 1 when it is available.
-While `present` is 0, values written with `$SH` are stored and returned by `$GH` but have no effect
-on acquisition.
+`$GH` with no index replies `!GH <present> <peaking> <flat_top> <decay> <enable>`.
 
-| index | parameter |
-|---|---|
-| 0 | peaking time (samples) |
-| 1 | gap time (samples) |
-| 2 | decay / pole-zero (samples) |
-| 3 | enable |
+`present` is 0 when the pulse shaper core is absent from the loaded bitstream (an older build) and
+1 when it is available. While `present` is 0, values written with `$SH` are stored and returned by
+`$GH` but have no effect on acquisition, and every event record's `peak` reads 0 -- there is no
+fallback amplitude source in that configuration.
+
+| index | parameter | range | notes |
+|---|---|---|---|
+| 0 | peaking time (samples) | 10 … 250 | rise/window length; should sit a bit past the detector's physical rise time. The flat-top plateau height scales with this value (~amplitude × peaking for a matched `decay`); the host is expected to absorb that scale factor in its own energy calibration, the same way it already calibrates raw ADC-code units into physical energy. |
+| 1 | flat_top (samples) | 0 … 250 | plateau length; 0 is a valid "triangular, no plateau" configuration, not an error. Longer averages more samples (better noise rejection) at the cost of more dead time per pulse. |
+| 2 | decay / pole-zero (samples) | 2 … 400 | match this to the detector's own measured pulse decay time constant -- for a matched value the flat-top plateau is exactly flat, independent of the pulse's true decay; a mismatch shows up as a slope or under/overshoot on the plateau instead. |
+| 3 | enable | 0 … 1 | 0 bypasses shaping entirely: `peak` reports the frame's raw single-sample peak instead, useful as an A/B reference against the shaped amplitude. |
+
+Values outside a field's range saturate to that field's own min/max on write, the same convention
+every other saturating field in this protocol follows (e.g. section 3.1's `depth`) -- an
+out-of-range write still arrives as visibly out-of-range rather than wrapping into a plausible
+in-range value.
 
 ---
 

@@ -15,9 +15,10 @@ Clearing what's plotted is Reset's job alone, so a Stop followed by another Star
 freeze the display, or because the CSV segment should roll over) continues the same accumulated
 view rather than silently discarding it.
 
-Energy: E = c0 + c1*peak + c2*peak^2, `peak` being the FPGA's max baseline-subtracted deviation
-over the whole frame (see dual_gate_integrator.vhd) -- a whole-pulse property, independent of the
-PSD gates, unlike the energy_long this axis used before. The coefficients live in HistogramView
+Energy: E = c0 + c1*peak + c2*peak^2, `peak` being pulse_shaper_core's shaped-pulse plateau
+amplitude (a Jordanov-Knoll recursive trapezoidal filter -- see trapezoidal_filter.vhd) -- a
+whole-pulse property, independent of the PSD gates, unlike the energy_long this axis used before.
+The coefficients live in HistogramView
 (set_calibration() below receives them via MainWindow's cross-tab wiring, the same pattern used for
 PSD pre_trigger / Trigger delay) and default to the identity map (c0=0, c1=1, c2=0), so an
 uncalibrated session still plots a sensible raw-peak axis rather than a meaningless one. Because the

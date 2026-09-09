@@ -38,14 +38,17 @@ class AcqEvent:
     for "long-gate charge was <= 0, the ratio is undefined" (acquisition.c's psd_parameter_scaled).
     Check energy_long > 0 before trusting this field, exactly as firmware itself does."""
     peak: int
-    """Max baseline-subtracted sample over the whole frame (raw ADC-code units), independent of the
-    PSD gates -- the spectroscopy energy channel. Sent raw, not scaled like fci/psd."""
+    """Shaped-pulse plateau amplitude from pulse_shaper_core (see ShaperConfig), raw ADC-code
+    units, independent of the PSD gates -- the spectroscopy energy channel. Sent raw, not scaled
+    like fci/psd. Field name/position/type are unchanged from the raw single-sample peak this
+    replaced; only the hardware source did."""
 
 
 @dataclass(frozen=True, slots=True)
 class AmpEvent:
-    """One event from `$RA` (CLI doc section 2.5c): timestamp and peak amplitude only, popped
-    directly from psd_core's FIFO with no FCI pairing. Deliberately NOT AcqEvent with the other
+    """One event from `$RA` (CLI doc section 2.5c): timestamp and shaped-peak amplitude only,
+    popped directly from pulse_shaper_core's FIFO with no FCI/PSD pairing. Deliberately NOT AcqEvent
+    with the other
     fields zeroed -- a caller that reads .fci/.psd/.energy_long off what it assumes is a real
     AcqEvent would get silently meaningless data; a distinct type makes that impossible rather than
     merely undocumented. Has the same `timestamp`/`peak` field names and meaning as AcqEvent's, so
@@ -196,15 +199,30 @@ class VgaConfig:
 
 @dataclass(frozen=True, slots=True)
 class ShaperConfig:
-    """`$GH`/`$SH` (CLI doc section 3.6). The shaper core is not yet in every bitstream; while
-    `present` is False, values written are stored and read back but have no effect on
-    acquisition."""
+    """`$GH`/`$SH` (CLI doc section 3.6): pulse_shaper_core, a Jordanov-Knoll recursive trapezoidal
+    filter. It is what `AcqEvent.peak`/`AmpEvent.peak` are computed from -- a shaped-pulse plateau
+    amplitude, averaged over many samples, in place of a single raw sample pick. `present` is a
+    real hardware-detection flag (registers.h's PULSE_SHAPER_CORE_PRESENT): False only when this
+    firmware was built against a bitstream that predates the core, in which case values written are
+    stored and read back through a firmware shadow but have no effect on acquisition."""
 
     present: bool
     peaking: int
-    """Peaking time, in samples."""
-    gap: int
-    """Gap time, in samples."""
+    """Peaking (rise) time, in samples at 50 Msps. Hardware range 10..250. Should sit a bit past
+    the detector's own physical rise time so the trapezoid's ramp fully captures it; the flat-top
+    plateau height scales with this value (amplitude ~ true_amplitude * peaking for a matched
+    `decay`), which the GUI's energy calibration absorbs the same way it already absorbs any other
+    scale factor in the amplitude channel."""
+    flat_top: int
+    """Flat-top length, in samples. Hardware range 0..250 -- 0 is a valid "triangular, no plateau"
+    configuration, not an error. A longer flat-top averages more samples (better noise rejection)
+    at the cost of a longer dead time per pulse."""
     decay: int
-    """Decay / pole-zero time, in samples."""
+    """Pole-zero decay time constant, in samples. Hardware range 2..400. Match this to the
+    detector's own measured pulse decay tau: for a matched value the flat-top plateau is exactly
+    flat (independent of the pulse's true decay); a mismatch shows up as a slope or under/overshoot
+    on the plateau instead."""
     enable: bool
+    """0 bypasses shaping entirely: the core reports the frame's raw single-sample peak instead
+    (what psd_core's now-removed peak field used to report), useful as an A/B reference. 1 is the
+    normal operating mode."""

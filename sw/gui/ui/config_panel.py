@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from fci_api import FciClient, FciError
 
-from .slider_spin import SliderSpinField
+from .slider_spin import CycleTimeField, SliderSpinField
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,14 @@ class Field:
     fields are the case in point: their minima are protocol bounds, while the value that actually
     works is the one firmware boots with (bringup.c's CFD_FRACTION / CFD_DELAY). Showing 1/256 and
     a 1-sample delay implied a configuration that would trigger on almost nothing."""
+    cycle_period_ns: float | None = None
+    """Set on a field whose wire value is a clock cycle count but whose natural human unit is
+    time (pulse_shaper_core's peaking/flat_top/decay, at 20 ns/cycle @ 50 Msps). When set, the
+    control is a CycleTimeField instead of a SliderSpinField: a microsecond-labelled spin box that
+    only ever lands on exact multiples of this period, stepping by one cycle at a time. The
+    dataclass value stays a plain integer cycle count either way -- this only changes what the
+    control DISPLAYS, matching the module's config values keep the wire unit convention (see
+    fci_api/types.py's own module docstring)."""
 
 
 class SubsystemPanel(QGroupBox):
@@ -121,6 +129,10 @@ class SubsystemPanel(QGroupBox):
             grid.addWidget(lbl, row, 0)
             if f.is_bool:
                 w = QCheckBox()
+            elif f.cycle_period_ns is not None:
+                w = CycleTimeField(f.minimum, f.maximum, f.cycle_period_ns)
+                if f.default is not None:
+                    w.setValue(f.default)
             else:
                 w = SliderSpinField(f.minimum, f.maximum)
                 if f.default is not None:
@@ -407,11 +419,25 @@ VGA_FIELDS = [
     Field("fine_dac_code", "Fine DAC code", 0, 4095, optional=True, tooltip="Raw DAC code."),
 ]
 
+SHAPER_CYCLE_NS = 20.0  # 1 clock period @ 50 Msps
+
 SHAPER_FIELDS = [
-    Field("peaking", "Peaking time", 0, 65535, tooltip="Peaking time (samples)."),
-    Field("gap", "Gap time", 0, 65535, tooltip="Gap time (samples)."),
-    Field("decay", "Decay", 0, 65535, tooltip="Decay / pole-zero time constant (samples)."),
-    Field("enable", "Enable", is_bool=True),
+    Field("peaking", "Peaking time", 10, 250, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Peaking (rise) time. Should sit a bit past the detector's own physical rise "
+                  "time so the trapezoid's ramp fully captures it. The flat-top plateau height "
+                  "scales with this value; changing it after calibrating requires recalibrating."),
+    Field("flat_top", "Flat-top", 0, 250, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Flat-top length. 0 is a valid \"triangular, no plateau\" configuration. Longer "
+                  "averages more samples (better noise rejection) at the cost of more dead time "
+                  "per pulse."),
+    Field("decay", "Decay (pole-zero)", 2, 400, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Pole-zero decay time constant. Match this to the detector's own measured pulse "
+                  "decay tau -- for a matched value the flat-top plateau is exactly flat, "
+                  "independent of the pulse's true decay; a mismatch shows up as a slope or "
+                  "under/overshoot on the plateau instead."),
+    Field("enable", "Enable", is_bool=True,
+          tooltip="Off bypasses shaping entirely: the raw single-sample peak is reported instead, "
+                  "useful as an A/B reference against the shaped amplitude."),
 ]
 
 

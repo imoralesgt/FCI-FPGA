@@ -1,12 +1,21 @@
-"""Live energy spectrum tab: accumulates the FPGA-computed peak amplitude (fpga/rtl/psd_core's new
-`peak` field -- see dual_gate_integrator.vhd) into a fixed-channel histogram, offers up to 3
-calibration coefficients to relabel the x-axis in energy units, and exports to the ORTEC/Maestro
-SPE ASCII format. The same coefficients are shared live with LiveView's FCI/PSD-vs-Energy plots
-(see calibration_changed below), so this tab is where a session's one calibration is set.
+"""Live energy spectrum tab: accumulates the FPGA-computed peak amplitude (pulse_shaper_core's
+shaped-pulse plateau -- see fpga/rtl/pulse_shaper_core/src/trapezoidal_filter.vhd) into a
+fixed-channel histogram, offers up to 3 calibration coefficients to relabel the x-axis in energy
+units, and exports to the ORTEC/Maestro SPE ASCII format. The same coefficients are shared live
+with LiveView's FCI/PSD-vs-Energy plots (see calibration_changed below), so this tab is where a
+session's one calibration is set.
 
 Peak amplitude, not energy_long, is the spectroscopy channel here: it is a whole-pulse property
 independent of the PSD gates and of the energy_long <= 0 BLR-gate pathology LiveView's FCI/PSD
 plots have to exclude (see live_view.py's module docstring) -- every triggered pulse has a peak.
+
+Raw channel range: the shaped amplitude scales with the configured `peaking` time (see
+ShaperConfig), unlike the raw single-sample peak this tab's channel axis (HIST_CHANNELS below) was
+originally sized for -- a full-scale pulse at a large `peaking` can exceed HIST_CHANNELS and clip
+into the top bin before calibration ever sees it (calibration only relabels bin EDGES for display,
+it cannot recover resolution already lost to clipping at accumulation time). Keeping the default
+shaping parameters modest keeps this from mattering in practice; a materially larger `peaking` may
+need this tab's channel range revisited.
 """
 
 from __future__ import annotations
@@ -38,8 +47,9 @@ from fci_api import AcqEvent
 
 HIST_CHANNELS = 16384
 """One bin per raw ADC code, 1:1, spanning the full 0..16383 theoretical range: 2^14, the ADC's
-native resolution -- NOT the 16-bit width of the AXI-Stream datapath `peak` travels over
-(dual_gate_integrator.vhd's DATA_WIDTH), which is wider than the sample data it actually carries.
+native resolution. This matched `peak`'s old raw-single-sample-pick source exactly; it is now an
+approximation for pulse_shaper_core's shaped amplitude, which scales with the configured `peaking`
+time and can exceed this range at default settings and above -- see this module's own docstring.
 Real events cluster in the lower part of that 16384 span -- the upper channels legitimately read
 zero -- but the axis itself covers the whole theoretical ceiling, which is the normal convention
 for this class of instrument rather than an axis auto-scaled to whatever was captured so far. This

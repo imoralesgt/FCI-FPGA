@@ -442,11 +442,11 @@ class FciClient:
 
     def get_shaper(self) -> ShaperConfig:
         """`$GH` (CLI doc section 3.6). See ShaperConfig.present."""
-        present, peaking, gap, decay, enable = self._t.transact("GH")
+        present, peaking, flat_top, decay, enable = self._t.transact("GH")
         return ShaperConfig(
             present=_bool(present),
             peaking=int(peaking),
-            gap=int(gap),
+            flat_top=int(flat_top),
             decay=int(decay),
             enable=_bool(enable),
         )
@@ -454,7 +454,7 @@ class FciClient:
     def set_shaper(
         self,
         peaking: int | None = None,
-        gap: int | None = None,
+        flat_top: int | None = None,
         decay: int | None = None,
         enable: bool | None = None,
     ) -> None:
@@ -463,8 +463,8 @@ class FciClient:
         exists in the loaded bitstream."""
         if peaking is not None:
             self._t.transact("SH", 0, peaking)
-        if gap is not None:
-            self._t.transact("SH", 1, gap)
+        if flat_top is not None:
+            self._t.transact("SH", 1, flat_top)
         if decay is not None:
             self._t.transact("SH", 2, decay)
         if enable is not None:

@@ -74,10 +74,10 @@ project's own `LIST/` and `RAW/` (above) own that, and are shown read-only. The 
 
 ![Configuration tab](images/configuration_tab.png)
 
-Per-subsystem configuration forms (Trigger, PSD, FCI, BLR, VGA gain, and any not-yet-implemented
-subsystems the CLI reserves fields for) with Refresh/Apply pairs -- Refresh reads the device's
-current values back, Apply writes what's in the form. Nothing here is a live plot; it's where an
-acquisition's parameters get set before Start.
+Per-subsystem configuration forms (Trigger, PSD, FCI, BLR, VGA gain, Pulse Shaper, and any
+not-yet-implemented subsystems the CLI reserves fields for) with Refresh/Apply pairs -- Refresh
+reads the device's current values back, Apply writes what's in the form. Nothing here is a live
+plot; it's where an acquisition's parameters get set before Start.
 
 ### Trigger
 
@@ -95,8 +95,8 @@ view of the same data.
 ![Spectrum tab](images/spectrum_tab.png)
 
 A live energy histogram (spectrum) built from each event's FPGA-computed peak amplitude
-(`AcqEvent.peak`/`AmpEvent.peak` -- the max baseline-subtracted sample over the whole triggered
-frame, independent of the PSD gates). Controls, left to right:
+(`AcqEvent.peak`/`AmpEvent.peak` -- the pulse shaper's shaped-pulse plateau amplitude, independent
+of the PSD gates; see the CLI documentation's pulse shaper section). Controls, left to right:
 
 - **Bins** -- a slider choosing the display resolution, 256 to 16384 channels in six steps (up to
   64x decimation). The full 16384-channel accumulation is always kept internally regardless of this
