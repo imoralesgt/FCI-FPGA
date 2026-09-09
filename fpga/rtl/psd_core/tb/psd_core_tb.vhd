@@ -34,6 +34,7 @@ architecture sim of psd_core_tb is
   constant R_TS_HI       : integer := 16#28#;
   constant R_COUNT       : integer := 16#2C#;
   constant R_WATERMARK   : integer := 16#30#;
+  constant R_PEAK        : integer := 16#34#;
 
   signal clk_i  : std_logic := '0';
   signal rstn_i : std_logic := '0';
@@ -208,7 +209,7 @@ begin
       end if;
     end procedure check;
 
-    variable rd, es, el, tlo, thi, lvl : integer;
+    variable rd, es, el, tlo, thi, lvl, pk : integer;
     variable ok_v : boolean;
 
   begin
@@ -245,6 +246,9 @@ begin
     axi_read(R_ELONG, el);
     check("short gate integral = 80*10 (got " & integer'image(es) & ")", es = 800);
     check("long gate integral = 100*10 (got " & integer'image(el) & ")", el = 1000);
+    axi_read(R_PEAK, pk);
+    check("peak of a flat frame equals its constant deviation (got "
+          & integer'image(pk) & ", expected 10)", pk = 10);
 
     ---------------------------------------------------------------------------
     report "=== Test: timestamp travels with the result ===";
@@ -261,6 +265,9 @@ begin
     axi_read(R_ESHORT, es);
     check("undershoot integrates negative (got " & integer'image(es) & ", expected -800)",
           es = -800);
+    axi_read(R_PEAK, pk);
+    check("peak of an all-negative frame is its true max, not clamped to 0 (got "
+          & integer'image(pk) & ", expected -10)", pk = -10);
 
     ---------------------------------------------------------------------------
     report "=== Test: short and long gates differ on a real pulse shape ===";
@@ -276,6 +283,9 @@ begin
     check("long gate = short + 20*50 (got " & integer'image(el) & ", expected 22400)",
           el = 22400);
     check("long gate exceeds short gate", el > es);
+    axi_read(R_PEAK, pk);
+    check("peak is the frame's max sample, independent of gate placement (got "
+          & integer'image(pk) & ", expected 1000)", pk = 1000);
 
     ---------------------------------------------------------------------------
     report "=== Test: pre_gate = 0 starts integration at the trigger ===";

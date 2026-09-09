@@ -32,7 +32,7 @@ ipx::package_project -root_dir $ip_out_dir -vendor FCI-FPGA -library user -taxon
 set core [ipx::current_core]
 set_property name psd_core $core
 set_property display_name {Pulse-Shape Discrimination Core} $core
-set_property description {CAEN-style dual-gate charge integrator. Consumes the framed trace from trigger_core and produces ENERGY_SHORT and ENERGY (long) per event, tagged with the 64-bit TUSER timestamp, buffered in a 32-deep result FIFO readable over AXI4-Lite with a watermark interrupt. Never backpressures the stream. AXI4-Lite: pre_trigger (0x00), pre_gate (0x04), short_gate (0x08), long_gate (0x0C), baseline_ref (0x10), ctrl (0x14), status (0x18), results (0x1C-0x2C), watermark (0x30).} $core
+set_property description {CAEN-style dual-gate charge integrator. Consumes the framed trace from trigger_core and produces ENERGY_SHORT, ENERGY (long) and PEAK (max deviation over the whole frame) per event, tagged with the 64-bit TUSER timestamp, buffered in a 32-deep result FIFO readable over AXI4-Lite with a watermark interrupt. Never backpressures the stream. AXI4-Lite: pre_trigger (0x00), pre_gate (0x04), short_gate (0x08), long_gate (0x0C), baseline_ref (0x10), ctrl (0x14), status (0x18), results (0x1C-0x2C), watermark (0x30), peak (0x34).} $core
 set_property vendor_display_name {FCI-FPGA project} $core
 set_property version 1.0 $core
 

@@ -9,6 +9,7 @@
 #include "registers.h"
 #include "xil_io.h"
 
+/** @brief See dma_s2mm.h. */
 int Dma_ResetCore(u32 dma_baseaddr) {
   Xil_Out32(dma_baseaddr + AXI_DMA_MM2S_DMACR_OFFSET, AXI_DMA_CR_RESET_MASK);
 
@@ -19,6 +20,7 @@ int Dma_ResetCore(u32 dma_baseaddr) {
   return 0;
 }
 
+/** @brief See dma_s2mm.h. */
 void DmaS2mm_ArmTransfer(u32 dma_baseaddr, u32 dest_addr, u32 length_bytes) {
   u32 cr;
 
@@ -35,6 +37,7 @@ void DmaS2mm_ArmTransfer(u32 dma_baseaddr, u32 dest_addr, u32 length_bytes) {
   Xil_Out32(dma_baseaddr + AXI_DMA_S2MM_LENGTH_OFFSET, length_bytes);
 }
 
+/** @brief See dma_s2mm.h. */
 void DmaMm2s_ArmTransfer(u32 dma_baseaddr, u32 src_addr, u32 length_bytes) {
   u32 cr;
 
@@ -46,6 +49,7 @@ void DmaMm2s_ArmTransfer(u32 dma_baseaddr, u32 src_addr, u32 length_bytes) {
   Xil_Out32(dma_baseaddr + AXI_DMA_MM2S_LENGTH_OFFSET, length_bytes);
 }
 
+/** @brief See dma_s2mm.h. */
 DmaS2mmResult DmaS2mm_PollComplete(u32 dma_baseaddr, u32 max_iters) {
   for (u32 i = 0; i < max_iters; i++) {
     u32 sr = Xil_In32(dma_baseaddr + AXI_DMA_S2MM_DMASR_OFFSET);
@@ -58,6 +62,7 @@ DmaS2mmResult DmaS2mm_PollComplete(u32 dma_baseaddr, u32 max_iters) {
   return DMA_S2MM_TIMEOUT;
 }
 
+/** @brief See dma_s2mm.h. */
 void DmaS2mm_AckComplete(u32 dma_baseaddr) {
   Xil_Out32(dma_baseaddr + AXI_DMA_S2MM_DMASR_OFFSET,
             AXI_DMA_SR_ALL_IRQ_MASK | AXI_DMA_SR_ERR_ALL_MASK);

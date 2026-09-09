@@ -1,7 +1,8 @@
 # FCI-FPGA client software
 
-A Python client for the MicroBlaze CLI (`docs/CLI_documentation.md`) and a PySide6 GUI built on
-top of it.
+A Python client for the MicroBlaze CLI (`docs/sw/CLI_documentation.md`) and a PySide6 GUI built on
+top of it. This is the developer quick-start (layout, running, packaging); for a user-facing tour
+of the GUI itself, with screenshots, see [`docs/sw/README.md`](../docs/sw/README.md).
 
 ## Layout
 

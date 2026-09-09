@@ -15,6 +15,7 @@
 
 static XIic Iic;
 
+/** @brief See iic.h. */
 int Iic_Init(u16 DeviceId) {
   XIic_Config *ConfigPtr = XIic_LookupConfig(DeviceId);
   if (ConfigPtr == NULL)
@@ -23,8 +24,11 @@ int Iic_Init(u16 DeviceId) {
   return XIic_CfgInitialize(&Iic, ConfigPtr, ConfigPtr->BaseAddress);
 }
 
+/** @brief See iic.h. */
 void Iic_SetAddress(int Address) { XIic_SetAddress(&Iic, XII_ADDR_TO_SEND_TYPE, Address); }
 
+/** @brief Acks a pending RX-FIFO-full interrupt status bit, if set (write-only use never reads
+ *         data, but a stale RX_FULL flag from a prior state can otherwise block re-arming). */
 static void ClearReceiveFifoFull(void) {
   u32 IIC_BASEADDR = Iic.BaseAddress;
   u32 isr_reg = Xil_In32(IIC_BASEADDR + XIIC_IISR_OFFSET);
@@ -32,6 +36,10 @@ static void ClearReceiveFifoFull(void) {
     Xil_Out32(IIC_BASEADDR + XIIC_IISR_OFFSET, XIIC_INTR_RX_FULL_MASK);
 }
 
+/** @brief Resets the core's TX FIFO and RX path, waits out any bus-busy condition, then puts the
+ *         controller into transmit-direction mode. Run once at the start of every transaction
+ *         (see Iic_DynamicSendBytes()) so each attempt starts from a known-clean state regardless
+ *         of how the previous one ended. */
 static void PrepareBusInTransmitMode(void) {
   u32 IIC_BASEADDR = Iic.BaseAddress;
   u32 sr_reg, cr_reg;
@@ -64,12 +72,17 @@ static void PrepareBusInTransmitMode(void) {
   Xil_Out32(IIC_BASEADDR + XIIC_CR_REG_OFFSET, cr_reg);
 }
 
+/** @brief Queues the slave address byte with the dynamic-mode START bit set and the write
+ *         direction bit, so the core issues a START condition and addresses the slave for a
+ *         write as soon as this byte reaches the TX FIFO. */
 static void SendAddressInTransmitMode(void) {
   u32 IIC_BASEADDR = Iic.BaseAddress;
   u32 daddr = XIIC_TX_DYN_START_MASK | XIIC_WRITE_OPERATION | ((Iic.AddrOfSlave << 1) & 0xFE);
   Xil_Out32(IIC_BASEADDR + XIIC_DTR_REG_OFFSET, daddr);
 }
 
+/** @brief Queues the payload bytes, setting the dynamic-mode STOP bit on the last one so the core
+ *         issues a STOP condition immediately after it, ending the transaction. */
 static void SendData(u8 *buffer_to_send, int byte_to_send) {
   u32 IIC_BASEADDR = Iic.BaseAddress;
   int imax = byte_to_send - 1;
@@ -82,6 +95,17 @@ static void SendData(u8 *buffer_to_send, int byte_to_send) {
   }
 }
 
+/**
+ * @brief Checks whether the just-queued transaction completed cleanly, resetting the core if not.
+ *
+ * A set TX_ERROR bit (e.g. a NACK) resets the control and status registers and reports failure
+ * immediately. Otherwise, if the TX FIFO has not yet drained, waits @p wait_time once more and
+ * rechecks -- the caller has already waited out the transaction's own nominal duration, so this
+ * covers only the margin, not the whole transfer.
+ *
+ * @param wait_time Microseconds to wait for the TX FIFO to drain if it has not already.
+ * @return 1 if the TX FIFO is empty (transaction sent) and no TX error occurred, 0 otherwise.
+ */
 static int SendSuccessfullyCompleted(u32 wait_time) {
   u32 IIC_BASEADDR = Iic.BaseAddress;
   u32 sr_reg = Xil_In32(IIC_BASEADDR + XIIC_SR_REG_OFFSET);
@@ -101,6 +125,7 @@ static int SendSuccessfullyCompleted(u32 wait_time) {
   return 1;
 }
 
+/** @brief See iic.h. */
 int Iic_DynamicSendBytes(u8 *buffer_to_send, int byte_to_send) {
   for (int trials = 3; trials > 0; trials--) {
     PrepareBusInTransmitMode();

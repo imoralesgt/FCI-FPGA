@@ -19,6 +19,11 @@
 #include "platform.h"
 #include "uart.h"
 
+/**
+ * @brief Entry point. Brings the hardware up once, then services the CLI forever.
+ * @return Never returns (the CLI poll loop runs until reset); the trailing `return 0` is
+ *         unreachable dead code kept only to satisfy int main()'s signature.
+ */
 int main(void) {
   init_platform();
 

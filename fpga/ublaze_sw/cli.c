@@ -1,7 +1,7 @@
 /*
  * cli.c
  *
- * Command parser for the ASCII interface described in cli.h and docs/CLI_documentation.md.
+ * Command parser for the ASCII interface described in cli.h and docs/sw/CLI_documentation.md.
  *
  * Structure: a byte pump assembles lines from the UART, a tokenizer turns the tail into signed
  * 32-bit arguments, and a dispatch table routes the two-character code to a handler. Handlers own
@@ -67,25 +67,36 @@ static s32 g_shaper[4]; /* peaking, gap, decay, enable */
 
 /* ---------------------------------------------------------------- reply helpers */
 
+/** @brief Sends an error reply, `!XX <code>` (0 = unknown command, 1 = bad/out-of-range parameter). */
 static void reply_err(int code) { xil_printf("!XX %d\n", code); }
+/** @brief Sends a bare acknowledgement, `!CC`, for a set command. */
 static void reply_ack(const char *c) { xil_printf("!%c%c\n", c[0], c[1]); }
+/** @brief Opens a reply line, `!CC`, with no trailing newline -- caller streams values then reply_close(). */
 static void reply_open(const char *c) { xil_printf("!%c%c", c[0], c[1]); }
+/** @brief Streams one signed value into an open reply line. */
 static void reply_val(s32 v) { xil_printf(" %d", v); }
-/* For fields that are unsigned by nature -- trigger_core's free-running cycle-counter timestamp,
+/**
+ * @brief Streams one UNSIGNED value into an open reply line.
+ *
+ * For fields that are unsigned by nature -- trigger_core's free-running cycle-counter timestamp,
  * and the monotonic event/error counters in AcqStats -- rather than genuinely signed quantities
  * like a threshold or a charge integral. %d on a u32 whose top bit is set prints as a large
  * negative number even though the value is a perfectly ordinary, non-negative count: caught live
- * on trigger_core's timestamp, which at 75 MHz crosses 2^31 about every 28.6 seconds. */
+ * on trigger_core's timestamp, which at 75 MHz crosses 2^31 about every 28.6 seconds.
+ */
 static void reply_val_u(u32 v) { xil_printf(" %u", v); }
+/** @brief Terminates a reply line opened with reply_open(). */
 static void reply_close(void) { xil_printf("\n"); }
 
+/** @brief Sends a complete one-value reply, `!CC <v>`. */
 static void reply_one(const char *c, s32 v) {
   reply_open(c);
   reply_val(v);
   reply_close();
 }
 
-/* A get that took a selector echoes it, so `!GB 1 256` is readable without the request beside it. */
+/** @brief Sends a complete selector+value reply, `!CC <sel> <v>` -- a get that took a selector
+ *         echoes it, so `!GB 1 256` is readable without the request beside it. */
 static void reply_sel(const char *c, s32 sel, s32 v) {
   reply_open(c);
   reply_val(sel);
@@ -95,18 +106,28 @@ static void reply_sel(const char *c, s32 sel, s32 v) {
 
 /* ---------------------------------------------------------------- register helpers */
 
+/** @brief Reads one 32-bit register at base+off. */
 static u32 reg_get(u32 base, u32 off) { return Xil_In32(base + off); }
+/** @brief Writes one 32-bit register at base+off. */
 static void reg_set(u32 base, u32 off, u32 v) { Xil_Out32(base + off, v); }
 
-/* Sign-extends the low `bits` of a register word. The signed registers (trigger threshold,
- * psd baseline_ref) are narrower than 32 bits, so a raw read reports a large positive number where
- * a small negative one was written. */
+/**
+ * @brief Sign-extends the low `bits` of a register word.
+ *
+ * The signed registers (trigger threshold, psd baseline_ref) are narrower than 32 bits, so a raw
+ * read reports a large positive number where a small negative one was written.
+ *
+ * @param v    Raw register value.
+ * @param bits Width of the signed field within v, in bits.
+ * @return v's low `bits` bits, sign-extended to a full s32.
+ */
 static s32 sign_extend(u32 v, int bits) {
   u32 m = 1u << (bits - 1);
   v &= (bits >= 32) ? 0xFFFFFFFFu : ((1u << bits) - 1u);
   return (s32)((v ^ m) - m);
 }
 
+/** @brief Whether lo <= v <= hi. */
 static int in_range(s32 v, s32 lo, s32 hi) { return v >= lo && v <= hi; }
 
 /* ---------------------------------------------------------------- trigger_core
@@ -123,6 +144,12 @@ static int in_range(s32 v, s32 lo, s32 hi) { return v >= lo && v <= hi; }
 #define TRG_CFD_FRAC 4
 #define TRG_CFD_DELAY 5
 
+/**
+ * @brief Reads one trigger_core field by TRG_* index, for $GT.
+ * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY.
+ * @param out Set to the field's current value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
 static int trg_get(s32 idx, s32 *out) {
   switch (idx) {
   case TRG_THRESHOLD:
@@ -150,6 +177,12 @@ static int trg_get(s32 idx, s32 *out) {
   }
 }
 
+/**
+ * @brief Validates and writes one trigger_core field by TRG_* index, for $ST.
+ * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY.
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
+ */
 static int trg_set(s32 idx, s32 v) {
   switch (idx) {
   case TRG_THRESHOLD:
@@ -211,6 +244,13 @@ static int trg_set(s32 idx, s32 v) {
 
 /* ---------------------------------------------------------------- blr_core */
 
+/**
+ * @brief Reads one blr_core field by index, for $GB.
+ * @param idx 0=shift, 1=gate_thr, 2=holdoff, 3=bypass, 4=hold, 5=baseline (read-only),
+ *            6=gate_open (read-only).
+ * @param out Set to the field's current value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
 static int blr_get(s32 idx, s32 *out) {
   u32 ctrl = reg_get(BLR_CORE_BASEADDR, BLR_CTRL_OFFSET);
   switch (idx) {
@@ -225,6 +265,13 @@ static int blr_get(s32 idx, s32 *out) {
   }
 }
 
+/**
+ * @brief Validates and writes one blr_core field by index, for $SB. Indices 5 and 6 are
+ *        read-only (rejected here).
+ * @param idx 0=shift, 1=gate_thr, 2=holdoff, 3=bypass, 4=hold.
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range, read-only, or v fails that field's range check.
+ */
 static int blr_set(s32 idx, s32 v) {
   switch (idx) {
   case 0:
@@ -262,6 +309,13 @@ static int blr_set(s32 idx, s32 v) {
 static const u32 psd_off[] = {PSD_PRE_TRIGGER_OFFSET, PSD_PRE_GATE_OFFSET, PSD_SHORT_GATE_OFFSET,
                               PSD_LONG_GATE_OFFSET, PSD_BASELINE_REF_OFFSET, PSD_WATERMARK_OFFSET};
 
+/**
+ * @brief Reads one psd_core field by index, for $GP.
+ * @param idx 0=pre_trigger, 1=pre_gate, 2=short_gate, 3=long_gate, 4=baseline_ref (sign-extended
+ *            from 16 bits), 5=watermark.
+ * @param out Set to the field's current value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
 static int psd_get(s32 idx, s32 *out) {
   if (idx < 0 || idx > 5)
     return 0;
@@ -273,6 +327,12 @@ static int psd_get(s32 idx, s32 *out) {
   return 1;
 }
 
+/**
+ * @brief Validates and writes one psd_core field by index, for $SP.
+ * @param idx 0=pre_trigger, 1=pre_gate, 2=short_gate, 3=long_gate, 4=baseline_ref, 5=watermark.
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
+ */
 static int psd_set(s32 idx, s32 v) {
   switch (idx) {
   case 0: case 1: case 2: case 3:
@@ -300,6 +360,13 @@ static int psd_set(s32 idx, s32 v) {
 static const u32 fci_off[] = {FCI_CORE_PSA_L_LO_OFFSET, FCI_CORE_PSA_L_HI_OFFSET,
                               FCI_CORE_PSA_W_LO_OFFSET, FCI_CORE_PSA_W_HI_OFFSET};
 
+/**
+ * @brief Reads one fci_core/fci_sink field by index, for $GF.
+ * @param idx 0..3=PSA window bin bounds (L_LO/L_HI/W_LO/W_HI); 4=fci_sink watermark, only when
+ *            CLI_HAVE_RESULTS.
+ * @param out Set to the field's current value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
 static int fci_get(s32 idx, s32 *out) {
   if (idx >= 0 && idx <= 3) {
     *out = (s32)reg_get(FCI_CORE_BASEADDR, fci_off[idx]);
@@ -314,6 +381,13 @@ static int fci_get(s32 idx, s32 *out) {
   return 0;
 }
 
+/**
+ * @brief Validates and writes one fci_core/fci_sink field by index, for $SF.
+ * @param idx 0..3=PSA window bin bounds (L_LO/L_HI/W_LO/W_HI); 4=fci_sink watermark, only when
+ *            CLI_HAVE_RESULTS.
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
+ */
 static int fci_set(s32 idx, s32 v) {
   if (idx >= 0 && idx <= 3) {
     /* Bin indices into the FFT magnitude spectrum. The upper bound is the Nyquist bin of the
@@ -338,6 +412,16 @@ static int fci_set(s32 idx, s32 v) {
 
 /* ---------------------------------------------------------------- VGA (AD8330 over I2C) */
 
+/**
+ * @brief Reads one cached VGA (AD8330) gain field by index, for $GV.
+ *
+ * Read back from the firmware's own g_vga_*_milli/g_vga_raw_code cache, not from the DAC (which is
+ * write-only over I2C) -- these track the last value this firmware successfully wrote.
+ *
+ * @param idx 0=fine gain (milli-units), 1=coarse gain (milli-units), 2=raw 12-bit DAC code.
+ * @param out Set to the field's current cached value on success.
+ * @return 1 on success, 0 if idx is out of range.
+ */
 static int vga_get(s32 idx, s32 *out) {
   switch (idx) {
   case 0: *out = g_vga_fine_milli; return 1;
@@ -347,16 +431,25 @@ static int vga_get(s32 idx, s32 *out) {
   }
 }
 
+/**
+ * @brief Validates and writes one VGA (AD8330) gain field by index, for $SV.
+ *
+ * Gains travel as milli-units because the framing carries integers only: 1500 means x1.50.
+ *
+ * The VgaDac_SetGain*()/SetFineCodeRaw() calls below are thin passthroughs of
+ * Iic_DynamicSendBytes(), whose header is explicit: "Returns 1 on success, 0 if all retries
+ * were exhausted." The checks here used to read `!= 0`, i.e. treat a SUCCESSFUL write as the
+ * failure case -- inverted. Every $SV call reported !XX 1 regardless of whether the DAC write
+ * actually happened (it did; the analog effect was visible on a live photopeak while the CLI
+ * insisted the write had failed), and g_vga_*_milli were never updated on a real success,
+ * leaving $GV's reported gain silently stale after every genuine change. Found 2026-09-03.
+ *
+ * @param idx 0=fine gain (milli-units), 1=coarse gain (milli-units), 2=raw 12-bit DAC code.
+ * @param v   New value.
+ * @return 1 on success, 0 if idx is out of range, v fails that field's range check, or the
+ *         underlying I2C write failed.
+ */
 static int vga_set(s32 idx, s32 v) {
-  /* Gains travel as milli-units because the framing carries integers only: 1500 means x1.50.
-   *
-   * The VgaDac_SetGain*()/SetFineCodeRaw() calls below are thin passthroughs of
-   * Iic_DynamicSendBytes(), whose header is explicit: "Returns 1 on success, 0 if all retries
-   * were exhausted." The checks here used to read `!= 0`, i.e. treat a SUCCESSFUL write as the
-   * failure case -- inverted. Every $SV call reported !XX 1 regardless of whether the DAC write
-   * actually happened (it did; the analog effect was visible on a live photopeak while the CLI
-   * insisted the write had failed), and g_vga_*_milli were never updated on a real success,
-   * leaving $GV's reported gain silently stale after every genuine change. Found 2026-09-03. */
   switch (idx) {
   case 0:
     if (!in_range(v, 1, 60000))
@@ -388,8 +481,19 @@ static int vga_set(s32 idx, s32 v) {
 
 typedef int (*CliHandler)(const char *code, const s32 *a, int n);
 
-/* Shared shape for the six indexed getters: no argument dumps every parameter, one argument reads
- * one. Dumping is what makes a configuration reproducible from a terminal log. */
+/**
+ * @brief Shared implementation for every indexed-field $G* getter.
+ *
+ * No argument dumps every parameter 0..count-1 in order; one argument reads just that index.
+ * Dumping is what makes a configuration reproducible from a terminal log.
+ *
+ * @param code  Two-character command code echoed in the reply.
+ * @param a     Argument array (0 or 1 elements expected).
+ * @param n     Argument count.
+ * @param count Number of indexed fields this core exposes (dump upper bound, exclusive).
+ * @param get   Per-core accessor, e.g. trg_get/blr_get/psd_get/fci_get/vga_get.
+ * @return 0 on success (reply already sent), ERR_PARAM if n or the index is invalid.
+ */
 static int generic_get(const char *code, const s32 *a, int n, int count,
                        int (*get)(s32, s32 *)) {
   s32 v;
@@ -409,6 +513,15 @@ static int generic_get(const char *code, const s32 *a, int n, int count,
   return 0;
 }
 
+/**
+ * @brief Shared implementation for every indexed-field $S* setter.
+ * @param code Two-character command code echoed in the reply.
+ * @param a    Argument array; a[0]=index, a[1]=value expected.
+ * @param n    Argument count (must be exactly 2).
+ * @param set  Per-core accessor, e.g. trg_set/blr_set/psd_set/fci_set/vga_set.
+ * @return 0 on success (reply already sent), ERR_PARAM if n is wrong or set() rejects the index
+ *         or value.
+ */
 static int generic_set(const char *code, const s32 *a, int n, int (*set)(s32, s32)) {
   if (n != 2 || !set(a[0], a[1]))
     return ERR_PARAM;
@@ -416,6 +529,14 @@ static int generic_set(const char *code, const s32 *a, int n, int (*set)(s32, s3
   return 0;
 }
 
+/**
+ * @brief $GT/$ST/$GB/$SB/$GP/$SP/$GF/$SF/$GV/$SV handlers.
+ *
+ * Each is generic_get()/generic_set() bound to one core's trg_get/blr_get/psd_get/fci_get/vga_get
+ * (or the matching _set) accessor pair above -- see those functions and generic_get()/generic_set()
+ * for the actual behavior; these ten lines only supply the CliHandler signature and the field count
+ * each core exposes.
+ */
 static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 6, trg_get); }
 static int h_st(const char *c, const s32 *a, int n) { return generic_set(c, a, n, trg_set); }
 static int h_gb(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 7, blr_get); }
@@ -429,8 +550,17 @@ static int h_sf(const char *c, const s32 *a, int n) { return generic_set(c, a, n
 static int h_gv(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 3, vga_get); }
 static int h_sv(const char *c, const s32 *a, int n) { return generic_set(c, a, n, vga_set); }
 
-/* The shaper answers with a leading 0 in the no-argument dump: that field is `present`, and it will
- * read 1 once the core is in the FPGA. A host must check it before trusting the rest. */
+/**
+ * @brief $GH handler: dumps or reads one shaper parameter.
+ *
+ * The shaper answers with a leading 0 in the no-argument dump: that field is `present`, and it
+ * will read 1 once the core is in the FPGA. A host must check it before trusting the rest.
+ *
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array (0 or 1 elements expected).
+ * @param n Argument count.
+ * @return 0 on success (reply already sent), ERR_PARAM if n or the index is invalid.
+ */
 static int h_gh(const char *c, const s32 *a, int n) {
   int i;
   if (n == 0) {
@@ -447,6 +577,14 @@ static int h_gh(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/**
+ * @brief $SH handler: writes one shaper parameter (placeholder core, not range-checked beyond
+ *        non-negative since the shaper's real limits are not yet known).
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array; a[0]=index (0..3), a[1]=value.
+ * @param n Argument count (must be exactly 2).
+ * @return 0 on success (reply already sent), ERR_PARAM if n or the index is invalid.
+ */
 static int h_sh(const char *c, const s32 *a, int n) {
   if (n != 2 || !in_range(a[0], 0, 3) || a[1] < 0)
     return ERR_PARAM;
@@ -455,6 +593,7 @@ static int h_sh(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $PI handler: liveness check, acks with no side effect. */
 static int h_ping(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -463,6 +602,7 @@ static int h_ping(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $ID handler: replies with instrument name and CLI protocol major/minor version. */
 static int h_id(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -471,6 +611,12 @@ static int h_id(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/**
+ * @brief $AE handler: clears both result FIFOs and stats, then enables acquisition.
+ *
+ * The clear-then-enable order matters: it guarantees the first event popped after $AE is a fresh
+ * one, not something left over from before acquisition was last disabled.
+ */
 static int h_ae(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -485,6 +631,8 @@ static int h_ae(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $AD handler: disables acquisition. The cores keep running (see registers.h's note that
+ *         psd_core is independent of g_running); this only gates whether $RV/$RB/$RQ pop results. */
 static int h_ad(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -494,6 +642,7 @@ static int h_ad(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $ES handler: replies with the current acquisition-enabled flag (0 or 1). */
 static int h_es(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -502,6 +651,7 @@ static int h_es(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $AR handler: clears both result FIFOs and stats without changing the run flag. */
 static int h_ar(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -515,10 +665,14 @@ static int h_ar(const char *c, const s32 *a, int n) {
   return 0;
 }
 
-/* Pops one event matched across both result FIFOs. The leading field is a validity flag: 0 means
- * nothing was pending, and no further values follow. Without it an empty reply would be
- * indistinguishable from a malformed one. The timestamp is split lo/hi because the framing carries
- * 32-bit values, the same split the reference CLI uses for its 64-bit integrals. */
+/**
+ * @brief $RV handler: pops and replies with one event matched across both result FIFOs, in ASCII.
+ *
+ * The leading field is a validity flag: 0 means nothing was pending, and no further values
+ * follow. Without it an empty reply would be indistinguishable from a malformed one. The
+ * timestamp is split lo/hi because the framing carries 32-bit values, the same split the
+ * reference CLI uses for its 64-bit integrals.
+ */
 static int h_rv(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -540,6 +694,7 @@ static int h_rv(const char *c, const s32 *a, int n) {
   reply_val(ev.energy_short);
   reply_val(ev.energy_long);
   reply_val(ev.psd_scaled);
+  reply_val(ev.peak);
   reply_close();
   }
 #else
@@ -562,10 +717,15 @@ static int h_rv(const char *c, const s32 *a, int n) {
  * be assumed configurable: this instrument has to work off-the-shelf on any host, without root or
  * a udev rule. That timer does not tax every packet, though -- the chip flushes on a full USB
  * packet OR on timer expiry, so a large reply streams at full rate and pays the 16 ms once, at the
- * end. Batch size therefore amortises it, and with the binary $RQ encoding below:
+ * end. Batch size therefore amortizes it, and with the binary $RQ encoding below:
  *
  *     batch     32 -> 1297 ev/s      batch  256 -> 2996 ev/s
  *     batch    128 -> 2524 ev/s      batch 1024 -> 3486 ev/s   (link ceiling 3686)
+ *
+ * Measured against the 24-byte $RQ record (25 bytes on the wire with its tag). The record is now
+ * 28 bytes (29 on the wire), which moves the arithmetic ceiling at this link's 4 Mbaud to
+ * 400000 B/s / 29 B ~= 13793 ev/s -- the shape of the curve (batching amortizes the 16 ms flush)
+ * still holds; these exact figures want re-measuring against the new record size.
  *
  * So a full-depth batch reaches 95% of the link with the DEFAULT timer, and tuning the timer down
  * becomes a nicety rather than a deployment requirement. An earlier revision capped this at 256 on
@@ -579,19 +739,22 @@ static int h_rv(const char *c, const s32 *a, int n) {
  */
 #define RB_MAX_BATCH RESULT_FIFO_DEPTH
 
-/* Pops up to n paired events (default/max RB_MAX_BATCH) in ONE round trip, stopping early if the
- * FIFO empties. This exists because $RV costs a full round trip per event, and on this UART/USB
- * link that round trip is dominated by the adapter's own latency (measured ~16 ms, i.e. a hard
- * ceiling around 60 requests/second) rather than by anything on the wire or in firmware -- no FIFO
- * depth fixes a per-event round trip that slow. Batching amortizes that fixed cost across up to
- * RB_MAX_BATCH events per request instead of paying it once per event, which is the only lever
- * available on the host side of a synchronous request/response protocol. It does not by itself
- * reach the 15 kcps design target (that needs on-chip histogramming or interrupt-driven service,
- * not a deeper poll), but it is the right fix for ordinary background-rate operation, where the
- * round trip itself, not any FIFO, was the limiting factor.
+/**
+ * @brief $RB handler: pops up to n paired events (default/max RB_MAX_BATCH) in ONE round trip,
+ *        stopping early if the FIFO empties, ASCII-encoded.
  *
- * Reply: `!RB [<ts_lo> <ts_hi> <psa_l> <psa_w> <fci> <energy_short> <energy_long> <psd>] ... <count>`
- * -- count groups of the same eight fields $RV reports for one event, followed by the count itself.
+ * This exists because $RV costs a full round trip per event, and on this UART/USB link that round
+ * trip is dominated by the adapter's own latency (measured ~16 ms, i.e. a hard ceiling around 60
+ * requests/second) rather than by anything on the wire or in firmware -- no FIFO depth fixes a
+ * per-event round trip that slow. Batching amortizes that fixed cost across up to RB_MAX_BATCH
+ * events per request instead of paying it once per event, which is the only lever available on
+ * the host side of a synchronous request/response protocol. It does not by itself reach the
+ * 15 kcps design target (that needs on-chip histogramming or interrupt-driven service, not a
+ * deeper poll), but it is the right fix for ordinary background-rate operation, where the round
+ * trip itself, not any FIFO, was the limiting factor.
+ *
+ * Reply: `!RB [<ts_lo> <ts_hi> <psa_l> <psa_w> <fci> <energy_short> <energy_long> <psd> <peak>] ... <count>`
+ * -- count groups of the same nine fields $RV reports for one event, followed by the count itself.
  * count trails rather than leads, unlike every other multi-value reply in this protocol: the actual
  * count is only known once the FIFO runs dry or the request is satisfied, and reply_val streams
  * straight to the UART with nothing buffered, so there is no going back to fill in a leading count
@@ -599,7 +762,13 @@ static int h_rv(const char *c, const s32 *a, int n) {
  * alternative, and was rejected -- this firmware only just recovered headroom from an LMB overflow
  * caused by exactly this kind of duplicated buffering, and streaming needs none. count can be less
  * than requested, including 0, if the FIFO ran dry partway through -- it is never a validity flag
- * the way $RV's leading value is, because a batch of zero simply means nothing was pending. */
+ * the way $RV's leading value is, because a batch of zero simply means nothing was pending.
+ *
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array; a[0], if present, caps the batch (default/max RB_MAX_BATCH).
+ * @param n Argument count (0 or 1).
+ * @return 0 always (reply already sent); ERR_PARAM if n or a[0] is out of range.
+ */
 static int h_rb(const char *c, const s32 *a, int n) {
   u32 want = RB_MAX_BATCH, got = 0;
   if (n > 1)
@@ -622,6 +791,7 @@ static int h_rb(const char *c, const s32 *a, int n) {
       reply_val(ev.energy_short);
       reply_val(ev.energy_long);
       reply_val(ev.psd_scaled);
+      reply_val(ev.peak);
       got++;
     }
   }
@@ -638,16 +808,17 @@ static int h_rb(const char *c, const s32 *a, int n) {
 /* ---------------------------------------------------------------- $RQ, binary batch
  *
  * Same semantics as $RB, different encoding. ASCII costs a measured 49.4 bytes per event, which at
- * 921600 baud caps readout at ~1871 events/s -- and with the FTDI latency timer set to 1 ms the
- * link runs at 98% utilisation, so that ceiling is now raw bandwidth, not latency, and the only
- * way past it is to send fewer bytes. This packs the same information into 24.
+ * this link's 4 Mbaud (axi_uart16550 -- see uart.h) caps readout around 400000/49.4 ~= 8097
+ * events/s -- and with the FTDI latency timer set to 1 ms the link runs close to saturated, so
+ * that ceiling is raw bandwidth, not latency, and the only way past it is to send fewer bytes.
+ * This packs the same information into 28.
  *
  * Additive rather than a change to $RB: $RB's format is a documented contract with existing
  * scripts and examples, and nothing is gained by breaking it.
  *
  * Frame:
  *   !RQ <bytes_per_event>\n        <- ASCII header, so a desync is still visible
- *   0xA5 <24 raw bytes>            <- one per event, little-endian (matches the MicroBlaze build)
+ *   0xA5 <28 raw bytes>            <- one per event, little-endian (matches the MicroBlaze build)
  *   ...
  *   0x5A <u16 count> <u32 sum32>   <- end tag, count and additive checksum, little-endian
  *
@@ -661,24 +832,36 @@ static int h_rb(const char *c, const s32 *a, int n) {
  * measurements. A plain additive sum is cheap on a MicroBlaze and catches truncation and splicing,
  * which are the failures actually observed here.
  *
- * Per event, in order (24 bytes):
- *   u32 ts_lo, u32 ts_hi, u32 psa_l, u32 psa_w, s32 energy_short, s32 energy_long
+ * Per event, in order (28 bytes):
+ *   u32 ts_lo, u32 ts_hi, u32 psa_l, u32 psa_w, s32 energy_short, s32 energy_long, s32 peak
  *
  * fci and psd are deliberately NOT sent. Both are exact functions of the fields above
  * (fci = psa_l/psa_w, psd = (long-short)/long) and were verified against 120,000 live events to
  * agree with the transmitted values to the last digit of their 1e-4 wire quantum. Sending them
  * would cost 8 of 32 bytes to transmit nothing the host cannot derive, and would introduce a way
- * for the two to disagree. */
-#define RQ_BYTES_PER_EVENT 24
+ * for the two to disagree. peak IS sent: it is not derived from any other field here, unlike fci
+ * and psd. */
+#define RQ_BYTES_PER_EVENT 28
 #define RQ_TAG_EVENT 0xA5u /* one record follows */
 #define RQ_TAG_END 0x5Au   /* end of frame; u16 count then u32 checksum follow */
 
-#if CLI_HAVE_RESULTS
+/* Not guarded by CLI_HAVE_RESULTS: $RA below reuses this same checksum accumulator and helper, and
+ * $RA must work in builds with no FCI result path at all (it only ever touches psd_core). Neither
+ * this accumulator nor rq_put_u32() has anything conceptually to do with FCI's presence -- they are
+ * generic "write a u32 to the wire, folding it into a running checksum" plumbing. Shared rather
+ * than duplicated per command because $RQ and $RA never stream a frame at the same instant (this
+ * file's command dispatch is single-threaded: one command's handler returns before the next byte
+ * off the wire is even read), so there is no interleaving to guard against. */
 static u32 g_rq_sum; /* additive checksum accumulator for the frame being streamed */
 
-/* Streams one little-endian u32 and folds it into the checksum. Bytes go out through outbyte()
- * because xil_printf() formats -- it cannot emit an arbitrary byte, and 0x00/0x0A are ordinary
- * payload values here. */
+/**
+ * @brief Streams one little-endian u32 for $RQ/$RA and folds it into g_rq_sum.
+ *
+ * Bytes go out through outbyte() because xil_printf() formats -- it cannot emit an arbitrary
+ * byte, and 0x00/0x0A are ordinary payload values here.
+ *
+ * @param v Value to stream.
+ */
 static void rq_put_u32(u32 v) {
   int i;
   for (i = 0; i < 4; i++) {
@@ -687,13 +870,22 @@ static void rq_put_u32(u32 v) {
     outbyte((char)b);
   }
 }
-#endif
 
-/* Binary counterpart of $RB. Streams with NO staging buffer: this firmware has under 1 KB of LMB
- * headroom, and buffering 256 events to put the count in a leading header would have cost 8 KB.
- * That is why the frame is self-delimiting instead of length-prefixed -- a 1-byte tag before each
- * record, and an end tag carrying the count and checksum. One byte per event to avoid an overflow
- * that would not have fit, which is a trade worth making. */
+/**
+ * @brief $RQ handler: binary counterpart of $RB -- see the frame layout in the comment block
+ *        above (RQ_BYTES_PER_EVENT etc.).
+ *
+ * Streams with NO staging buffer: this firmware has under 1 KB of LMB headroom, and buffering 256
+ * events to put the count in a leading header would have cost 8 KB. That is why the frame is
+ * self-delimiting instead of length-prefixed -- a 1-byte tag before each record, and an end tag
+ * carrying the count and checksum. One byte per event to avoid an overflow that would not have
+ * fit, which is a trade worth making.
+ *
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array; a[0], if present, caps the batch (default/max RB_MAX_BATCH).
+ * @param n Argument count (0 or 1).
+ * @return 0 always (reply already sent); ERR_PARAM if n or a[0] is out of range.
+ */
 static int h_rq(const char *c, const s32 *a, int n) {
   u32 want = RB_MAX_BATCH, got = 0;
   if (n > 1)
@@ -716,6 +908,7 @@ static int h_rq(const char *c, const s32 *a, int n) {
       rq_put_u32((u32)ev.psa_w);
       rq_put_u32((u32)ev.energy_short);
       rq_put_u32((u32)ev.energy_long);
+      rq_put_u32((u32)ev.peak);
       got++;
     }
   }
@@ -736,7 +929,71 @@ static int h_rq(const char *c, const s32 *a, int n) {
   return 0;
 }
 
-/* FIFO occupancy on both sides, so a host can size its polling instead of guessing. */
+/* ---------------------------------------------------------------- $RA, amplitude+timestamp only
+ *
+ * Binary batch of JUST peak amplitude and timestamp, popped directly from psd_core's own FIFO
+ * (Psd_Pop()) rather than through Acq_PopPaired() -- no FCI pairing, and deliberately NOT gated by
+ * g_running. psd_core integrates every triggered frame regardless of whether $AE has been called;
+ * g_running only controls whether $RV/$RB/$RQ pop and pair events, a firmware-side bookkeeping
+ * choice, not a hardware one. $RA exists so a host that only wants a live energy spectrum (peak
+ * amplitude) is not forced to pay for FCI pairing it does not want, and does not need Live
+ * acquisition ($AE) running at all to get one -- see docs/sw/CLI_documentation.md and the GUI's
+ * Spectrum tab, which switches to this command precisely when Live FCI/PSD is not running, to
+ * avoid wasting bandwidth on a $RQ that $AE has not enabled and would return empty.
+ *
+ * Unconditional (no CLI_HAVE_RESULTS guard): psd_core is not tied to the FCI result path's
+ * presence the way Acq_PopPaired() is, so this command works in any build that has psd_core at
+ * all, which today is every build.
+ *
+ * Same framing convention as $RQ (ASCII header, 0xA5-tagged records, 0x5A end tag with count and
+ * checksum) -- see there for why self-delimiting rather than length-prefixed, and for why sharing
+ * g_rq_sum/rq_put_u32() with $RQ is safe.
+ *
+ * Per event, in order (12 bytes): u32 ts_lo, u32 ts_hi, s32 peak. */
+#define RA_BYTES_PER_EVENT 12
+
+/**
+ * @brief $RA handler: binary batch of amplitude+timestamp only, popped directly from psd_core.
+ *        See the section comment above (RA_BYTES_PER_EVENT etc.) for the frame layout and why
+ *        this bypasses FCI pairing and g_running.
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array; a[0], if present, caps the batch (default/max RB_MAX_BATCH).
+ * @param n Argument count (0 or 1).
+ * @return 0 always (reply already sent); ERR_PARAM if n or a[0] is out of range.
+ */
+static int h_ra(const char *c, const s32 *a, int n) {
+  u32 want = RB_MAX_BATCH, got = 0;
+  PsdResult r;
+  if (n > 1)
+    return ERR_PARAM;
+  if (n == 1) {
+    if (!in_range(a[0], 1, RB_MAX_BATCH))
+      return ERR_PARAM;
+    want = (u32)a[0];
+  }
+  xil_printf("!%c%c %d\n", c[0], c[1], RA_BYTES_PER_EVENT);
+  g_rq_sum = 0;
+  while (got < want && Psd_Pop(PSD_CORE_BASEADDR, &r)) {
+    outbyte((char)(u8)RQ_TAG_EVENT);
+    rq_put_u32((u32)(r.timestamp & 0xFFFFFFFFu));
+    rq_put_u32((u32)(r.timestamp >> 32));
+    rq_put_u32((u32)r.peak);
+    got++;
+  }
+  {
+    u32 sum = g_rq_sum; /* over event payload bytes only; the trailer is not part of it */
+    int k;
+    outbyte((char)(u8)RQ_TAG_END);
+    outbyte((char)(u8)(got & 0xFFu));
+    outbyte((char)(u8)((got >> 8) & 0xFFu));
+    for (k = 0; k < 4; k++)
+      outbyte((char)(u8)(sum >> (8 * k)));
+  }
+  return 0;
+}
+
+/** @brief $RN handler: replies with FIFO occupancy on both sides, so a host can size its polling
+ *         instead of guessing. */
 static int h_rn(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -752,11 +1009,15 @@ static int h_rn(const char *c, const s32 *a, int n) {
   return 0;
 }
 
-/* Raw per-core event counts, direct from the hardware, independent of $RV/pairing. Unlike $RS's
- * `paired`, these advance whether or not anything is popping either FIFO -- $RS only updates
- * inside Acq_PopPaired(), so it is a snapshot of the last time $RV ran, not a live rate. This is
- * what live-rate diagnostics should poll instead: measuring background activity by watching $RS
- * without also calling $RV is watching a value that cannot move. */
+/**
+ * @brief $RC handler: replies with raw per-core event counts, direct from the hardware,
+ *        independent of $RV/pairing.
+ *
+ * Unlike $RS's `paired`, these advance whether or not anything is popping either FIFO -- $RS only
+ * updates inside Acq_PopPaired(), so it is a snapshot of the last time $RV ran, not a live rate.
+ * This is what live-rate diagnostics should poll instead: measuring background activity by
+ * watching $RS without also calling $RV is watching a value that cannot move.
+ */
 static int h_rc(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -772,6 +1033,9 @@ static int h_rc(const char *c, const s32 *a, int n) {
   return 0;
 }
 
+/** @brief $RS handler: replies with pairing statistics from the last Acq_PopPaired() call --
+ *         paired, dropped_fci, dropped_psd, fci_overflows, psd_overflows, fci_framing_errors. All
+ *         -1 in builds with no FCI result path, since there is nothing to pair against. */
 static int h_rs(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
@@ -795,9 +1059,18 @@ static int h_rs(const char *c, const s32 *a, int n) {
 #endif
 }
 
-/* Captures one raw trace and returns it as `count` followed by that many signed samples. Long, but
- * a trace is inherently long, and splitting it across replies would need a sequencing scheme the
- * framing does not have. */
+/**
+ * @brief $RT handler: captures one raw trace via the registered CliTraceFn and replies with
+ *        `count` followed by that many signed samples.
+ *
+ * Long, but a trace is inherently long, and splitting it across replies would need a sequencing
+ * scheme the framing does not have.
+ *
+ * @param c Two-character command code echoed in the reply.
+ * @param a Argument array; a[0], if present, caps the sample count (default/max CLI_TRACE_MAX).
+ * @param n Argument count (0 or 1).
+ * @return 0 always (reply already sent); ERR_PARAM if n or a[0] is out of range.
+ */
 static int h_rt(const char *c, const s32 *a, int n) {
   u32 count = 0, i, want = CLI_TRACE_MAX;
   const s16 *trace = 0;
@@ -827,6 +1100,7 @@ static const struct {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
     {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'Q'}, h_rq},  {{'R', 'T'}, h_rt},
+    {{'R', 'A'}, h_ra},
     {{'G', 'T'}, h_gt},   {{'S', 'T'}, h_st},  {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},
     {{'G', 'P'}, h_gp},   {{'S', 'P'}, h_sp},  {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},
     {{'G', 'V'}, h_gv},   {{'S', 'V'}, h_sv},  {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},
@@ -836,6 +1110,12 @@ static const struct {
 
 /* ---------------------------------------------------------------- parsing */
 
+/**
+ * @brief Parses whitespace-separated integer arguments from a command line.
+ * @param p   Text immediately after the command code; consumed in place via strtol().
+ * @param out Written with up to CLI_ARGS_MAX parsed values.
+ * @return Number of arguments parsed, or -1 on a malformed token or more than CLI_ARGS_MAX.
+ */
 static int parse_args(char *p, s32 *out) {
   int n = 0;
   char *end;
@@ -856,6 +1136,10 @@ static int parse_args(char *p, s32 *out) {
   return n;
 }
 
+/**
+ * @brief Parses and dispatches one complete command line to its handler, replying on any error.
+ * @param line NUL-terminated line beginning with '$', without the trailing newline.
+ */
 static void execute(char *line) {
   s32 args[CLI_ARGS_MAX];
   int n, i;
@@ -884,8 +1168,10 @@ static void execute(char *line) {
 
 /* ---------------------------------------------------------------- public */
 
+/** @brief See cli.h. */
 void Cli_SetTraceProvider(CliTraceFn fn) { g_trace_fn = fn; }
 
+/** @brief See cli.h. */
 void Cli_Init(void) {
   g_len = 0;
   g_truncated = 0;
@@ -895,8 +1181,10 @@ void Cli_Init(void) {
 #endif
 }
 
+/** @brief See cli.h. */
 int Cli_AcquisitionEnabled(void) { return g_running; }
 
+/** @brief See cli.h. */
 void Cli_Poll(void) {
   while (Uart_HasByte()) {
     char ch = Uart_GetByte();

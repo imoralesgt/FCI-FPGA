@@ -2,7 +2,8 @@
 
 **Target:** Digilent Cmod A7-35T, MicroBlaze soft CPU
 **Interface:** Serial/UART over USB (AXI UART 16550)
-**Protocol:** Raw ASCII serial commands, with one binary reply (`$RQ`, section 2.5b)
+**Protocol:** Raw ASCII serial commands, with two binary replies (`$RQ`, section 2.5b; `$RA`,
+section 2.5c)
 
 ## UART interface settings
 
@@ -85,7 +86,7 @@ unsolicited. Acquisition results are retrieved with `$RV`.
 
 Returns one event matched across the FCI and PSD result FIFOs by its hardware timestamp.
 
-`!RV <valid> [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd]`
+`!RV <valid> [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd peak]`
 
 | field | description |
 |---|---|
@@ -95,12 +96,13 @@ Returns one event matched across the FCI and PSD result FIFOs by its hardware ti
 | `fci` | FCI ratio × 10 000 |
 | `energy_short`, `energy_long` | PSD gate integrals, signed |
 | `psd` | PSD parameter × 10 000 |
+| `peak` | Max baseline-subtracted sample over the whole frame, signed, raw ADC-code units -- the spectroscopy energy channel, independent of the PSD gates |
 
 `$RV` replies `!RV 0` while acquisition is disabled.
 
 ```
 $RV
-!RV 1 2 1 111 222 5255 1000 4000 7500
+!RV 1 2 1 111 222 5255 1000 4000 7500 3200
 ```
 
 ### 2.2 Read pending (`$RN`)
@@ -136,11 +138,11 @@ calling `$RV` observes a value that cannot move. `$RC` is the field to poll for 
 ### 2.5 Read Batch (`$RB`)
 
 `$RB [n]` — pops up to `n` paired events (default and maximum 1024, the result FIFO's depth) in one
-request, stopping early if the FIFO empties. The maximum was 32 before 2026-09-01.
+request, stopping early if the FIFO empties.
 
-`!RB [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd] ... <count>`
+`!RB [ts_lo ts_hi psa_l psa_w fci energy_short energy_long psd peak] ... <count>`
 
-Zero or more repetitions of the same eight fields `$RV` reports for one event, **followed by the
+Zero or more repetitions of the same nine fields `$RV` reports for one event, **followed by the
 count** of how many are present. The count trails rather than leads, unlike every other reply in
 this section — it can only be known once the batch is complete. `count` can be less than requested,
 including 0; a batch of zero simply means nothing was pending, not an error.
@@ -150,23 +152,23 @@ one. On a link where round-trip latency dominates over per-event data volume, th
 achievable event rate roughly in proportion to `n`; it does not by itself reach a rate limited by
 the link's raw round-trip count. The reply is `!RB -1` if the FCI result path is not present in the loaded bitstream, matching `$RV`.
 
-Measured cost: **49.4 bytes per event**. At 4 Mbaud (8N1, so 10 bits per byte = 400 kB/s) that caps
-readout at **~8 100 events/s**. Use `$RQ` where throughput matters; `$RB` remains the readable,
-scriptable form and is unchanged.
+Measured cost: **~49.4 bytes per event** (varies slightly with the ASCII digit width of each
+field). At 4 Mbaud (8N1, so 10 bits per byte = 400 kB/s) that caps readout around **~8 000
+events/s**. Use `$RQ` where throughput matters; `$RB` remains the readable, scriptable form.
 
 ### 2.5b Read Batch, binary (`$RQ`)
 
 `$RQ [n]` — identical semantics to `$RB` (pops up to `n` paired events, default and maximum 1024,
-stops early if the FIFO empties), in a binary frame of **25 bytes per event** instead of 49.4. That
-roughly doubles the readout ceiling, to **~16 000 events/s** at 4 Mbaud.
+stops early if the FIFO empties), in a binary frame of **29 bytes per event** instead of ~54.9 (49.4
+plus the ASCII digits for `peak`). That roughly halves the bytes on the wire versus `$RB`, giving a
+readout ceiling of 400000/29 ~= **~13 800 events/s** at 4 Mbaud.
 
-That is the wire ceiling, not the achieved rate: **~12 000 events/s** is what a headless reader
-actually sustains, the balance going to per-transaction round trips and firmware overhead. The
-instrument is readout-bound at this figure, not trigger-bound.
+That is the wire ceiling, not the achieved rate: per-transaction round trips and firmware overhead
+take a further bite. The instrument is readout-bound at this figure, not trigger-bound.
 
 **Use a large `n`.** The FTDI adapter's latency timer defaults to 16 ms and must be assumed
 unconfigurable — an off-the-shelf host, no root, no udev rule. It delays only the final partial USB
-packet, so a big reply pays it once and batch size amortises it:
+packet, so a big reply pays it once and batch size amortizes it:
 
 | batch | ASCII `$RB` | binary `$RQ` |
 |---|---|---|
@@ -175,18 +177,20 @@ packet, so a big reply pays it once and batch size amortises it:
 | 512 | 1763/s | 3306/s |
 | **1024** | 1813/s | **3486/s** |
 
-At full depth `$RQ` reaches 95% of the link ceiling with the timer left alone. Asking for the
-maximum is free when little is pending, since the device stops early; the ~294 ms transaction only
-occurs with a full FIFO, when draining fast matters more than command latency.
+Figures are approximate -- record size affects them slightly -- but the shape of the curve (batching
+amortizes the FTDI latency timer's flush) holds regardless. At full depth `$RQ` reaches roughly 95%
+of its link ceiling with the timer left alone. Asking for the maximum is free when little is
+pending, since the device stops early; a full-FIFO transaction only occurs when draining fast
+matters more than command latency.
 
 ```
-!RQ <bytes_per_event>\n          ASCII header; bytes_per_event is 24
-0xA5 <24 bytes>                  one per event, repeated
+!RQ <bytes_per_event>\n          ASCII header; bytes_per_event is 28
+0xA5 <28 bytes>                  one per event, repeated
 ...
 0x5A <u16 count> <u32 checksum>  end tag; little-endian
 ```
 
-Each 24-byte record is six little-endian 32-bit words, matching the MicroBlaze build's byte order:
+Each 28-byte record is seven little-endian 32-bit words, matching the MicroBlaze build's byte order:
 
 | offset | field | type |
 |---|---|---|
@@ -196,6 +200,7 @@ Each 24-byte record is six little-endian 32-bit words, matching the MicroBlaze b
 | 12 | `psa_w` | u32 |
 | 16 | `energy_short` | s32 |
 | 20 | `energy_long` | s32 |
+| 24 | `peak` | s32 |
 
 The checksum is a plain additive sum of every payload byte (the trailer itself excluded), truncated
 to 32 bits. **Verify it.** A corrupted ASCII reply fails to parse and is obvious; a corrupted binary
@@ -204,16 +209,61 @@ frame is indistinguishable from real measurements and would enter a dataset sile
 **`fci` and `psd` are not transmitted.** Both are exact functions of the fields above
 (`fci = psa_l/psa_w`, `psd = (energy_long - energy_short)/energy_long`); checked against 120,000
 live events, they agreed with the values `$RB` sends to the last digit of its 1e-4 quantum. Sending
-them would spend 8 of every 32 bytes carrying nothing the host cannot derive, and would let the two
-disagree. Hosts should compute them, applying firmware's own guard that `psd` is undefined when
-`energy_long <= 0`.
+them would spend bytes carrying nothing the host cannot derive, and would let the two disagree.
+Hosts should compute them, applying firmware's own guard that `psd` is undefined when
+`energy_long <= 0`. **`peak` IS transmitted** -- unlike `fci` and `psd`, it is not derived from any
+other field in this record.
 
 The frame is self-delimiting rather than length-prefixed because firmware cannot know the count
 until the FIFO runs dry, and staging a batch to find out would not fit in its remaining RAM.
 
-Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream. Firmware older
-than 2026-09-01 answers `!XX 0` (unknown command); hosts wanting to work with both should fall back
-to `$RB`.
+Reply is `!RQ -1` if the FCI result path is not present in the loaded bitstream. Firmware that
+predates this command answers `!XX 0` (unknown command); hosts wanting to work with both should
+fall back to `$RB`.
+
+### 2.5c Read Amplitudes, binary (`$RA`)
+
+`$RA [n]` — pops up to `n` events (default and maximum 1024, stops early if the FIFO empties), each
+carrying **only** the timestamp and peak amplitude, popped directly from `psd_core`'s own FIFO
+rather than through the FCI-pairing path `$RV`/`$RB`/`$RQ` use.
+
+Two things make this a different command rather than a slimmer `$RQ`:
+
+- **Not gated by `$AE`/`$AD`.** `psd_core` integrates every triggered frame regardless of whether
+  acquisition is enabled -- `g_running` only controls whether `$RV`/`$RB`/`$RQ` pop and pair
+  events, a firmware bookkeeping choice, not a hardware one. `$RA` returns real data whether or not
+  `$AE` has ever been called.
+- **No FCI pairing, and no `CLI_HAVE_RESULTS` dependency.** It never touches `fci_sink` or
+  `Acq_PopPaired()`, so it works in any build that has `psd_core` at all -- today, every build --
+  even one with no FCI result path present.
+
+Intended use: a host that wants a live energy spectrum (peak amplitude) but not FCI/PSD pairing --
+e.g. this project's own GUI, whose Spectrum tab switches to `$RA` precisely when Live FCI/PSD
+acquisition is not running, rather than polling a `$RQ` that `$AE` has not enabled and that would
+return empty. When Live FCI/PSD acquisition IS running, the GUI takes `peak` from the `$RQ` batches
+it is already fetching instead, since polling both would draw from the same `psd_core` FIFO and
+starve one path of events the other already consumed.
+
+Framing is identical to `$RQ`'s (ASCII header, `0xA5`-tagged records, `0x5A` end tag with count and
+checksum -- see 2.5b for the full rationale), just a smaller per-record payload:
+
+```
+!RA <bytes_per_event>\n          ASCII header; bytes_per_event is 12
+0xA5 <12 bytes>                  one per event, repeated
+...
+0x5A <u16 count> <u32 checksum>  end tag; little-endian
+```
+
+| offset | field | type |
+|---|---|---|
+| 0 | `ts_lo` | u32 |
+| 4 | `ts_hi` | u32 |
+| 8 | `peak` | s32 |
+
+At 4 Mbaud, a 13-byte-on-the-wire record (12 payload + 1 tag) puts the ceiling around
+400000/13 ~= 30 800 events/s -- well above what this instrument's trigger rate needs, since the
+point of `$RA` is avoiding wasted bandwidth on fields the caller does not want, not maximizing
+throughput for its own sake.
 
 ### 2.6 Read Trace (`$RT`)
 
@@ -250,8 +300,9 @@ A get with no index returns every parameter of that subsystem in index order.
 | 4 | cfd_fraction | 1 … 255 | CFD fraction, as value/256; boots at **64** (= 1/4) |
 | 5 | cfd_delay | **4** … 31 | CFD delay in samples; boots at **24** |
 
-`$GT` returns **six** values as of 2026-09-02. Firmware predating the CFD returns four; a host that
-must work with both should treat indices 4 and 5 as optional rather than assuming the length.
+`$GT` returns **six** values on firmware built with the CFD trigger. Firmware predating the CFD
+returns four; a host that must work with both should treat indices 4 and 5 as optional rather than
+assuming the length.
 
 The trigger is a **constant-fraction discriminator**, not a cross-level comparator. A level trigger
 fires at a time that depends on pulse amplitude, and since the capture window is anchored to the
@@ -260,8 +311,8 @@ trigger, that walk moves the pulse around inside the frame the FFT transforms. T
 the same point on the leading edge regardless of height (measured: 0 samples of walk over a 15×
 amplitude range, against 9 for the level trigger it replaced).
 
-`threshold` did not change meaning — it still decides **whether** an event is real, by arming the
-discriminator. The zero crossing decides **when**.
+`threshold` decides **whether** an event is real, by arming the discriminator. The zero crossing
+decides **when**.
 
 Three consequences that are not obvious from the register map:
 
@@ -273,9 +324,7 @@ Three consequences that are not obvious from the register map:
 - **Both delays have a minimum of 4**, and for the same reason: the CFD pipeline is ~3 samples
   deep. For `delay` (pre-trigger) a smaller value puts the trigger point outside the captured
   window; for `cfd_delay` it puts the crossing at `n = D/(1-f) < 5.3` samples, inside the
-  pipeline's own settling, so what is discriminated is transient rather than signal. `cfd_delay`
-  accepted 1…3 before 2026-09-02 and those values were never usable — at this detector's
-  37-sample rise they put the sensitivity floor above 9× threshold, i.e. a silently deaf trigger.
+  pipeline's own settling, so what is discriminated is transient rather than signal.
 - **The baseline must be zero-centred.** At a resting level `b` the bipolar signal sits at
   `b(1-f)` and never crosses zero. `blr_core` guarantees this — but setting its **bypass** bit
   (`$SB` index 2) stops the trigger working entirely.

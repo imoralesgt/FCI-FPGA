@@ -1,4 +1,4 @@
-"""Typed return values for fci_api, one dataclass per reply shape in docs/CLI_documentation.md.
+"""Typed return values for fci_api, one dataclass per reply shape in docs/sw/CLI_documentation.md.
 
 All dataclasses are frozen: every one of them is either a read-only telemetry snapshot (AcqEvent,
 Stats, TraceResult) or a config snapshot returned by a `get_*()` call, and neither should be
@@ -37,6 +37,23 @@ class AcqEvent:
     """CAEN PSD parameter, (long-short)/long. 0.0 is ambiguous: it is also the firmware's sentinel
     for "long-gate charge was <= 0, the ratio is undefined" (acquisition.c's psd_parameter_scaled).
     Check energy_long > 0 before trusting this field, exactly as firmware itself does."""
+    peak: int
+    """Max baseline-subtracted sample over the whole frame (raw ADC-code units), independent of the
+    PSD gates -- the spectroscopy energy channel. Sent raw, not scaled like fci/psd."""
+
+
+@dataclass(frozen=True, slots=True)
+class AmpEvent:
+    """One event from `$RA` (CLI doc section 2.5c): timestamp and peak amplitude only, popped
+    directly from psd_core's FIFO with no FCI pairing. Deliberately NOT AcqEvent with the other
+    fields zeroed -- a caller that reads .fci/.psd/.energy_long off what it assumes is a real
+    AcqEvent would get silently meaningless data; a distinct type makes that impossible rather than
+    merely undocumented. Has the same `timestamp`/`peak` field names and meaning as AcqEvent's, so
+    code that only needs those two (HistogramView.add_events(), for one) works unchanged against
+    either type."""
+
+    timestamp: int
+    peak: int
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,11 +28,18 @@ already a plain dataclass or builtin, so no custom serialisation is needed):
     {"type": "scope_start", "n": int} / {"type": "scope_stop"}
     {"type": "trace_once", "n": int}
     {"type": "suspend_batch_polling"} / {"type": "resume_batch_polling"}
+    {"type": "spectrum_poll", "enabled": bool}
+        Whether the Spectrum tab wants amplitude-only data via $RA when full acquisition (the
+        start_acq/stop_acq pair above) is NOT running -- see _read_events()'s mode selection below.
+        Has no effect while start_acq IS active: that path already carries `peak` in every AcqEvent,
+        and polling both $RQ and $RA would draw from the same psd_core FIFO and starve one of
+        events the other already consumed.
     {"type": "shutdown"}
 
   evt_q (child -> parent):
     {"type": "connected"} / {"type": "connect_failed", "error": str} / {"type": "disconnected"}
     {"type": "batch", "events": list[AcqEvent]}
+    {"type": "amplitude_batch", "events": list[AmpEvent]}
     {"type": "trace", "trace": TraceResult | None}
     {"type": "stats", "stats": Stats}
     {"type": "acq_state", "running": bool}
@@ -153,10 +160,10 @@ def _safe_call(fn, label: str, evt_q):
         return _FAILED
 
 
-def _read_events(client: FciClient, state: dict) -> list:
-    """Reads one batch, preferring binary $RQ and falling back to ASCII $RB -- verbatim logic
-    from acquisition_worker.py's original _read_events(), `state["binary_batch"]` standing in for
-    what used to be an instance attribute."""
+def _read_paired_events(client: FciClient, state: dict) -> list:
+    """Reads one paired-FCI/PSD batch, preferring binary $RQ and falling back to ASCII $RB --
+    verbatim logic from acquisition_worker.py's original _read_events(), `state["binary_batch"]`
+    standing in for what used to be an instance attribute."""
     if state["binary_batch"]:
         try:
             return client.read_batch_binary(RB_MAX_BATCH)
@@ -167,28 +174,54 @@ def _read_events(client: FciClient, state: dict) -> list:
     return client.read_batch(min(RB_MAX_BATCH, 32))
 
 
+def _read_amplitude_events(client: FciClient, state: dict) -> list:
+    """Reads one amplitude-only batch via $RA. No ASCII fallback -- $RA has no ASCII form (CLI doc
+    2.5c), so firmware too old to know it just answers "unknown command" and this mode produces
+    nothing until the caller stops asking (see the mode-selection comment in _run_loop())."""
+    if not state["ra_supported"]:
+        return []
+    try:
+        return client.read_amplitude_batch(RB_MAX_BATCH)
+    except FciUnknownCommandError:
+        logger.info("$RA not supported by this firmware; Spectrum tab will not receive live "
+                     "amplitude data while Live FCI/PSD acquisition is stopped")
+        state["ra_supported"] = False
+        return []
+
+
 def _run_loop(client: FciClient, poll_interval_s: float, stats_interval_s: float,
               busy_interval_s: float, scope_interval_s: float, cmd_q, evt_q) -> None:
-    state = {"binary_batch": True}
+    state = {"binary_batch": True, "ra_supported": True}
     scope_running = False
     scope_n = 2048
     last_scope_s = 0.0
     batch_poll_suspended = False
+    acq_running = False
+    """Mirrors what start_acq/stop_acq just told firmware via $AE/$AD -- tracked here (not just
+    forwarded) because the batch-poll mode decision below needs to know it on every iteration, not
+    only at the moment it changes."""
+    spectrum_poll_enabled = False
+    """The Spectrum tab's own Run/Stop state, pushed from the GUI thread. See the module docstring
+    for why this only has an effect while acq_running is False."""
     stats_countdown = 0.0
     poll_wait = 0.0  # first iteration handles pending commands immediately, no wait
 
     def handle_cmd(msg: dict) -> bool:
         """Returns False if this was the shutdown command, so the caller can stop looping."""
-        nonlocal scope_running, scope_n, batch_poll_suspended
+        nonlocal scope_running, scope_n, batch_poll_suspended, acq_running, spectrum_poll_enabled
         t = msg["type"]
         if t == "shutdown":
             return False
         elif t == "start_acq":
             _safe_call(client.enable_acquisition, "enable_acquisition", evt_q)
+            acq_running = True
             evt_q.put({"type": "acq_state", "running": True})
         elif t == "stop_acq":
             _safe_call(client.disable_acquisition, "disable_acquisition", evt_q)
+            acq_running = False
             evt_q.put({"type": "acq_state", "running": False})
+        elif t == "spectrum_poll":
+            spectrum_poll_enabled = msg["enabled"]
         elif t == "scope_start":
             scope_n = msg["n"]
             scope_running = True
@@ -244,13 +277,29 @@ def _run_loop(client: FciClient, poll_interval_s: float, stats_interval_s: float
         # Adaptive pacing, verbatim from the original: a full batch means the FIFO had more
         # queued than one request could carry, so poll again at once; a short batch means it's
         # drained, so fall back to the idle period.
+        #
+        # Mode selection: acq_running takes priority over spectrum_poll_enabled whenever both are
+        # set, never both at once -- $RQ's AcqEvent already carries `peak`, and polling $RA too
+        # would draw from the same psd_core FIFO and starve one path of events the other already
+        # popped. Neither set means genuinely nothing wants data right now, so the round trip is
+        # skipped entirely rather than sent and discarded -- the "avoid wasting bandwidth" the
+        # Spectrum tab's Run/Stop and this mode selection exist for in the first place.
         poll_wait = poll_interval_s
         if not batch_poll_suspended:
-            events = _safe_call(lambda: _read_events(client, state), "read_batch", evt_q)
-            if events is not _FAILED and events:
-                evt_q.put({"type": "batch", "events": events})
-                if len(events) >= RB_MAX_BATCH:
-                    poll_wait = busy_interval_s
+            if acq_running:
+                events = _safe_call(lambda: _read_paired_events(client, state),
+                                     "read_batch", evt_q)
+                if events is not _FAILED and events:
+                    evt_q.put({"type": "batch", "events": events})
+                    if len(events) >= RB_MAX_BATCH:
+                        poll_wait = busy_interval_s
+            elif spectrum_poll_enabled:
+                events = _safe_call(lambda: _read_amplitude_events(client, state),
+                                     "read_amplitude_batch", evt_q)
+                if events is not _FAILED and events:
+                    evt_q.put({"type": "amplitude_batch", "events": events})
+                    if len(events) >= RB_MAX_BATCH:
+                        poll_wait = busy_interval_s
 
         if stats_countdown <= 0:
             stats = _safe_call(client.read_stats, "read_stats", evt_q)

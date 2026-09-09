@@ -3,6 +3,7 @@ identification, timing, and storage paths in one place -- adapted to this projec
 (fci_api owns the wire-level constants like baud rate; this file only holds GUI-level concerns).
 """
 
+import os
 from pathlib import Path
 
 # --- Hardware target filtering (Digilent FT2232H bridge -- confirmed via `udevadm` this session)
@@ -24,7 +25,7 @@ aggressive: a full batch is direct evidence events are being lost, and the round
 already paces the loop -- at 4 Mbaud a full 1024-record binary frame is ~64 ms of wire time. The
 loop falls back to BATCH_POLL_INTERVAL_MS as soon as a batch comes back short, so an idle
 instrument costs the same as before."""
-SCOPE_INTERVAL_MS = 500
+SCOPE_INTERVAL_MS = 1
 """How often continuous ("Start") scope mode requests a trace. NOT a render setting -- it is a
 bandwidth budget. A `$RT 2048` reply is ~11 kB of ASCII, 28 ms of wire time at 4 Mbaud, so
 requesting one per worker iteration (~30/s once adaptive polling removed the fixed delay) consumed
@@ -45,4 +46,14 @@ RECONNECT_INTERVAL_MS = 2000
 # --- Storage
 BASE_DIR = Path.cwd()
 LOG_DIR = BASE_DIR / "logs"
-DEFAULT_CSV_DIR = Path.home() / "FciData"
+
+DEFAULT_PROJECT_DIR = Path.home() / "FciProjects"
+"""Default parent directory the New/Open Project dialogs start in. Only a starting point: a project
+folder can live anywhere, and its recorded data follows the folder rather than this path."""
+
+APP_STATE_PATH = Path(
+    os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")
+) / "fci-fpga" / "gui_state.json"
+"""Installation-level state that is NOT part of any project -- currently just which project to
+reopen at startup. Follows XDG_CONFIG_HOME where the environment sets it, since that is what the
+desktop convention on this platform expects and it keeps the file out of the user's home root."""

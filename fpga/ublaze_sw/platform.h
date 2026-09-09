@@ -35,7 +35,14 @@
 
 #include "platform_config.h"
 
+/**
+ * @brief Xilinx BSP platform init: enables I/D caches and configures the STDOUT UART if the
+ *        target has one (STDOUT_IS_16550), leaving PS7/PSU init commented out (not this board).
+ *        Call once, before any other driver init.
+ */
 void init_platform();
+
+/** @brief Disables the I/D caches enabled by init_platform(). */
 void cleanup_platform();
 
 #endif

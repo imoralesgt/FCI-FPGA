@@ -19,7 +19,7 @@ from pathlib import Path
 
 from fci_api import AcqEvent, TraceResult
 
-CSV_HEADER = "timestamp,psa_l,psa_w,fci,energy_short,energy_long,psd"
+CSV_HEADER = "timestamp,psa_l,psa_w,fci,energy_short,energy_long,psd,peak"
 
 
 def _write_header_prelude(f, title: str, settings_lines: list[str] | None) -> None:
@@ -58,7 +58,7 @@ class CsvLogger:
         with open(self.path, "a", encoding="utf-8") as f:
             f.write(
                 f"{event.timestamp},{event.psa_l},{event.psa_w},{event.fci:.6f},"
-                f"{event.energy_short},{event.energy_long},{event.psd:.6f}\n"
+                f"{event.energy_short},{event.energy_long},{event.psd:.6f},{event.peak}\n"
             )
         self._count += 1
 
@@ -69,7 +69,7 @@ class CsvLogger:
             for event in events:
                 f.write(
                     f"{event.timestamp},{event.psa_l},{event.psa_w},{event.fci:.6f},"
-                    f"{event.energy_short},{event.energy_long},{event.psd:.6f}\n"
+                    f"{event.energy_short},{event.energy_long},{event.psd:.6f},{event.peak}\n"
                 )
         self._count += len(events)
 

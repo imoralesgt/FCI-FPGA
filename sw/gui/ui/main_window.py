@@ -1,16 +1,23 @@
-"""Top-level window shell: connection row, an always-visible Record row, and a tab widget hosting
-the four views (File Management is one of them, not a separate row, so it doesn't compete for
-space with the always-visible Record control). Mirrors the reference GUI's overall structure
-(connection bar, then tabs) with the tab-per-domain split this project's richer state (live
-acquisition / scope / 6 config subsystems / file naming) calls for, instead of one tab per counter
-channel.
+"""Top-level window shell: a Project menu, connection row, project row, an always-visible Record
+row, and a tab widget hosting the four views (File Management is one of them, not a separate row,
+so it doesn't compete for space with the always-visible Record control). Mirrors the reference
+GUI's overall structure (connection bar, then tabs) with the tab-per-domain split this project's
+richer state (live acquisition / scope / 6 config subsystems / file naming) calls for, instead of
+one tab per counter channel.
+
+The Project menu and the project row below the connection bar are this window's only knowledge of
+projects: which project is open, and what happens when one is, is AppController's (see
+controllers.py) working through project.py. This class just owns the widgets and hands out the
+subsystem panels a project needs to read and restore.
 """
 
 import logging
 
+from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -21,8 +28,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.config_panel import ConfigPanel
+from ui.config_panel import ConfigPanel, SubsystemPanel
 from ui.file_management_view import FileManagementView
+from ui.histogram_view import HistogramView
 from ui.live_view import LiveView
 from ui.scope_view import ScopeView
 
@@ -43,6 +51,8 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.central_widget)
         main_layout = QVBoxLayout(self.central_widget)
 
+        self._build_project_menu()
+
         conn_layout = QHBoxLayout()
         conn_layout.addWidget(QLabel("Serial Port:"))
         self.combo_ports = QComboBox()
@@ -57,6 +67,24 @@ class MainWindow(QMainWindow):
         self.lbl_status = QLabel("\U0001F534 Disconnected")
         conn_layout.addWidget(self.lbl_status)
         main_layout.addLayout(conn_layout)
+
+        # Which project is open is shown permanently, not only in the title bar: with a project
+        # open every recorded file lands inside it, so "where is my data going" must be answerable
+        # without leaving whatever tab the user is on -- the same reasoning as the always-visible
+        # Record control below.
+        project_layout = QHBoxLayout()
+        project_layout.addWidget(QLabel("Project:"))
+        self.lbl_project = QLabel("")
+        self.lbl_project.setStyleSheet("font-weight: bold;")
+        project_layout.addWidget(self.lbl_project)
+        project_layout.addStretch(1)
+        main_layout.addLayout(project_layout)
+        self.set_project_label(None, None)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.Shape.HLine)
+        divider.setFrameShadow(QFrame.Shadow.Sunken)
+        main_layout.addWidget(divider)
 
         record_layout = QHBoxLayout()
         # The dot is its own QLabel, not text baked into the checkbox: an emoji/dingbat glyph like
@@ -77,21 +105,23 @@ class MainWindow(QMainWindow):
         self.scope_view = ScopeView()
         self.config_panel = ConfigPanel()
         self.file_view = FileManagementView()
+        self.histogram_view = HistogramView()
         # Each tab's content now includes full config forms (FCI/PSD embedded in the live view,
         # Trigger embedded in the scope view) on top of the plots -- taller than fits on many
         # screens at once. Wrapping each tab in its own scroll area (config_panel already did this
         # internally) means that content scrolls instead of forcing the whole window to grow past
         # the screen to satisfy the layout's combined minimum size.
-        self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
-        self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
-        self.tabs.addTab(self.config_panel, "Configuration")
         self.tabs.addTab(self.file_view, "File Management")
+        self.tabs.addTab(self.config_panel, "Configuration")
+        self.tabs.addTab(self._scrollable(self.scope_view), "Trigger")
+        self.tabs.addTab(self._scrollable(self.histogram_view), "Spectrum")
+        self.tabs.addTab(self._scrollable(self.live_view), "Live FCI/PSD")
         main_layout.addWidget(self.tabs)
 
         # Convenience aliases -- everything below (AppController, this class' own methods) refers
-        # to these directly rather than reaching through file_view each time.
-        self.txt_csv_dir = self.file_view.txt_csv_dir
-        self.btn_browse_dir = self.file_view.btn_browse_dir
+        # to these directly rather than reaching through file_view each time. No CSV directory
+        # alias any more: a project's LIST/RAW own that (project.py), and recording is unreachable
+        # without a project open in the first place (see set_project_open() below).
         self.txt_file_prefix = self.file_view.txt_file_prefix
         self.chk_autoincrement = self.file_view.chk_autoincrement
         self.lbl_filename_preview = self.file_view.lbl_filename_preview
@@ -107,7 +137,98 @@ class MainWindow(QMainWindow):
         psd_pre_trigger.valueChanged.connect(trig_delay.setValue)
         trig_delay.valueChanged.connect(psd_pre_trigger.setValue)
 
+        # HistogramView owns the one set of energy calibration coefficients this session has;
+        # LiveView's FCI/PSD-vs-Energy plots compute their own keVee axis from the same
+        # coefficients applied to each event's peak (see live_view.py's module docstring), so they
+        # need to stay live-synced the same way pre_trigger/delay do above. Also synced once here,
+        # not just on change, since the signal only fires on a later edit and both views must agree
+        # from the start (they already do, by matching identity defaults, but this makes it
+        # explicit rather than relying on that coincidence).
+        self.histogram_view.calibration_changed.connect(self.live_view.set_calibration)
+        self.live_view.set_calibration(*self.histogram_view.calibration())
+
         self.set_connected_controls_enabled(False)
+        self.set_project_open(False)
+
+    def _build_project_menu(self) -> None:
+        """Creates the Project menu. The actions are left unconnected on purpose -- AppController
+        owns the project lifecycle and connects them alongside every other UI signal, so this class
+        never has to know what opening a project does."""
+        menu = self.menuBar().addMenu("&Project")
+        self.act_new_project = QAction("&New Project...", self)
+        self.act_new_project.setShortcut(QKeySequence.StandardKey.New)
+        self.act_open_project = QAction("&Open Project...", self)
+        self.act_open_project.setShortcut(QKeySequence.StandardKey.Open)
+        self.act_save_project = QAction("&Save Settings", self)
+        self.act_save_project.setShortcut(QKeySequence.StandardKey.Save)
+        self.act_save_project.setStatusTip(
+            "Write the current instrument settings into this project's settings.json"
+        )
+        self.act_save_project_as = QAction("Save &As New Project...", self)
+        self.act_save_project_as.setShortcut(QKeySequence.StandardKey.SaveAs)
+        self.act_save_project_as.setStatusTip(
+            "Create a new project folder holding the current settings. Data already recorded stays "
+            "in the old project."
+        )
+        self.act_close_project = QAction("&Close Project", self)
+        for act in (self.act_new_project, self.act_open_project):
+            menu.addAction(act)
+        menu.addSeparator()
+        for act in (self.act_save_project, self.act_save_project_as, self.act_close_project):
+            menu.addAction(act)
+        self.set_project_actions_enabled(False)
+
+    def set_project_actions_enabled(self, project_open: bool) -> None:
+        """New/Open are always available; the rest need something to act on."""
+        self.act_save_project.setEnabled(project_open)
+        self.act_save_project_as.setEnabled(project_open)
+        self.act_close_project.setEnabled(project_open)
+
+    def set_project_label(self, name: str | None, path: str | None) -> None:
+        if name is None:
+            self.lbl_project.setText("(none -- Project > New or Open)")
+            self.lbl_project.setStyleSheet("color: #888888;")
+            self.lbl_project.setToolTip(
+                "A project must be open before the device can be connected -- it owns where "
+                "recordings and settings are written. Use Project > New or Open."
+            )
+            self.setWindowTitle("FCI-FPGA Client")
+        else:
+            self.lbl_project.setText(name)
+            self.lbl_project.setStyleSheet("font-weight: bold;")
+            self.lbl_project.setToolTip(path or "")
+            self.setWindowTitle(f"FCI-FPGA Client - {name}")
+
+    def set_project_open(self, is_open: bool) -> None:
+        """Gates every hardware and tab control on a project being open. There is no longer an
+        output directory to fall back to (File Management's own picker is gone -- a project's
+        LIST/RAW own that, see project.py), so recording -- and therefore connecting at all -- has
+        nowhere sensible to go without one. `btn_connect` is force-disabled here rather than left to
+        scan_ports()'s own port-availability logic: that logic runs independently of project state
+        (a port can be plugged in before any project exists) and must never be the thing that
+        re-enables Connect while closed. AppController re-invokes scan_ports() right after this
+        turns is_open on, which is what restores Connect's normal port-dependent state."""
+        self.combo_ports.setEnabled(is_open)
+        self.btn_refresh_ports.setEnabled(is_open)
+        self.tabs.setEnabled(is_open)
+        if not is_open:
+            self.btn_connect.setEnabled(False)
+        tip = "" if is_open else "Open or create a project first (Project menu)."
+        self.combo_ports.setToolTip(tip)
+        self.btn_connect.setToolTip(tip)
+
+    def subsystem_panels(self) -> dict[str, SubsystemPanel]:
+        """Every configuration form in the window, keyed by SubsystemPanel.key. Collected here
+        rather than in the controller because the panels are deliberately scattered across three
+        tabs (each beside the view its parameters affect -- see config_panel.py's docstring), and a
+        project has to capture and restore all six regardless of where they live."""
+        panels = [
+            self.scope_view.trigger_config,
+            self.live_view.psd_config,
+            self.live_view.fci_config,
+            *self.config_panel.panels,
+        ]
+        return {p.key: p for p in panels}
 
     @staticmethod
     def _scrollable(widget: QWidget) -> QScrollArea:
@@ -120,6 +241,7 @@ class MainWindow(QMainWindow):
         self.live_view.set_controls_enabled(enabled)
         self.scope_view.set_controls_enabled(enabled)
         self.config_panel.set_controls_enabled(enabled)
+        self.histogram_view.set_controls_enabled(enabled)
         self.chk_record.setEnabled(enabled)
 
     def set_recording_active(self, active: bool) -> None:

@@ -9,6 +9,7 @@
 #include "registers.h"
 #include "xil_io.h"
 
+/** @brief See fci_sink.h. */
 int FciSink_Peek(u32 base, FciResult *out) {
   u32 status = Xil_In32(base + FCI_SINK_STATUS_OFFSET);
   if (status & FCI_SINK_STATUS_EMPTY_MASK)
@@ -23,8 +24,10 @@ int FciSink_Peek(u32 base, FciResult *out) {
   return 1;
 }
 
+/** @brief See fci_sink.h. */
 void FciSink_Discard(u32 base) { Xil_Out32(base + FCI_SINK_CTRL_OFFSET, FCI_SINK_CTRL_POP_MASK); }
 
+/** @brief See fci_sink.h. */
 int FciSink_Pop(u32 base, FciResult *out) {
   if (!FciSink_Peek(base, out))
     return 0;
@@ -32,27 +35,34 @@ int FciSink_Pop(u32 base, FciResult *out) {
   return 1;
 }
 
+/** @brief See fci_sink.h. */
 u32 FciSink_Level(u32 base) {
   return (Xil_In32(base + FCI_SINK_STATUS_OFFSET) >> FCI_SINK_STATUS_LEVEL_SHIFT) &
          FCI_SINK_STATUS_LEVEL_MASK;
 }
 
+/** @brief See fci_sink.h. */
 u32 FciSink_EventCount(u32 base) { return Xil_In32(base + FCI_SINK_EVENT_COUNT_OFFSET); }
 
+/** @brief See fci_sink.h. */
 int FciSink_Overflowed(u32 base) {
   return (Xil_In32(base + FCI_SINK_STATUS_OFFSET) & FCI_SINK_STATUS_OVERFLOW_MASK) ? 1 : 0;
 }
 
+/** @brief See fci_sink.h. */
 int FciSink_FramingError(u32 base) {
   return (Xil_In32(base + FCI_SINK_STATUS_OFFSET) & FCI_SINK_STATUS_FRAMING_ERR_MASK) ? 1 : 0;
 }
 
+/** @brief See fci_sink.h. */
 void FciSink_Clear(u32 base) { Xil_Out32(base + FCI_SINK_CTRL_OFFSET, FCI_SINK_CTRL_CLEAR_MASK); }
 
+/** @brief See fci_sink.h. */
 void FciSink_SetWatermark(u32 base, u32 level) {
   Xil_Out32(base + FCI_SINK_WATERMARK_OFFSET, level);
 }
 
+/** @brief See fci_sink.h. */
 u32 FciSink_RatioScaled(const FciResult *r) {
   if (r->psa_w == 0u)
     return 0u;

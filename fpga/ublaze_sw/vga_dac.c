@@ -25,6 +25,7 @@
 #define GAIN_COARSE_MIN 1.0
 #define GAIN_COARSE_MAX 21.0
 
+/** @brief Clamps v to [lo, hi]. */
 static double clamp(double v, double lo, double hi) {
   if (v < lo)
     return lo;
@@ -33,6 +34,7 @@ static double clamp(double v, double lo, double hi) {
   return v;
 }
 
+/** @brief Clamps and truncates a computed DAC code to the AD5697's valid 12-bit range 0..4095. */
 static u16 clamp_code(double code) {
   if (code < 0.0)
     return 0;
@@ -41,6 +43,14 @@ static u16 clamp_code(double code) {
   return (u16)code;
 }
 
+/**
+ * @brief Sends one AD5697 command frame: command byte, then the 12-bit data left-justified into
+ *        the following two bytes' top nibbles, per the AD5697's datasheet framing.
+ * @param command_byte AD5697 command (e.g. 0x70 reference setup, 0x31/0x38 write-and-update DAC
+ *                      A/B).
+ * @param data12       12-bit payload (reference config bits, or a DAC code).
+ * @return 1 on success, 0 on I2C failure (see Iic_DynamicSendBytes()).
+ */
 static int WriteCommand(u8 command_byte, u16 data12) {
   u8 u[3];
   u[0] = command_byte;
@@ -51,30 +61,32 @@ static int WriteCommand(u8 command_byte, u16 data12) {
   return Iic_DynamicSendBytes(u, 3);
 }
 
-/* LINEAR: code = gain * 2^res / (2 * VREF). gain 1.0 -> 819. */
+/** @brief LINEAR control law: code = gain * 2^res / (2 * VREF). gain 1.0 -> 819. */
 static u16 FineGainToCode12(double gain_linear) {
   gain_linear = clamp(gain_linear, GAIN_FINE_MIN, GAIN_FINE_MAX);
   return clamp_code(gain_linear * AD5697_CODES / (2.0 * AD5697_VREF_VOLTS) + 0.5);
 }
 
-/* LOGARITHMIC: code = 0.6 * 2^res * log10(gain) / VREF. gain 6.0 -> 765. */
+/** @brief LOGARITHMIC control law: code = 0.6 * 2^res * log10(gain) / VREF. gain 6.0 -> 765. */
 static u16 CoarseGainToCode12(double gain_linear) {
   gain_linear = clamp(gain_linear, GAIN_COARSE_MIN, GAIN_COARSE_MAX);
   return clamp_code(0.6 * AD5697_CODES * log10(gain_linear) / AD5697_VREF_VOLTS + 0.5);
 }
 
+/** @brief See vga_dac.h. Sends the internal-reference-enable command (data bits are don't-care
+ *         except D0, 0 = internal reference enabled). */
 int VgaDac_Init(void) {
-  /* Internal reference setup command: data bytes are don't-care except D0 (0 = internal
-   * reference enabled). */
   return WriteCommand(0x70, 0x0000);
 }
 
+/** @brief See vga_dac.h. Write-to-and-update DAC A. */
 int VgaDac_SetGainFine(double gain_linear) {
-  return WriteCommand(0x31, FineGainToCode12(gain_linear)); /* write to and update DAC A */
+  return WriteCommand(0x31, FineGainToCode12(gain_linear));
 }
 
+/** @brief See vga_dac.h. Write-to-and-update DAC B. */
 int VgaDac_SetGainCoarse(double gain_linear) {
-  return WriteCommand(0x38, CoarseGainToCode12(gain_linear)); /* write to and update DAC B */
+  return WriteCommand(0x38, CoarseGainToCode12(gain_linear));
 }
 
 int VgaDac_SetFineCodeRaw(u16 code12) {

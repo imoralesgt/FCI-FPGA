@@ -54,7 +54,8 @@ entity dual_gate_integrator is
     -- One pulse per completed frame, alongside the two integrals.
     result_valid_o : out std_logic;
     energy_short_o : out std_logic_vector(ACC_WIDTH - 1 downto 0);
-    energy_long_o  : out std_logic_vector(ACC_WIDTH - 1 downto 0)
+    energy_long_o  : out std_logic_vector(ACC_WIDTH - 1 downto 0);
+    peak_o         : out std_logic_vector(ACC_WIDTH - 1 downto 0)
   );
 end entity dual_gate_integrator;
 
@@ -62,10 +63,20 @@ architecture rtl of dual_gate_integrator is
 
   constant IDX_WIDTH : integer := clog2(MAX_DEPTH);
 
+  -- Most negative value representable in peak's width: the correct reset/re-arm value, not 0.
+  -- A frame that never rises above baseline (all samples negative, e.g. undershoot with no real
+  -- pulse) must still report its true maximum rather than a floor of 0, which would silently hide
+  -- that the frame had no positive excursion at all.
+  constant PEAK_MIN : signed(DATA_WIDTH downto 0) := (DATA_WIDTH => '1', others => '0');
+
   signal idx : unsigned(IDX_WIDTH - 1 downto 0); -- beat index within the current frame
 
   signal acc_short : signed(ACC_WIDTH - 1 downto 0);
   signal acc_long  : signed(ACC_WIDTH - 1 downto 0);
+  signal peak      : signed(DATA_WIDTH downto 0);
+  -- Running maximum of `dev` over the whole frame, not just the PSD gates: peak amplitude is a
+  -- whole-pulse property (the spectroscopy energy channel), independent of where the short/long
+  -- gates happen to sit.
 
 begin
 
@@ -78,15 +89,18 @@ begin
     variable in_long    : boolean;
     variable next_short : signed(ACC_WIDTH - 1 downto 0);
     variable next_long  : signed(ACC_WIDTH - 1 downto 0);
+    variable next_peak  : signed(DATA_WIDTH downto 0);
   begin
     if rising_edge(clk_i) then
       if rstn_i = '0' then
         idx            <= (others => '0');
         acc_short      <= (others => '0');
         acc_long       <= (others => '0');
+        peak           <= PEAK_MIN;
         result_valid_o <= '0';
         energy_short_o <= (others => '0');
         energy_long_o  <= (others => '0');
+        peak_o         <= (others => '0');
       else
         result_valid_o <= '0';
 
@@ -120,19 +134,31 @@ begin
             next_long := acc_long;
           end if;
 
+          if dev > peak then
+            next_peak := dev;
+          else
+            next_peak := peak;
+          end if;
+
           if s_last_i = '1' then
             -- Frame complete: publish both integrals and re-arm for the next event. The final beat
             -- is included in the totals above before they are emitted, so a gate that runs to the
-            -- end of the frame loses no charge.
+            -- end of the frame loses no charge. peak_o resizes the (DATA_WIDTH+1)-bit running
+            -- maximum up to ACC_WIDTH for uniformity with energy_short_o/energy_long_o -- same
+            -- ACC_WIDTH-for-consistency choice those two already make despite not needing the full
+            -- range either.
             energy_short_o <= std_logic_vector(next_short);
             energy_long_o  <= std_logic_vector(next_long);
+            peak_o         <= std_logic_vector(resize(next_peak, ACC_WIDTH));
             result_valid_o <= '1';
             acc_short      <= (others => '0');
             acc_long       <= (others => '0');
+            peak           <= PEAK_MIN;
             idx            <= (others => '0');
           else
             acc_short <= next_short;
             acc_long  <= next_long;
+            peak      <= next_peak;
             idx       <= idx + 1;
           end if;
         end if;

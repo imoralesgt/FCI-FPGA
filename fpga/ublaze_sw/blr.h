@@ -18,40 +18,89 @@
 #define BLR_DEFAULT_GATE_THR 256
 #define BLR_DEFAULT_HOLDOFF 384
 
-/* The estimator's time constant is exactly 2^shift samples (see baseline_estimator.vhd), so at
+/**
+ * @brief Configures the baseline estimator's time constant, gate threshold, and hold-off.
+ *
+ * The estimator's time constant is exactly 2^shift samples (see baseline_estimator.vhd), so at
  * 50 Msps: shift 10 = 20.5 us, 12 = 82 us, 14 = 328 us. It must be SLOW against the pulse decay
  * (tau ~ 1.4 us on this detector) or the estimator tracks the pulse and subtracts the signal away,
  * and FAST against real DC drift. 12 is two orders of magnitude clear of the pulse, which is the
- * margin this constant is chosen for. */
+ * margin this constant is chosen for.
+ *
+ * @param base     blr_core's AXI4-Lite base address.
+ * @param shift    Time-constant exponent (estimator averages over 2^shift samples).
+ * @param gate_thr Deviation threshold above which the gate shuts (see Blr_GateThresholdForSigma()).
+ * @param holdoff  Samples the gate stays shut after closing, before it can reopen.
+ */
 void Blr_Configure(u32 base, u32 shift, u32 gate_thr, u32 holdoff);
 
-/* Live estimate, SIGNED ADC code. Reads the estimator directly rather than a stored register, so
+/**
+ * @brief Reads the estimator's current baseline estimate.
+ *
+ * Live estimate, SIGNED ADC code. Reads the estimator directly rather than a stored register, so
  * this is what the hardware is using right now. Negative is normal: this detector's baseline sits
- * below zero. */
+ * below zero.
+ *
+ * @param base blr_core's AXI4-Lite base address.
+ * @return Current baseline estimate, signed ADC code.
+ */
 s32 Blr_GetBaseline(u32 base);
 
-/* 1 while the estimator is tracking, 0 while the gate is shut (during a pulse or its hold-off).
- * Sampled asynchronously, so a single read is a snapshot, not a duty cycle. */
+/**
+ * @brief Reads whether the baseline-tracking gate is currently open.
+ *
+ * Sampled asynchronously, so a single read is a snapshot, not a duty cycle.
+ *
+ * @param base blr_core's AXI4-Lite base address.
+ * @return 1 while the estimator is tracking, 0 while the gate is shut (during a pulse or its
+ *         hold-off).
+ */
 int Blr_GateOpen(u32 base);
 
-/* Bypass forwards the converted sample untouched, at the same latency as the restored path, so
+/**
+ * @brief Enables/disables baseline-restoration bypass.
+ *
+ * Bypass forwards the converted sample untouched, at the same latency as the restored path, so
  * toggling it at runtime does not shift the stream in time. That equal latency is what makes an
- * A/B comparison of restored vs unrestored data meaningful. */
+ * A/B comparison of restored vs unrestored data meaningful.
+ *
+ * @param base blr_core's AXI4-Lite base address.
+ * @param on   Non-zero to bypass, zero for normal (restored) operation.
+ */
 void Blr_SetBypass(u32 base, int on);
 
-/* Freezes the estimate without stopping the datapath -- useful to hold a known baseline while
- * sweeping something else. */
+/**
+ * @brief Freezes/unfreezes the baseline estimate without stopping the datapath.
+ *
+ * Useful to hold a known baseline while sweeping something else.
+ *
+ * @param base blr_core's AXI4-Lite base address.
+ * @param on   Non-zero to freeze the estimate, zero to resume tracking.
+ */
 void Blr_SetHold(u32 base, int on);
 
-/* Writes a known pattern to each writable register and reads it back. Returns 1 on success.
- * Restores the caller's configuration afterwards. */
+/**
+ * @brief Self-test: writes a known pattern to each writable register and reads it back.
+ *
+ * Restores the caller's configuration afterwards.
+ *
+ * @param base blr_core's AXI4-Lite base address.
+ * @return 1 on success, 0 if any register did not read back as written.
+ */
 int Blr_SelfTest(u32 base);
 
-/* Derives the gate threshold from a measured baseline sigma. The gate must stay OPEN on noise and
- * SHUT on pulses, so the threshold belongs a few sigma above the noise: below that it chatters and
- * the estimator stops tracking; far above it, small pulses leak into the average and drag it. This
- * project measures sigma ~7 counts quiet and ~55 at 30 cps, so the useful range is roughly 30..250.
- * Clamped to a sane band because a sigma of 0 (a dead input) would otherwise weld the gate shut. */
+/**
+ * @brief Derives a gate threshold from a measured baseline noise sigma.
+ *
+ * The gate must stay OPEN on noise and SHUT on pulses, so the threshold belongs a few sigma above
+ * the noise: below that it chatters and the estimator stops tracking; far above it, small pulses
+ * leak into the average and drag it. This project measures sigma ~7 counts quiet and ~55 at
+ * 30 cps, so the useful range is roughly 30..250. Clamped to a sane band because a sigma of 0 (a
+ * dead input) would otherwise weld the gate shut.
+ *
+ * @param sigma Measured baseline noise standard deviation, in ADC counts.
+ * @return A gate threshold suitable for Blr_Configure(), clamped to [32, 1024].
+ */
 u32 Blr_GateThresholdForSigma(u32 sigma);
 
 #endif /* SRC_BLR_H_ */
