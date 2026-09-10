@@ -33,12 +33,12 @@ typedef struct {
  * @brief Configures the filter's three shaping parameters and enables/disables shaping.
  *
  * @param base     pulse_shaper_core's AXI4-Lite base address.
- * @param peaking  Peaking (rise) time, in samples at 50 Msps. Hardware-clamped 10..250.
- * @param flat_top Flat-top length, in samples. Hardware-clamped 0..250 (0 is a valid "triangular,
+ * @param peaking  Peaking (rise) time, in samples at 50 Msps. Hardware-clamped 10..128.
+ * @param flat_top Flat-top length, in samples. Hardware-clamped 0..128 (0 is a valid "triangular,
  *                 no flat top" configuration, not an error).
  * @param decay    Pole-zero decay time constant, in samples -- match this to the detector's own
  *                 measured pulse decay tau for the flat-top plateau height to land at
- *                 amplitude*peaking with no drift. Hardware-clamped 2..400. This function also
+ *                 amplitude*peaking with no drift. Hardware-clamped 2..300. This function also
  *                 computes 1/decay in Q2.16 fixed point and writes it to the core's internal
  *                 decay_recip register, which is what the filter's pole-zero correction actually
  *                 uses (see PULSE_SHAPER_DECAY_RECIP_OFFSET in registers.h) -- the two registers
@@ -58,7 +58,7 @@ void PulseShaper_Configure(u32 base, u32 peaking, u32 flat_top, u32 decay, u32 e
  * change `decay` (bulk configuration, and a single-field $SH write) can't derive it differently.
  *
  * @param decay Decay time constant in samples. Must be > 0 (caller's responsibility -- this
- *              function does not range-check against the core's own 2..400 hardware limits).
+ *              function does not range-check against the core's own 2..300 hardware limits).
  * @return 1/decay as a Q2.16 signed fixed-point value, ready to write to
  *         PULSE_SHAPER_DECAY_RECIP_OFFSET.
  */

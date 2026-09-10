@@ -19,9 +19,9 @@ entity pulse_shaper_core_top is
     DATA_WIDTH : integer := 16;
     ACC_WIDTH  : integer := 32;
     FIFO_DEPTH : integer := 32;
-    K_MAX      : integer := 250; -- peaking-time hardware ceiling
-    M_MAX      : integer := 250; -- flat-top hardware ceiling
-    DECAY_BITS : integer := 9;   -- CLI-visible decay register width (0..511; spec range 2..400)
+    K_MAX      : integer := 128; -- peaking-time hardware ceiling
+    M_MAX      : integer := 128; -- flat-top hardware ceiling
+    DECAY_BITS : integer := 9;   -- CLI-visible decay register width (0..511; spec range 2..300)
     RECIP_BITS      : integer := 18; -- decay_recip (firmware-computed -1/M, Q2.16) width
     RECIP_FRAC_BITS : integer := 16
   );
@@ -200,7 +200,7 @@ begin
       FLAT_TOP_MAX  => M_MAX,
       DECAY_BITS    => DECAY_BITS,
       DECAY_MIN     => 2,
-      DECAY_MAX     => 400,
+      DECAY_MAX     => 300,
       RECIP_BITS    => RECIP_BITS,
       ACC_WIDTH     => ACC_WIDTH,
       LEVEL_WIDTH   => LEVEL_WIDTH

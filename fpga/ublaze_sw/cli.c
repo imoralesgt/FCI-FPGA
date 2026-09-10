@@ -393,7 +393,7 @@ static int shaper_get(s32 idx, s32 *out) {
  * bitstream-absent fallback keeps the original placeholder's non-negative-only check, since the
  * shadow has no register file of its own to defer the check to.
  *
- * @param idx 0=peaking (10..250), 1=flat_top (0..250), 2=decay (2..400), 3=enable (0..1).
+ * @param idx 0=peaking (10..128), 1=flat_top (0..128), 2=decay (2..300), 3=enable (0..1).
  * @param v   New value.
  * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
  */
@@ -401,15 +401,15 @@ static int shaper_set(s32 idx, s32 v) {
 #if PULSE_SHAPER_CORE_PRESENT
   switch (idx) {
   case 0:
-    if (!in_range(v, 10, 250))
+    if (!in_range(v, 10, 128))
       return 0;
     break;
   case 1:
-    if (!in_range(v, 0, 250))
+    if (!in_range(v, 0, 128))
       return 0;
     break;
   case 2:
-    if (!in_range(v, 2, 400))
+    if (!in_range(v, 2, 300))
       return 0;
     /* decay_recip must never disagree with decay: written here, not left for
      * PulseShaper_Configure() alone, since this path is reachable independently via a bare

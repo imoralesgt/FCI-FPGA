@@ -20,13 +20,13 @@ entity pulse_shaper_axi4lite_regs is
     C_ADDR_WIDTH : integer := 6;
     PEAKING_BITS  : integer := 8;
     PEAKING_MIN   : integer := 10;
-    PEAKING_MAX   : integer := 250;
+    PEAKING_MAX   : integer := 128;
     FLAT_TOP_BITS : integer := 8;
     FLAT_TOP_MIN  : integer := 0;
-    FLAT_TOP_MAX  : integer := 250;
+    FLAT_TOP_MAX  : integer := 128;
     DECAY_BITS    : integer := 9;
     DECAY_MIN     : integer := 2;
-    DECAY_MAX     : integer := 400;
+    DECAY_MAX     : integer := 300;
     RECIP_BITS    : integer := 18; -- decay_recip width, signed Q2.16 (see trapezoidal_filter.vhd)
     ACC_WIDTH     : integer := 32;
     LEVEL_WIDTH   : integer := 11 -- clog2(FIFO_DEPTH)+1; FIFO_DEPTH=1024 in the block design

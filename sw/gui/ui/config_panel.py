@@ -422,15 +422,15 @@ VGA_FIELDS = [
 SHAPER_CYCLE_NS = 20.0  # 1 clock period @ 50 Msps
 
 SHAPER_FIELDS = [
-    Field("peaking", "Peaking time", 10, 250, cycle_period_ns=SHAPER_CYCLE_NS,
+    Field("peaking", "Peaking time", 10, 128, cycle_period_ns=SHAPER_CYCLE_NS,
           tooltip="Peaking (rise) time. Should sit a bit past the detector's own physical rise "
                   "time so the trapezoid's ramp fully captures it. The flat-top plateau height "
                   "scales with this value; changing it after calibrating requires recalibrating."),
-    Field("flat_top", "Flat-top", 0, 250, cycle_period_ns=SHAPER_CYCLE_NS,
+    Field("flat_top", "Flat-top", 0, 128, cycle_period_ns=SHAPER_CYCLE_NS,
           tooltip="Flat-top length. 0 is a valid \"triangular, no plateau\" configuration. Longer "
                   "averages more samples (better noise rejection) at the cost of more dead time "
                   "per pulse."),
-    Field("decay", "Decay (pole-zero)", 2, 400, cycle_period_ns=SHAPER_CYCLE_NS,
+    Field("decay", "Decay (pole-zero)", 2, 300, cycle_period_ns=SHAPER_CYCLE_NS,
           tooltip="Pole-zero decay time constant. Match this to the detector's own measured pulse "
                   "decay tau -- for a matched value the flat-top plateau is exactly flat, "
                   "independent of the pulse's true decay; a mismatch shows up as a slope or "

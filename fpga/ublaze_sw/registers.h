@@ -122,9 +122,9 @@
 #define PULSE_SHAPER_CORE_PRESENT 0
 #endif
 
-#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..250 */
-#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..250 */
-#define PULSE_SHAPER_DECAY_OFFSET 0x08    /* RW, samples, saturating 2..400 */
+#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..128 */
+#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..128 */
+#define PULSE_SHAPER_DECAY_OFFSET 0x08    /* RW, samples, saturating 2..300 */
 #define PULSE_SHAPER_ENABLE_OFFSET 0x0C   /* RW, [0] */
 #define PULSE_SHAPER_CTRL_OFFSET 0x10     /* W, self-clearing: [0] pop, [1] clear */
 #define PULSE_SHAPER_STATUS_OFFSET 0x14   /* RO */
