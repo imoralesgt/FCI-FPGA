@@ -100,7 +100,13 @@
 #define PSD_STATUS_FULL_MASK (1U << 1)
 #define PSD_STATUS_OVERFLOW_MASK (1U << 2)
 #define PSD_STATUS_LEVEL_SHIFT 8
-#define PSD_STATUS_LEVEL_MASK 0x3FU
+/* FIFO_DEPTH=512 in the block design (psd_core_0's own CONFIG.FIFO_DEPTH override) ->
+ * LEVEL_WIDTH = clog2(512)+1 = 11 bits (psd_core_pkg.vhd's clog2 returns a value's BIT-LENGTH,
+ * not the standard ceil-log2 -- clog2(512)=10, one more than the textbook 9, because 512 itself
+ * needs 10 bits to represent as a number; see variable_delay.vhd's own header for the same
+ * convention). This mask has disagreed with the real depth before (see pulse_shaper's version of
+ * this comment) -- computed fresh here against the CURRENT depth rather than copied forward. */
+#define PSD_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * pulse_shaper_core (fpga/rtl/pulse_shaper_core) -- hand-written AXI4-Lite register map, keep in
@@ -153,24 +159,32 @@
 #define PULSE_SHAPER_STATUS_FULL_MASK (1U << 1)
 #define PULSE_SHAPER_STATUS_OVERFLOW_MASK (1U << 2)
 #define PULSE_SHAPER_STATUS_LEVEL_SHIFT 8
-/* FIFO_DEPTH=128 -> LEVEL_WIDTH = clog2(128)+1 = 8 bits, not the 6 bits psd_core's own
- * PSD_STATUS_LEVEL_MASK assumes for ITS depth -- that mismatch (RTL default vs. the BD's actual
- * FIFO_DEPTH override) already exists for psd_core; computed correctly here instead of repeating
- * it.
+/* FIFO_DEPTH=512 in the block design (pulse_shaper_core_0's own CONFIG.FIFO_DEPTH override) ->
+ * LEVEL_WIDTH = clog2(512)+1 = 11 bits (this core's own clog2 returns a value's BIT-LENGTH, not
+ * the standard ceil-log2 -- clog2(512)=10, one more than the textbook 9; see variable_delay.vhd's
+ * header for the same convention). Same value as PSD_STATUS_LEVEL_MASK/FCI_SINK_STATUS_LEVEL_MASK
+ * above, since all three cores now share the same 512-deep override and the identical
+ * clog2(FIFO_DEPTH)+1 formula.
  *
- * 128 is this core's own RTL DEFAULT (pulse_shaper_core_top.vhd), not raised by a block-design
- * override the way psd_core_0/fci_core_0 raise theirs to 1024 -- deliberately: result_fifo.vhd's
- * memory read is combinational, so it can never infer block RAM at any depth, and going all the
- * way to 1024 here measured +2499 LUTs (standalone OOC synthesis), which put the whole design over
- * its LUT budget (DRC UTLZ-1) on top of psd_core_0/fci_core_0's own two 1024-deep instances of
- * this same pattern. See pulse_shaper_core_top.vhd's FIFO_DEPTH comment for the full measurement
- * and for why matching their depth stopped being a correctness requirement once $AE/$AR were
- * fixed to clear this core's FIFO too (cli.c's h_ae()/h_ar()) -- a full FIFO at any depth now just
- * drops the newest result and sets the sticky overflow flag, rather than deadlocking
- * Acq_PopPaired(). If this depth is ever changed again, update this mask to clog2(depth)+1 bits
- * alongside it -- the two silently disagreeing is exactly the bug this comment exists to prevent
- * repeating. */
-#define PULSE_SHAPER_STATUS_LEVEL_MASK 0xFFU
+ * This core's own RTL DEFAULT (pulse_shaper_core_top.vhd) stays 128, not 512 -- same relationship
+ * psd_core_top.vhd/fci_core_rtl_top.vhd already have with THEIR RTL default of 32: a small,
+ * always-safe fallback for a standalone instantiation, with the block design as the one place
+ * that sets what actually gets built. 512 itself is a deliberate step down from an earlier
+ * attempt at 1024: result_fifo.vhd's memory read is combinational, so it can never infer block
+ * RAM at any depth, and going to 1024 on this core alone measured +2499 LUTs (standalone OOC
+ * synthesis; see pulse_shaper_core_top.vhd's FIFO_DEPTH comment) on top of psd_core_0/fci_core_0
+ * already running the same pattern at 1024 each -- together enough to put the whole design over
+ * its LUT budget (DRC UTLZ-1). Dropping all three to 512 recovered enough from the other two to
+ * fit, while keeping them equal -- since Acq_PopPaired() pairs all three FIFOs in lockstep, the
+ * system-wide burst buffer is bounded by the SHALLOWEST of the three regardless, so an uneven
+ * split buys nothing.
+ *
+ * This exact mask went stale once already going from 1024/128 to today's 512 -- it was written
+ * once per depth rather than derived, and nothing caught the disagreement until it was checked by
+ * hand. If this depth changes again, update this mask (and PSD_STATUS_LEVEL_MASK and
+ * FCI_SINK_STATUS_LEVEL_MASK, which move with it since all three track the same override) to
+ * clog2(depth)+1 bits alongside it. */
+#define PULSE_SHAPER_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * fci_core (fpga/rtl/fci_core_rtl) -- hand-written VHDL core: 2048-point FFT, two programmable bin
@@ -265,7 +279,12 @@
  * FciSink_FramingError() still compiles and reports "no error". */
 #define FCI_SINK_STATUS_FRAMING_ERR_MASK (1U << 3)
 #define FCI_SINK_STATUS_LEVEL_SHIFT 8
-#define FCI_SINK_STATUS_LEVEL_MASK 0x3FU
+/* FCI_SINK_BASEADDR is FCI_CORE_BASEADDR (see above) -- this mask is really fci_core_0's, whose
+ * FIFO_DEPTH is 512 in the block design. LEVEL_WIDTH = clog2(512)+1 = 11 bits (fci_core_pkg.vhd's
+ * clog2 returns a value's BIT-LENGTH, not the standard ceil-log2 -- clog2(512)=10, one more than
+ * the textbook 9; see variable_delay.vhd's own header for the same convention). Computed fresh
+ * against the current depth, same reasoning as PSD_STATUS_LEVEL_MASK above. */
+#define FCI_SINK_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * axi_dma_0 (Simple DMA, no Scatter-Gather) -- S2MM path carries {PSA_l, PSA_w} per event into
