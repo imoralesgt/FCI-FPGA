@@ -1068,6 +1068,38 @@ incomplete is a dead end.
 - **`[BD 41-237]` FREQ_HZ mismatch**, from AXI4-Lite interfaces that must follow the 75 MHz CPU
   while the stream interfaces follow the 50 MHz ADC clock.
 
+### Later: raised again, to 150 MHz — a new UART floor, and pipeline throughput
+
+**Everything above describes the 75 MHz era and is preserved as the reasoning that was actually
+true at the time — the live design has since moved on.** The CPU/consumer clock (`clk_cpu_dpp`) was
+raised a second time, 75 -> **150 MHz**, in the same commit (`7c7ca2c`, issue #20) that added the
+first hand-written VHDL `fci_core_rtl` (§8g) with its 2048-point FFT. That is no coincidence, though
+this log never recorded it at the time: the entire "why 75 MHz" argument above was about the UART,
+not throughput headroom for compute. By this point `axi_uartlite` (baud enumerated straight from
+`C_S_AXI_ACLK_FREQ_HZ`, the exact constraint pinning this domain at 75 MHz) had already been replaced
+by `axi_uart16550` (§8f, §8l), whose baud comes from a runtime divisor over its own independent
+`xin` clock (`clk_wiz_1`, 64 MHz) rather than from `clk_cpu_dpp` directly -- but that did not fully
+decouple the two clocks, it changed WHICH constraint the UART imposes. `axi_uart16550`
+(PG143) requires its AXI clock to run at **at least 2x its `xin` reference** for the core to
+function correctly -- a hard floor, not the old ±3% baud-error band. At `xin` = 64 MHz that floor is
+128 MHz, which 75 MHz (and the original 50 MHz) both sit well under; 150 MHz clears it with margin.
+So the UART still constrained this clock after the peripheral swap, just via a different, looser
+relationship than the one that originally pinned it at 75 MHz.
+
+**More importantly than satisfying that floor, though:** the higher clock gives `psd_core`'s and
+`fci_core_rtl`'s own processing pipelines lower per-event latency and higher sustained event
+throughput -- the actual reason 150 MHz was chosen over some smaller value (e.g. 128 or 130 MHz)
+that would have cleared the floor just as legally.
+
+The diagram and the derived numbers above (75 MHz, the −1.73% baud error, "81.6% LUT" as the
+then-current headroom figure) are historical, not current. Wherever this domain is referenced
+elsewhere in this log -- §9's current-state summary, §8t/§8u's pulse shaper work, any open item
+about firmware timing constants -- **it is 150 MHz (6.667 ns/cycle)**, confirmed directly from
+`fci_bd.tcl`'s `clk_wiz_0` (`CLKOUT2_REQUESTED_OUT_FREQ {150}`). UART is also no longer at 921600:
+`axi_uart16550` runs at **4 Mbaud** (`UART_XIN_HZ / (16 * UART_BAUD_DIVISOR)` = 64 MHz / 16 = exactly
+4,000,000, divisor 1 -- see `uart.h`), which is what made the higher `$RB`/`$RQ` batch readout rates
+in later sections (§8l onward) possible in the first place.
+
 ---
 
 ## 8c. Double-buffered capture (issue #13)
@@ -3876,7 +3908,9 @@ as one build.
   retired as a separate IP, its role merged into the new `fci_core` (§8g)
 - **The spectroscopy chain works end to end**: BLR → trigger → broadcaster → {FCI, PSD, raw DMA},
   with both discriminators computed on the same events and paired by the in-band timestamp
-- Two clock domains: 50 MHz sample rate, 75 MHz CPU and consumers; UART at **921600 baud** (§8b)
+- Two clock domains: 50 MHz sample rate, **150 MHz** CPU and consumers (raised from 75 MHz once
+  the UART decoupled from this clock — §8b); UART at **4 Mbaud** via `axi_uart16550` (§8f, §8l),
+  not the original 921600 `axi_uartlite` ceiling
 - `trigger_core` **double-buffered** (§8c): 24.4k → **48.8k events/s**, and half the dead time
 - Full chain running: trigger → capture → FCI → BRAM → UART, interrupt-driven, both DMA channels
   continuously serviced
@@ -3939,8 +3973,10 @@ batch had to be reverted):
   (§8e), averaging each group of 5 samples rather than subsampling. Until then, measured ROOT
   events are 5× too fast to compare against the reference set — and nothing about the output looks
   wrong.
-- Firmware timing constants are still calibrated in loop iterations at 50 MHz; at 75 MHz every
-  dwell is 1.5× shorter than intended. Deriving them from a single `CPU_CLK_HZ` is the fix.
+- Firmware timing constants are still calibrated in loop iterations at 50 MHz; at the actual
+  **150 MHz** (§8b) every dwell runs **3× shorter** than intended, not the 1.5× this item was
+  originally written against back when the domain was 75 MHz. Deriving them from a single
+  `CPU_CLK_HZ` is the fix, and matters more now than it did at 75 MHz.
 - **BD tidy-ups:** `microblaze_0_axi_periph` still has `NUM_MI = 11` with `M10` unconnected, and
   `trigger_core`'s `MAX_DEPTH` is still 4096 where 2048 would make double-buffering BRAM-neutral
   (§8c) on a device at 81% BRAM.
