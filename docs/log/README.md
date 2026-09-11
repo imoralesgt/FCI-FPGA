@@ -3649,6 +3649,220 @@ whether a fixed threshold survives gain and baseline drift between runs.
 
 ---
 
+## 8t. Pulse shaper core (issue #23): closing timing, and the total-datapath stall it exposed
+
+The trapezoidal filter §8's own sizing table could only bound by shaping time, not measure, now
+exists: `pulse_shaper_core` implements the Jordanov-Knoll recursive trapezoidal filter
+[Jordanov & Knoll 1994] -- pole-zero correction first (`Tr'[n] = x[n] + Pz[n]/M`), then a
+non-recursive double-difference (`d[n] = Tr'[n] - Tr'[n-k] - Tr'[n-l] + Tr'[n-k-l]`), then a single
+accumulation -- replacing `psd_core`'s former single-sample raw-peak estimate as the spectroscopy
+energy channel. The recursive derivation was cross-checked against ICTP's own worked reproduction of
+Jordanov & Knoll [ICTP 2013] and against a hand-derived exact example, after an earlier revision had
+the two stages in the wrong order (double-difference the raw samples, correct afterward) and got the
+plateau wrong by ~200x, then ~40x -- pole-zero correction has to run on the raw trace FIRST, not be
+bolted onto an already-differenced signal, or the accumulator's residual decays at the input's own
+rate instead of settling.
+
+### Closing timing: two rounds of pipelining, 150 MHz not the 50 MHz first assumed
+
+`pulse_shaper_core` lives in the `clk_cpu_dpp` domain at **150 MHz / 6.667 ns per cycle** (confirmed
+via `fci_bd.tcl`'s `clk_wiz_0`), shared with `psd_core_0`/`fci_core_0`/`microblaze_0` -- not the
+50 MHz `clk_adc` domain `trigger_core`/`blr_core` run in, which early design comments wrongly
+assumed. This does not change what a `peaking`/`flat_top`/`decay` register counts physically: those
+count valid *samples* (gated by `s_valid_i`), not raw `clk_i` ticks, so the GUI's existing
+20 ns-per-unit conversion stayed correct throughout.
+
+A first, fully-combinational version of the filter measured **WNS -18.818 ns** against the 6.667 ns
+period -- the path was nearly 4x the period. Fixed in two rounds, each pipeline cut carried
+consistently through every downstream consumer (delay taps, double-difference) via a shift-registered
+`valid_dN`/`last_dN`/`x_pipeN` timeline rather than the raw stream signals, so nothing desyncs from
+which sample Tr' is actually presenting that cycle:
+
+1. **Pipelining the pole-zero multiply** (`Pz[n]*recip`) across two registered stages
+   (`mult_a_reg`/`mult_b_reg`, then `prod_reg`), matching a DSP48E1's own AREG/BREG/MREG pipeline
+   registers rather than leaving all of them at their default combinational passthrough. Costs two
+   extra cycles of *latency* (`Pz[n]/M` isn't ready until n+2), not throughput -- a new sample is
+   still accepted every cycle. **WNS -18.818 -> -9.545 ns.** Still violating: the remaining
+   combinational Tr' saturating-add plus the whole double-difference/accumulate/compare/saturate
+   chain was still too deep for 6.667 ns on its own.
+2. **Splitting Tr' and the double-difference into their own registered stages** (`tr_reg`, then
+   `d_reg`), rather than both feeding straight into the final accumulate/compare/saturate in the
+   same cycle the multiply pipeline produced `prod_reg`. No single one of those steps alone was the
+   bottleneck -- the SUM of all of them evaluated combinationally in one cycle was.
+   **WNS -9.545 -> -2.027 ns.**
+
+Total pipeline latency: 4 cycles from input sample to Tr'/delay-tap availability. **-2.027 ns
+remains an unclosed timing violation**, accepted for now ("working with it like this now, will fix
+later") rather than pipelined further immediately -- the natural next cut, following the same
+pattern, would split the final accumulate from the compare/saturate. Verified at every step against
+the local xsim testbench with identical numeric results throughout (matched-decay plateau 40003,
+mismatched-decay 45431, `flat_top=0` case 39991).
+
+### The datapath collapsed after adding ILA probes, and it took several wrong hypotheses to find why
+
+With the core working in simulation, hardware bring-up initially succeeded, then broke completely
+after ILA probes were added for unrelated debug work: `raw_events` froze, `S2MM_DMASR` stopped
+advancing, every result FIFO read empty -- not just on the shaper's own branch, on **every** branch
+of the shared broadcaster (`fci_sink`, `psd_core`, the raw-trace DMA). Several plausible-looking
+causes were checked and ruled out before the real one surfaced:
+
+- **Shaper backpressure.** Ruled out directly: `s_axis_tready` read back a genuine constant `'1'`
+  on hardware, and the netlist showed it as constant-propagated, not driven low.
+- **IP-XACT packaging.** `TREADY` was correctly mapped in every core's `component.xml`.
+- **The reset tree, and the ILA's own clock domain.** Both alive and correctly connected --
+  `system_ila_0/clk` demonstrably toggling, since MicroBlaze itself was running.
+- **`K_MAX`/`M_MAX = 250` not being a power of 2** (see below) -- a real, separate bug, but
+  incapable of causing a total stream stall; it would corrupt shaper amplitudes, not stop the
+  stream. Correctly argued by the user against a hardwired `tready = '1'` being able to collapse
+  the whole datapath, which turned out to be the right instinct -- the actual mechanism did not
+  touch the shaper's `tready` at all.
+
+**The real mechanism:** wiring an AXI4-Stream interface *member* signal (`s_axis_tready`,
+`m_axis_tvalid`, `m_axis_tlast`) directly onto an ILA probe pin with `connect_bd_net` silently
+excludes that pin from its normal interface connection (Vivado `[BD 41-1306]`/`[BD 41-1271]`,
+easy to miss in a long `validate_bd_design` log). With `axis_broadcaster_0`'s `m_axis_tready[3:0]`
+inputs and `s_axis_tvalid`/`tlast` inputs pulled out of their interface nets this way, every
+unconnected input tied to Vivado's default of constant `0` -- so `s_axis_tready` computed to a
+permanent `0` from a broadcaster that could never see any of its masters as ready. Read directly out
+of the implemented netlist, the broken state was a degenerate self-holding structure:
+
+```
+m_ready_d_reg[1]  D <- m_ready_d_reg[1]/Q       -- FDRE, INIT=0, reset-only clear: stuck at 0 forever
+s_axis_tready_INST_0  LUT3 INIT=0x40            -- output 1 only for one input combination that
+                                                    the frozen m_ready_d bits could never reach
+```
+
+This explained every symptom at once: individual cores' own outputs were fine (driving real nets
+that now went only to the ILA, never to their intended consumer), `CDC_FIFO` stayed full holding
+`tvalid`/`tlast` high forever with nowhere for them to go, and every branch read zero events --
+because the fault was upstream of the branch split, not on any one branch.
+
+**Fix:** the correct way to tap an AXI4-Stream interface for debug is net-level
+`HDL_ATTRIBUTE.DEBUG` marking (`set_property HDL_ATTRIBUTE.DEBUG {true} [get_bd_intf_nets ...]`,
+or the GUI's right-click-to-debug flow) plus `apply_bd_automation`, which adds the ILA as an
+*additional listener* on the existing interface net rather than reassigning the pin. Deleting the
+offending ILA cell was necessary but not sufficient: the override net it created is a separate BD
+object and survives cell deletion, so `s_axis_tready`/`m_axis_tvalid`/`m_axis_tlast` stayed
+detached from their interfaces until those orphan nets were deleted explicitly too --
+`validate_bd_design` kept reporting the same `[BD 41-1271]` warnings until every one of them was
+gone. Confirmed clean afterward, both in the netlist (every `m_ready_d[N]_i_*` LUT now reads real
+`tvalid`/downstream-`tready` terms, e.g. `m_ready_d[0]_i_1 = m_ready_d[0] | (tvalid & dma_ready)`)
+and on hardware: `$AE` followed by `$RB` returns real paired events with shaper amplitudes tracking
+`energy_long` as expected (e.g. one batch: peaks 19262/31801/30440/36149/22041/31203 against
+`energy_long` 59056/102409/112358/112729/72965/115986).
+
+### A second, independent bug found in the same investigation: `$AE`/`$AR` didn't clear this core's FIFO
+
+Once the broadcaster fix was confirmed at the BD level, a live hardware pass still showed `$RB`
+returning 0 indefinitely, with the shaper's own status register reading full + overflow.
+`Acq_PopPaired()` only emits an event once all three result FIFOs' heads carry the same timestamp;
+`$AE`/`$AR` cleared `psd_core`'s and `fci_sink`'s FIFOs but never `pulse_shaper_core_0`'s, so once
+it filled (32 deep at the time, far shallower than the other two's 1024), its head froze in the past
+and pairing deadlocked outright rather than merely dropping results on resync. Fixed in
+`cli.c`'s `h_ae()`/`h_ar()` by clearing all three unconditionally; confirmed on hardware -- pairing
+now starts immediately from a cold boot with no manual FIFO clear required.
+
+### A third bug the fix exposed: `MAX_DELAY` only had to be a power of 2 because nothing enforced it
+
+`variable_delay.vhd`'s circular buffer required `MAX_DELAY` to be an exact power of 2 via a VHDL
+`assert ... severity failure` -- which Vivado synthesis never evaluates. `pulse_shaper_core_0` had
+been built with `K_MAX = M_MAX = 250`, silently constructing a 250-entry array addressed by an
+8-bit pointer that wraps at 256: six addresses per lap fell outside the array's declared bounds, a
+simulation-only bounds error that reached real hardware as an unverified dependency on how the
+inferred BRAM happened to handle the overhang. Fixed by sizing the array to `2**ADDR_WIDTH` (always
+>= the requested `MAX_DELAY`) instead of requiring the caller's value to already be a power of 2 --
+free for any `MAX_DELAY` that already is one, and removes the constraint entirely for one that
+isn't, rather than repeating an assertion nothing enforces. Verified with a targeted regression
+(a standalone `variable_delay` instance at `MAX_DELAY=250`, ramped past 1200 cycles so the pointer
+laps many times, checked at the deepest taps: 249 and 250 samples) **and** a negative control --
+the same test re-run against the pre-fix array sizing reproduced the exact original defect
+(`ERROR: Index 250 out of bound 0 to 249`), confirming the test has teeth rather than passing
+trivially.
+
+With the power-of-2 dependency gone, `K_MAX`/`M_MAX` were raised **128 -> 256** samples
+(2.56 -> 5.12 us of shaping headroom at 20 ns/sample) to reach the detector's own measured decay
+constant of ~4.9 us (§8e) -- 128 had capped peaking below where the charge collection wants it.
+256 also exactly fills the array `variable_delay`'s rounding already implies, where the earlier 250
+paid for the same depth and used only 250 of it.
+
+---
+
+## 8u. LUT budget: the async-read result FIFO, and settling on `FIFO_DEPTH=512` across three cores
+
+Raising `pulse_shaper_core_0`'s `FIFO_DEPTH` from 32 to 1024 -- matching `psd_core_0`/`fci_core_0`'s
+own override, on the (at-the-time-correct) reasoning that `Acq_PopPaired()` would deadlock on any
+FIFO shallower than the other two -- failed `place_design` DRC outright:
+
+```
+[DRC UTLZ-1] Slice LUTs over-utilized: requires 22362, only 20800 available
+```
+
+Isolated by standalone out-of-context synthesis of `pulse_shaper_core_top` alone, sweeping only
+`FIFO_DEPTH`:
+
+| `FIFO_DEPTH` | Slice LUTs | LUT as Memory | Block RAM Tile |
+|---|---|---|---|
+| 32 | 748 | 64 | 1.5 |
+| 128 | 988 | 256 | 1.5 |
+| 256 | 1291 | 512 | 1.5 |
+| 512 | 1954 | 1024 | 1.5 |
+| 1024 | 3247 | 2048 | 1.5 |
+
+Block RAM Tile stays flat regardless of depth -- the culprit is `result_fifo.vhd`'s **combinational**
+read port (`data_o <= mem(rd_ptr)`, no clock), the same failure shape `variable_delay.vhd` had before
+its own BRAM rewrite (§8t and this file's own header): a block RAM's read port is always registered,
+so an unregistered read can never infer one at any depth, only distributed RAM plus a read-address
+mux tree that grows with it. Going 32 -> 1024 on this core alone cost **+2499 LUTs**, fully
+accounting for the DRC failure -- `psd_core_0` and `fci_core_0` already run this identical pattern at
+their own 1024-deep instances, which is most of what the pre-shaper baseline (§8, 81.59% LUT) had
+already spent; there was no longer room for a third one that size.
+
+The correctness argument for matching their depth no longer applied once `$AE`/`$AR` were fixed
+(above) to clear this core's FIFO too: a full FIFO at any depth now just drops the newest result and
+sets the sticky overflow flag, rather than deadlocking `Acq_PopPaired()`. What depth costs now is
+burst *tolerance*, not correctness -- and since `Acq_PopPaired()` pairs all three FIFOs in lockstep,
+the system-wide effective burst buffer is bounded by the *shallowest* of the three regardless, so an
+uneven split (e.g. shaper alone at 128, the other two left at 1024) buys nothing past whatever the
+shallowest one holds. All three were instead dropped uniformly to **512**, recovering enough from
+`psd_core_0`/`fci_core_0` to fit the whole design while keeping all three FIFOs equal.
+
+### The depth change exposed a third bug: firmware's per-core status-level masks were hand-written, and two were already wrong
+
+Each core's AXI4-Lite status register packs a FIFO fill-level field whose width,
+`LEVEL_WIDTH = clog2(FIFO_DEPTH) + 1`, is computed in VHDL from the real `FIFO_DEPTH` generic --
+but firmware's matching `*_STATUS_LEVEL_MASK` constants in `registers.h` are plain `#define`s,
+written once against whatever depth was true at the time and never re-derived. `PSD_STATUS_LEVEL_MASK`
+and `FCI_SINK_STATUS_LEVEL_MASK` (the latter is really `fci_core_0`'s own mask -- `FCI_SINK_BASEADDR`
+is an alias for `FCI_CORE_BASEADDR`, `fci_sink` having been absorbed into `fci_core_0`, §8g) were
+already `0x3F` (6 bits) before this session, matching neither core's actual depth at any point in
+this project's history -- a stale bug that simply hadn't been checked. `PULSE_SHAPER_STATUS_LEVEL_MASK`
+went stale within the same investigation it was first written correctly, in the time between the
+`FIFO_DEPTH=128` RTL default being set and the block design overriding it to 512.
+
+Each core's own `clog2` (identical in `psd_core_pkg.vhd`, `fci_core_pkg.vhd`, and
+`pulse_shaper_core_pkg.vhd`) returns a value's **bit-length**, not the textbook `ceil(log2(N))` --
+`clog2(512) = 10`, one more than the usual 9, because 512 itself needs 10 bits to represent as a
+number (the same convention `variable_delay.vhd`'s own header documents for its address-width
+calculation). `LEVEL_WIDTH = clog2(512)+1 = 11` bits for all three cores at the now-shared depth of
+512. All three masks corrected to `0x7FF` and re-derived from the real formula rather than copied
+forward at the next depth change -- confirmed by reading the RTL's own bit-packing line
+(`v(8 + LEVEL_WIDTH - 1 downto 8) := level_i`) rather than trusting the arithmetic in isolation,
+since an earlier draft of this same fix made the identical off-by-one mistake it was correcting.
+
+### Status: fixed, not yet re-verified end to end
+
+Firmware compiles clean against the corrected masks; the pulse shaper testbench passes **17/17**
+(the original 14 plus the 3-test `variable_delay` regression above), and the IP is re-exported
+byte-identical to its RTL sources. **Not yet done:** a fresh synth -> impl -> bitstream -> flash
+cycle with the complete current combination (`FIFO_DEPTH=512` on all three cores, `K_MAX`/`M_MAX=256`,
+the orphan-net-free broadcaster, and the corrected status masks together) has not been run through to
+hardware. That full-stack rebuild and re-verification is the real remaining checkpoint before issue
+#23 can be considered closed -- everything above has been verified piecewise (simulation, standalone
+OOC synthesis, or an earlier hardware build with a different subset of these fixes applied), not yet
+as one build.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
@@ -3672,10 +3886,23 @@ whether a fixed threshold survives gain and baseline drift between runs.
   offline analysis — at 50 Msps it would fire ~1500 false triggers/s)
 - Traces clean at all tested gains; the artifact reproduces only when deliberately re-created
 - `main.c` reduced to an entry point calling `Bringup_Run()`; all bring-up lives in `bringup.c`
-- 81.6% LUT, 81.0% BRAM, fully routed at WNS +1.811 ns (§8)
+- 81.6% LUT, 81.0% BRAM, fully routed at WNS +1.811 ns (§8) — **pre-shaper baseline, now stale**;
+  see §8u for the current, unresolved utilization picture
 - `sw/` client built and driving the device for real: `fci_api` (typed, thread-safe) plus a PySide6
   GUI (live FCI/PSD view, oscilloscope, config panels, calibration wizard, FoM optimization) — see
   §8f for the three real hangs it found and fixed
+- **`pulse_shaper_core` (issue #23) built**: Jordanov-Knoll recursive trapezoidal filter, testbench
+  **17/17**, timing closed from WNS -18.818 ns to a still-open **-2.027 ns** via two rounds of
+  pipelining (§8t). Replaces `psd_core`'s former raw single-sample peak as the spectroscopy energy
+  channel. Found and fixed along the way: a broadcaster-wide datapath stall caused by wiring ILA
+  probes directly onto AXI4-Stream interface pins (§8t), a firmware bug where `$AE`/`$AR` left this
+  core's result FIFO uncleared and deadlocked `Acq_PopPaired()` (§8t), a `variable_delay.vhd`
+  power-of-2 requirement enforced only by an assert Vivado synthesis never evaluates (§8t), and
+  three stale firmware `STATUS_LEVEL_MASK` constants including two that predate this core entirely
+  (§8u). **Verified piecewise, not yet as one build** — a fresh synth/impl/bitstream/flash of the
+  complete current combination is the remaining checkpoint (§8u)
+- Development/DAQ machine as of 2026-09-11: the physical board now lives on a remote machine
+  (`nsil-red`, reached over Tailscale), not attached to whichever machine is driving Vivado/Vitis
 
 ### Open items
 
@@ -3719,12 +3946,28 @@ batch had to be reverted):
   (§8c) on a device at 81% BRAM.
 - `acquisition.c` still carries `PSD_LONG_GATE 400`, superseded by the 250 found in §8d.
 
+**Issue #23 — remaining:**
+
+- **The real checkpoint: one clean synth → impl → bitstream → flash → hardware pass with the
+  complete current combination** (§8u) — `FIFO_DEPTH=512` on `psd_core_0`/`fci_core_0`/
+  `pulse_shaper_core_0` together, `K_MAX`/`M_MAX=256`, the orphan-net-free broadcaster, and the
+  corrected `STATUS_LEVEL_MASK`s. Everything so far has been verified piecewise (simulation,
+  standalone OOC synthesis, or an earlier hardware build with a different subset of these fixes),
+  never all together as one build
+- **-2.027 ns WNS still open** in `trapezoidal_filter.vhd`'s `u_filter` (§8t) — accepted for now,
+  not fixed. The natural next cut, following the same pattern already used twice, is splitting the
+  final accumulate from the compare/saturate
+- Device-wide utilization and WNS need re-measuring from scratch once the above build exists —
+  the §8 baseline (81.6% LUT, +1.811 ns) and the §8u OOC estimates are not the same thing as a
+  routed, whole-device number
+- Histogram builder (§8 for sizing) — not yet started; the trapezoidal filter half of that estimate
+  is now built, the histogram half is not
+
 **Later:**
 
 - **`blr_core` hold-off vs the preamp undershoot** (§8d): the gate reopens ~60 samples before the
   undershoot starts, so the BLR tracks it. Harmless at 30 cps, a real bias at the 15 kcps target.
   Fix by extending `holdoff` past it or by gating on signed deviation
-- Trapezoidal filter and histogram builder (§8 for sizing)
 - Tune `psa_l_hi` / `psa_w_hi` to this detector's actual pulse (§7)
 - CFD trigger, the original motivation for the BLR in issue #12 — cross-level triggering biases
   low-energy events, which is visible in the §8d energy dependence
@@ -3757,3 +4000,55 @@ delivering an effective half data rate — repo issue #10, diagnosed and fixed i
 ![TVALID toggling on the trigger_core stream](images/ila-tvalid-half-rate.png)
 
 ![Artifact with spike visible on the raw bus](images/ila-artifact-spike.png)
+
+---
+
+## References
+
+**[Morales et al. 2024]** I.R. Morales, M.L. Crespo, M. Bogovac, A. Cicuttin, K. Kanaki, S. Carrato,
+"Gamma/neutron classification with SiPM CLYC detectors using frequency-domain analysis for embedded
+real-time applications," *Nuclear Engineering and Technology* 56:2 (2024) 745–752.
+[doi:10.1016/j.net.2023.11.013](https://doi.org/10.1016/j.net.2023.11.013). The anchor paper this
+whole project reproduces and extends in hardware (§0): the Frequency-domain Comparison Index (FCI),
+`FCI = (PSA_w - PSA_l) / PSA_w` over a 2048-point FFT's city-block spectral magnitude, on a
+CLYC(Ce) + SiPM detector (Scionix V12.7B30/SIP-E3-CLYC-X, OnSemi ArrayC-60035-4P), CAEN DT5761 at
+4 GS/s subsampled to 100 MS/s. Proposes FPGA/DSP deployment as future work; this project is that
+deployment. Also the source of the reference PSA window shape (§0) and the ⁶Li(n,α)t capture-peak
+energy used to validate the DD generator (§8n). (First author is this project's own developer.)
+
+**[Nakhostin 2019]** M. Nakhostin, "Digital discrimination of neutrons and γ-rays in liquid
+scintillation detectors by using low sampling frequency ADCs," *Nuclear Instruments and Methods in
+Physics Research Section A* 916 (2019) 66–70.
+[doi:10.1016/j.nima.2018.11.021](https://doi.org/10.1016/j.nima.2018.11.021). A BC501A liquid
+organic scintillator on a PMT at 4 GHz; the finding used here (§0) is that the n/γ shape difference
+lives below ~18 MHz even though the pulses carry components to ~110 MHz, putting the useful
+sampling floor at ~32 MHz rather than the ≥250 MHz standing recommendation — the basis for treating
+this project's own 50 Msps as adequate rather than marginal.
+
+**[Jordanov & Knoll 1994]** V.T. Jordanov, G.F. Knoll, "Digital synthesis of pulse shapes in real
+time for high resolution radiation spectroscopy," *Nuclear Instruments and Methods in Physics
+Research A* 345 (1994) 337–345. The recursive trapezoidal (pole-zero + double-difference +
+accumulation) pulse-shaping algorithm `pulse_shaper_core` implements (§8t, issue #23) — the same
+filter, and the same `peaking`/`flat_top`/`decay` parameter names, CAEN's own DPP-PHA firmware
+uses.
+
+**[ICTP 2013]** "Digital Gamma-Ray Spectroscopy: Trapezoidal Filtering," *Advances in Digital
+Signal Processing*, ICTP, May 2013. A worked reproduction of Jordanov & Knoll's own recursive
+forms, used (§8t) to cross-check `trapezoidal_filter.vhd`'s derivation against a second,
+independent source before implementing it, after an earlier revision had the pole-zero and
+double-difference stages in the wrong order and got the plateau wrong by ~200x, then ~40x.
+
+**Hardware documentation and data, not independently citable:**
+
+- **Scionix V12.7B30/SIP-E3-CLYC-X data sheet** — manufacturer-supplied gamma decay time (**5 µs**,
+  §8e), used to size `pulse_shaper_core`'s `K_MAX`/`M_MAX` (§8t) and cross-checked to 2% against the
+  Zenodo recording below.
+- **The paper's labelled Zenodo dataset** [Morales et al. 2024's supplementary data] — 100 gamma +
+  neutron events at 100 Msps, used throughout §8j–§8s for offline validation against a reference
+  implementation and (§8e) to independently measure the same detector's decay constant
+  (**4.89 µs**, 2% from the data sheet's 5 µs). No formal DOI recorded in this project; cite via the
+  paper above.
+- **CAEN DPP-PHA documentation** — the source of the `peaking`/`flat_top`/`decay` naming convention
+  this project's own trapezoidal filter register map follows (§8t, `docs/sw/CLI_documentation.md`
+  §3.6), and of the `PSA_l`/`PSA_w` gate-naming convention `fci_core`'s registers already used
+  before the shaper existed (§0, §1).
