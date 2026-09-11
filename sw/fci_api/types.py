@@ -208,13 +208,13 @@ class ShaperConfig:
 
     present: bool
     peaking: int
-    """Peaking (rise) time, in samples at 50 Msps. Hardware range 10..128. Should sit a bit past
+    """Peaking (rise) time, in samples at 50 Msps. Hardware range 10..256 (5.12 us). Should sit a bit past
     the detector's own physical rise time so the trapezoid's ramp fully captures it; the flat-top
     plateau height scales with this value (amplitude ~ true_amplitude * peaking for a matched
     `decay`), which the GUI's energy calibration absorbs the same way it already absorbs any other
     scale factor in the amplitude channel."""
     flat_top: int
-    """Flat-top length, in samples. Hardware range 0..128 -- 0 is a valid "triangular, no plateau"
+    """Flat-top length, in samples. Hardware range 0..256 -- 0 is a valid "triangular, no plateau"
     configuration, not an error. A longer flat-top averages more samples (better noise rejection)
     at the cost of a longer dead time per pulse."""
     decay: int

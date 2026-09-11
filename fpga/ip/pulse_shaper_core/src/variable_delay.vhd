@@ -29,12 +29,22 @@
 -- triggered event or the idle gap before this one, for a window bounded by this instance's own
 -- MAX_DELAY -- accepted, not guarded against, per the same reasoning as before.
 --
--- MAX_DELAY must be an exact power of 2 (checked below): read_addr's subtraction wraps at
--- 2**ADDR_WIDTH via plain unsigned arithmetic, and that must coincide with the array's own bound
--- or the wrap would address outside mem's valid range.
+-- MAX_DELAY is a delay CEILING, not the buffer size: read_addr's subtraction wraps at 2**ADDR_WIDTH
+-- via plain unsigned arithmetic, so the array has to be exactly that big or the wrap addresses
+-- outside it. The array is therefore sized 2**ADDR_WIDTH (>= MAX_DELAY always, since
+-- 2**clog2(MAX_DELAY-1) > MAX_DELAY-1), and MAX_DELAY itself is free to be any value.
+--
+-- An earlier revision instead REQUIRED MAX_DELAY to be an exact power of 2 and asserted it. That
+-- assertion is worthless in this flow: Vivado synthesis does not evaluate VHDL asserts, so
+-- pulse_shaper_core_0's K_MAX/M_MAX=250 silently built a 250-entry array behind an 8-bit pointer
+-- that wraps at 256, leaving six addresses per lap outside the array's declared bounds -- a
+-- simulation bounds error, and in hardware a silent dependency on how the inferred BRAM happens
+-- to handle the overhang. Rounding the array up removes the constraint rather than restating a
+-- rule nothing enforces. Costs nothing when MAX_DELAY already is a power of 2 (the two are then
+-- equal), and block RAM is allocated in powers of 2 regardless.
 --
 -- 0 is a valid, distinct delay (delay_line.vhd's own clamp floors at 2) -- pulse_shaper_core's
--- flat_top parameter is specified 0..128 and a flat_top of 0 is a legitimate "triangular, no flat
+-- flat_top parameter is specified 0..256 and a flat_top of 0 is a legitimate "triangular, no flat
 -- top" configuration, not an error to silently round up from.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -63,7 +73,13 @@ architecture rtl of variable_delay is
   -- valid indices only run 0..MAX_DELAY-1. clog2(MAX_DELAY-1) is the right count for that.
   constant ADDR_WIDTH : integer := clog2(MAX_DELAY - 1);
 
-  type mem_t is array (0 to MAX_DELAY - 1) of std_logic_vector(DATA_WIDTH - 1 downto 0);
+  -- The array's real size, which is what write_ptr's wraparound is bounded by -- not MAX_DELAY,
+  -- which only bounds the DELAY a caller may request. Equal to MAX_DELAY whenever that is a power
+  -- of 2, and the next power of 2 up otherwise; never smaller, so every clamped delay_val still
+  -- addresses a real entry. See the header for why this is rounded rather than constrained.
+  constant MEM_DEPTH : integer := 2 ** ADDR_WIDTH;
+
+  type mem_t is array (0 to MEM_DEPTH - 1) of std_logic_vector(DATA_WIDTH - 1 downto 0);
   -- Explicit all-zero initial value, not left to a hardware/simulator default: before write_ptr
   -- has completed one full lap, a small delay_val's read_addr can still reference an address
   -- nothing has written yet, and that must read as "no history existed before this frame" (zero),
@@ -91,9 +107,13 @@ architecture rtl of variable_delay is
 
 begin
 
-  assert (MAX_DELAY = 2 ** ADDR_WIDTH)
-    report "variable_delay: MAX_DELAY must be an exact power of 2 -- the circular buffer's " &
-           "unsigned wraparound arithmetic only stays within mem's bounds when it does."
+  -- Structural invariant, not a constraint on the caller: MEM_DEPTH is derived so this always
+  -- holds. Kept as a simulation tripwire in case ADDR_WIDTH's derivation is ever changed without
+  -- the array's alongside it -- deliberately NOT relied on to catch a bad generic, since Vivado
+  -- synthesis ignores asserts (see the header).
+  assert (MEM_DEPTH >= MAX_DELAY)
+    report "variable_delay: mem is smaller than MAX_DELAY -- a clamped delay_val would address " &
+           "outside the array."
     severity failure;
 
   delay_val <= clamp_delay(to_integer(unsigned(delay_sel_i)));

@@ -276,7 +276,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>014cd405</spirit:value>
+            <spirit:value>c35f59bf</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -292,7 +292,7 @@
         <spirit:parameters>
           <spirit:parameter>
             <spirit:name>viewChecksum</spirit:name>
-            <spirit:value>014cd405</spirit:value>
+            <spirit:value>c35f59bf</spirit:value>
           </spirit:parameter>
         </spirit:parameters>
       </spirit:view>
@@ -724,17 +724,17 @@
       <spirit:modelParameter spirit:dataType="integer">
         <spirit:name>FIFO_DEPTH</spirit:name>
         <spirit:displayName>Fifo Depth</spirit:displayName>
-        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.FIFO_DEPTH">32</spirit:value>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.FIFO_DEPTH">1024</spirit:value>
       </spirit:modelParameter>
       <spirit:modelParameter spirit:dataType="integer">
         <spirit:name>K_MAX</spirit:name>
         <spirit:displayName>K Max</spirit:displayName>
-        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.K_MAX">128</spirit:value>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.K_MAX">256</spirit:value>
       </spirit:modelParameter>
       <spirit:modelParameter spirit:dataType="integer">
         <spirit:name>M_MAX</spirit:name>
         <spirit:displayName>M Max</spirit:displayName>
-        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.M_MAX">128</spirit:value>
+        <spirit:value spirit:format="long" spirit:resolve="generated" spirit:id="MODELPARAM_VALUE.M_MAX">256</spirit:value>
       </spirit:modelParameter>
       <spirit:modelParameter spirit:dataType="integer">
         <spirit:name>DECAY_BITS</spirit:name>
@@ -784,7 +784,7 @@
       <spirit:file>
         <spirit:name>src/pulse_shaper_core_top.vhd</spirit:name>
         <spirit:fileType>vhdlSource</spirit:fileType>
-        <spirit:userFileType>CHECKSUM_3e266f1e</spirit:userFileType>
+        <spirit:userFileType>CHECKSUM_af1502eb</spirit:userFileType>
         <spirit:userFileType>IMPORTED_FILE</spirit:userFileType>
       </spirit:file>
     </spirit:fileSet>
@@ -846,17 +846,17 @@
     <spirit:parameter>
       <spirit:name>FIFO_DEPTH</spirit:name>
       <spirit:displayName>Fifo Depth</spirit:displayName>
-      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.FIFO_DEPTH">32</spirit:value>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.FIFO_DEPTH">1024</spirit:value>
     </spirit:parameter>
     <spirit:parameter>
       <spirit:name>K_MAX</spirit:name>
       <spirit:displayName>K Max</spirit:displayName>
-      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.K_MAX">128</spirit:value>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.K_MAX">256</spirit:value>
     </spirit:parameter>
     <spirit:parameter>
       <spirit:name>M_MAX</spirit:name>
       <spirit:displayName>M Max</spirit:displayName>
-      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.M_MAX">128</spirit:value>
+      <spirit:value spirit:format="long" spirit:resolve="user" spirit:id="PARAM_VALUE.M_MAX">256</spirit:value>
     </spirit:parameter>
     <spirit:parameter>
       <spirit:name>DECAY_BITS</spirit:name>
@@ -890,16 +890,16 @@
       <xilinx:definitionSource>package_project</xilinx:definitionSource>
       <xilinx:vendorDisplayName>FCI-FPGA project</xilinx:vendorDisplayName>
       <xilinx:coreRevision>1</xilinx:coreRevision>
-      <xilinx:coreCreationDateTime>2026-09-10T09:36:27Z</xilinx:coreCreationDateTime>
+      <xilinx:coreCreationDateTime>2026-09-11T12:34:22Z</xilinx:coreCreationDateTime>
     </xilinx:coreExtensions>
     <xilinx:packagingInfo>
       <xilinx:xilinxVersion>2022.2</xilinx:xilinxVersion>
       <xilinx:checksum xilinx:scope="busInterfaces" xilinx:value="44132d44"/>
       <xilinx:checksum xilinx:scope="memoryMaps" xilinx:value="c930e363"/>
-      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="a0b09cab"/>
+      <xilinx:checksum xilinx:scope="fileGroups" xilinx:value="92b68233"/>
       <xilinx:checksum xilinx:scope="ports" xilinx:value="928645c1"/>
-      <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="b3a72394"/>
-      <xilinx:checksum xilinx:scope="parameters" xilinx:value="79a14f6c"/>
+      <xilinx:checksum xilinx:scope="hdlParameters" xilinx:value="e485d63a"/>
+      <xilinx:checksum xilinx:scope="parameters" xilinx:value="1b64851c"/>
     </xilinx:packagingInfo>
   </spirit:vendorExtensions>
 </spirit:component>

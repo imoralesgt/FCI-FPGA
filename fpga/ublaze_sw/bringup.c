@@ -628,7 +628,14 @@ int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
  *     Idle=1 with no IOC means armed and waiting -- the trigger genuinely never fired.
  *     Idle=0 means a transfer is in flight, i.e. beats are stuck mid-stream.
  *   INTC ISR raw status / IER enables / IPR pending. IOC set in DMASR while the matching IPR bit
- *     never clears points at the interrupt path, not the datapath. */
+ *     never clears points at the interrupt path, not the datapath.
+ *   psd_event_count -- psd_core_0's own hardware event counter, read directly (bypassing $RC,
+ *     which this standalone bring-up tool doesn't run). psd_core sits on a DIFFERENT branch of the
+ *     same lockstep axis_broadcaster_0 split axi_dma_1/fci_core do. If this is ALSO frozen at the
+ *     same moment axi_dma_1's raw_events stalls, that is a third, independent data point pointing
+ *     at a broadcaster-wide stall (upstream of the split) rather than something specific to one
+ *     consumer branch -- see the project memory on this investigation for why that distinction
+ *     matters here. */
 static void report_raw_path_state(void) {
   xil_printf("  [DIAG] dma1 S2MM_DMASR=0x%08x  MM2S_DMASR=0x%08x  raw_events=%d\r\n",
              Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET),
@@ -638,6 +645,8 @@ static void report_raw_path_state(void) {
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IER_OFFSET),
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IPR_OFFSET),
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_MER_OFFSET), INTC_DMA_1_S2MM_BIT);
+  xil_printf("  [DIAG] psd_event_count=%d (same broadcaster, different branch than dma1/fci_sink)\r\n",
+             Psd_EventCount(PSD_CORE_BASEADDR));
 }
 
 /* --- Automatic threshold calibration ------------------------------------------------------

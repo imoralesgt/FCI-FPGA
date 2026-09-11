@@ -33,8 +33,9 @@ typedef struct {
  * @brief Configures the filter's three shaping parameters and enables/disables shaping.
  *
  * @param base     pulse_shaper_core's AXI4-Lite base address.
- * @param peaking  Peaking (rise) time, in samples at 50 Msps. Hardware-clamped 10..128.
- * @param flat_top Flat-top length, in samples. Hardware-clamped 0..128 (0 is a valid "triangular,
+ * @param peaking  Peaking (rise) time, in samples at 50 Msps. Hardware-clamped 10..256
+ *                 (256 samples = 5.12 us).
+ * @param flat_top Flat-top length, in samples. Hardware-clamped 0..256 (0 is a valid "triangular,
  *                 no flat top" configuration, not an error).
  * @param decay    Pole-zero decay time constant, in samples -- match this to the detector's own
  *                 measured pulse decay tau for the flat-top plateau height to land at

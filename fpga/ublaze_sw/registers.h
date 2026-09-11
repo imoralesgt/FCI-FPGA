@@ -122,8 +122,8 @@
 #define PULSE_SHAPER_CORE_PRESENT 0
 #endif
 
-#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..128 */
-#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..128 */
+#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..256 */
+#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..256 */
 #define PULSE_SHAPER_DECAY_OFFSET 0x08    /* RW, samples, saturating 2..300 */
 #define PULSE_SHAPER_ENABLE_OFFSET 0x0C   /* RW, [0] */
 #define PULSE_SHAPER_CTRL_OFFSET 0x10     /* W, self-clearing: [0] pop, [1] clear */
@@ -153,11 +153,24 @@
 #define PULSE_SHAPER_STATUS_FULL_MASK (1U << 1)
 #define PULSE_SHAPER_STATUS_OVERFLOW_MASK (1U << 2)
 #define PULSE_SHAPER_STATUS_LEVEL_SHIFT 8
-/* FIFO_DEPTH=1024 in the block design (matching psd_core_0/fci_core_0's own override) ->
- * LEVEL_WIDTH = clog2(1024)+1 = 11 bits, not the 6 bits psd_core's own PSD_STATUS_LEVEL_MASK
- * assumes -- that mismatch (RTL package default vs. the BD's actual FIFO_DEPTH override) already
- * exists for psd_core; computed correctly here instead of repeating it. */
-#define PULSE_SHAPER_STATUS_LEVEL_MASK 0x7FFU
+/* FIFO_DEPTH=128 -> LEVEL_WIDTH = clog2(128)+1 = 8 bits, not the 6 bits psd_core's own
+ * PSD_STATUS_LEVEL_MASK assumes for ITS depth -- that mismatch (RTL default vs. the BD's actual
+ * FIFO_DEPTH override) already exists for psd_core; computed correctly here instead of repeating
+ * it.
+ *
+ * 128 is this core's own RTL DEFAULT (pulse_shaper_core_top.vhd), not raised by a block-design
+ * override the way psd_core_0/fci_core_0 raise theirs to 1024 -- deliberately: result_fifo.vhd's
+ * memory read is combinational, so it can never infer block RAM at any depth, and going all the
+ * way to 1024 here measured +2499 LUTs (standalone OOC synthesis), which put the whole design over
+ * its LUT budget (DRC UTLZ-1) on top of psd_core_0/fci_core_0's own two 1024-deep instances of
+ * this same pattern. See pulse_shaper_core_top.vhd's FIFO_DEPTH comment for the full measurement
+ * and for why matching their depth stopped being a correctness requirement once $AE/$AR were
+ * fixed to clear this core's FIFO too (cli.c's h_ae()/h_ar()) -- a full FIFO at any depth now just
+ * drops the newest result and sets the sticky overflow flag, rather than deadlocking
+ * Acq_PopPaired(). If this depth is ever changed again, update this mask to clog2(depth)+1 bits
+ * alongside it -- the two silently disagreeing is exactly the bug this comment exists to prevent
+ * repeating. */
+#define PULSE_SHAPER_STATUS_LEVEL_MASK 0xFFU
 
 /* ---------------------------------------------------------------------------------------------
  * fci_core (fpga/rtl/fci_core_rtl) -- hand-written VHDL core: 2048-point FFT, two programmable bin

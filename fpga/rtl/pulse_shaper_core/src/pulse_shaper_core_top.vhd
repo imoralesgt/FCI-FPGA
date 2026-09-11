@@ -18,9 +18,46 @@ entity pulse_shaper_core_top is
   generic (
     DATA_WIDTH : integer := 16;
     ACC_WIDTH  : integer := 32;
-    FIFO_DEPTH : integer := 32;
-    K_MAX      : integer := 128; -- peaking-time hardware ceiling
-    M_MAX      : integer := 128; -- flat-top hardware ceiling
+    -- 128, not the 1024 psd_core_top/fci_core_rtl_top get via a block-design override, and not the
+    -- 32 this core originally shipped at either.
+    --
+    -- result_fifo.vhd's read port is COMBINATIONAL (data_o <= mem(rd_ptr), no clock), the same
+    -- shape variable_delay.vhd had before its own rewrite -- a block RAM read is always registered,
+    -- so this can never infer BRAM at any depth, only distributed RAM plus a read-address mux tree
+    -- that grows with depth. Measured by standalone OOC synthesis of this core alone, sweeping only
+    -- this generic: 32->748 LUTs, 128->988, 256->1291, 512->1954, 1024->3247 (Block RAM Tile flat
+    -- at 1.5 throughout -- confirms it never touches BRAM). 1024 was chosen for parity with
+    -- psd_core_0/fci_core_0's own FIFO_DEPTH override, on the reasoning below about
+    -- Acq_PopPaired() deadlocking on a shallow, uncleared FIFO -- but that measured +2499 LUTs on
+    -- top of an already near-full device (this device's LUT budget had ~912 samples of slack
+    -- BEFORE this core existed at all -- see the lut-budget project memory) and put the whole
+    -- design 1562 LUTs over budget, DRC UTLZ-1.
+    --
+    -- The correctness argument below no longer requires matching their depth: it was true only
+    -- because $AE/$AR used to leave this core's FIFO uncleared while clearing the other two
+    -- (fixed in cli.c's h_ae()/h_ar()), so a full, stale FIFO here froze Acq_PopPaired()'s pairing
+    -- outright rather than merely dropping results. With that fixed, a full FIFO at ANY depth just
+    -- drops the newest result and sets the sticky overflow flag -- what depth costs now is burst
+    -- TOLERANCE, not correctness, and pairing's own three-way resync (acquisition.c) already
+    -- handles a result getting dropped on one side. 128 is 4x the original always-safe 32, still
+    -- far short of 1024, and costs 988 LUTs instead of 3247 -- enough margin to fit alongside
+    -- psd_core_0/fci_core_0's own 1024-deep instances of this same pattern, which is what actually
+    -- used most of that pre-existing 95.62%.
+    --
+    -- NOTE: since Acq_PopPaired() pairs all three FIFOs in lockstep, the EFFECTIVE system-wide
+    -- burst buffer is bounded by the shallowest of the three, i.e. this one -- the other two's
+    -- 1024 depth no longer buys headroom past what this core alone can hold. If a workload needs
+    -- more than 128 events of burst tolerance between host polls, raise this (and
+    -- registers.h's PULSE_SHAPER_STATUS_LEVEL_MASK alongside it) with the LUT cost above in mind.
+    FIFO_DEPTH : integer := 128;
+    -- 256 samples = 5.12 us at the 50 Msps sample rate these count in (they count VALID samples,
+    -- gated by s_valid_i, not cycles of this core's own 150 MHz clock). The previous 128 capped
+    -- shaping at 2.56 us, which is short of what this detector needs: the measured pulse decay
+    -- constant is ~4.9 us, and peaking wants to sit at that order to collect the charge.
+    -- Need not be a power of 2 -- see variable_delay.vhd's MEM_DEPTH -- but 256 exactly fills the
+    -- array that value implies, where 250 would pay for the same 256 entries and use only 250.
+    K_MAX      : integer := 256; -- peaking-time hardware ceiling, in samples
+    M_MAX      : integer := 256; -- flat-top hardware ceiling, in samples
     DECAY_BITS : integer := 9;   -- CLI-visible decay register width (0..511; spec range 2..300)
     RECIP_BITS      : integer := 18; -- decay_recip (firmware-computed -1/M, Q2.16) width
     RECIP_FRAC_BITS : integer := 16

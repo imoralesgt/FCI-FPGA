@@ -18,9 +18,24 @@ entity pulse_shaper_core_top is
   generic (
     DATA_WIDTH : integer := 16;
     ACC_WIDTH  : integer := 32;
-    FIFO_DEPTH : integer := 32;
-    K_MAX      : integer := 128; -- peaking-time hardware ceiling
-    M_MAX      : integer := 128; -- flat-top hardware ceiling
+    -- 1024, NOT the 32 psd_core_top/fci_core_rtl_top default to. Those two are overridden to 1024
+    -- in the block design; this core was not, and shipped at 32 -- one thirty-second of the burst
+    -- tolerance of the two FIFOs acquisition.c pairs it against. That asymmetry is not survivable
+    -- here the way it would be on an independent FIFO: Acq_PopPaired() only emits an event when
+    -- all three heads carry the same timestamp, so once the shallowest one fills and starts
+    -- refusing events, its head is frozen in the past and pairing deadlocks outright rather than
+    -- merely dropping. Defaulting to the real value removes the dependency on a BD override being
+    -- remembered. registers.h's PULSE_SHAPER_STATUS_LEVEL_MASK (0x7FF, 11 bits) was already
+    -- written against 1024 and matches this, where it did not match 32.
+    FIFO_DEPTH : integer := 1024;
+    -- 256 samples = 5.12 us at the 50 Msps sample rate these count in (they count VALID samples,
+    -- gated by s_valid_i, not cycles of this core's own 150 MHz clock). The previous 128 capped
+    -- shaping at 2.56 us, which is short of what this detector needs: the measured pulse decay
+    -- constant is ~4.9 us, and peaking wants to sit at that order to collect the charge.
+    -- Need not be a power of 2 -- see variable_delay.vhd's MEM_DEPTH -- but 256 exactly fills the
+    -- array that value implies, where 250 would pay for the same 256 entries and use only 250.
+    K_MAX      : integer := 256; -- peaking-time hardware ceiling, in samples
+    M_MAX      : integer := 256; -- flat-top hardware ceiling, in samples
     DECAY_BITS : integer := 9;   -- CLI-visible decay register width (0..511; spec range 2..300)
     RECIP_BITS      : integer := 18; -- decay_recip (firmware-computed -1/M, Q2.16) width
     RECIP_FRAC_BITS : integer := 16

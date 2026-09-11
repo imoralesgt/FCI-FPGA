@@ -123,10 +123,16 @@ use work.pulse_shaper_core_pkg.all;
 entity trapezoidal_filter is
   generic (
     DATA_WIDTH : integer := 16; -- signed sample datapath, matching blr_core/trigger_core/psd_core
-    K_MAX      : integer := 128; -- peaking-time hardware ceiling (spec range 10..128 -- narrowed
-                                 -- from an original 10..250 specifically to shrink this core's
-                                 -- own delay-line depth; see variable_delay.vhd's header)
-    M_MAX      : integer := 128; -- flat-top hardware ceiling (spec range 0..128, same reason)
+    -- Spec range 10..256 / 0..256, in SAMPLES at 50 Msps -- so 256 is 5.12 us of shaping. An
+    -- earlier revision capped both at 128 (2.56 us) to shrink this core's delay lines, but that
+    -- sits below the ~4.9 us decay constant actually measured on this detector, so the peaking
+    -- time could not be opened up to where the charge collection wants it.
+    --
+    -- Any value is legal, a power of 2 or not -- variable_delay rounds its own array up to the
+    -- next power of 2 internally. It still PAYS for that rounding, though, so a value just over
+    -- one (250 -> a 256-entry array) buys depth it cannot use; 256 fills it exactly.
+    K_MAX      : integer := 256; -- peaking-time hardware ceiling, in samples
+    M_MAX      : integer := 256; -- flat-top hardware ceiling, in samples
     RECIP_BITS      : integer := 18; -- decay_recip_i width, signed Q2.16
     RECIP_FRAC_BITS : integer := 16; -- fractional bits of decay_recip_i
     ACC_WIDTH  : integer := 32

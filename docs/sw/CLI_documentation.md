@@ -398,8 +398,8 @@ fallback amplitude source in that configuration.
 
 | index | parameter | range | notes |
 |---|---|---|---|
-| 0 | peaking time (samples) | 10 … 128 | rise/window length; should sit a bit past the detector's physical rise time. The flat-top plateau height scales with this value (~amplitude × peaking for a matched `decay`); the host is expected to absorb that scale factor in its own energy calibration, the same way it already calibrates raw ADC-code units into physical energy. |
-| 1 | flat_top (samples) | 0 … 128 | plateau length; 0 is a valid "triangular, no plateau" configuration, not an error. Longer averages more samples (better noise rejection) at the cost of more dead time per pulse. |
+| 0 | peaking time (samples) | 10 … 256 | rise/window length; should sit a bit past the detector's physical rise time. The flat-top plateau height scales with this value (~amplitude × peaking for a matched `decay`); the host is expected to absorb that scale factor in its own energy calibration, the same way it already calibrates raw ADC-code units into physical energy. |
+| 1 | flat_top (samples) | 0 … 256 | plateau length; 0 is a valid "triangular, no plateau" configuration, not an error. Longer averages more samples (better noise rejection) at the cost of more dead time per pulse. |
 | 2 | decay / pole-zero (samples) | 2 … 300 | match this to the detector's own measured pulse decay time constant -- for a matched value the flat-top plateau is exactly flat, independent of the pulse's true decay; a mismatch shows up as a slope or under/overshoot on the plateau instead. |
 | 3 | enable | 0 … 1 | 0 bypasses shaping entirely: `peak` reports the frame's raw single-sample peak instead, useful as an A/B reference against the shaped amplitude. |
 

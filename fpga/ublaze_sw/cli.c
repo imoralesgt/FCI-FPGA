@@ -393,7 +393,7 @@ static int shaper_get(s32 idx, s32 *out) {
  * bitstream-absent fallback keeps the original placeholder's non-negative-only check, since the
  * shadow has no register file of its own to defer the check to.
  *
- * @param idx 0=peaking (10..128), 1=flat_top (0..128), 2=decay (2..300), 3=enable (0..1).
+ * @param idx 0=peaking (10..256), 1=flat_top (0..256), 2=decay (2..300), 3=enable (0..1).
  * @param v   New value.
  * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
  */
@@ -401,11 +401,11 @@ static int shaper_set(s32 idx, s32 v) {
 #if PULSE_SHAPER_CORE_PRESENT
   switch (idx) {
   case 0:
-    if (!in_range(v, 10, 128))
+    if (!in_range(v, 10, 256))
       return 0;
     break;
   case 1:
-    if (!in_range(v, 0, 128))
+    if (!in_range(v, 0, 256))
       return 0;
     break;
   case 2:
@@ -683,16 +683,29 @@ static int h_id(const char *c, const s32 *a, int n) {
 }
 
 /**
- * @brief $AE handler: clears both result FIFOs and stats, then enables acquisition.
+ * @brief $AE handler: clears every result FIFO and the stats, then enables acquisition.
  *
  * The clear-then-enable order matters: it guarantees the first event popped after $AE is a fresh
  * one, not something left over from before acquisition was last disabled.
+ *
+ * All THREE FIFOs have to be cleared, not just psd_core's and fci_sink's. Acq_PopPaired() only
+ * emits an event when all three heads carry the same timestamp, so clearing a subset leaves the
+ * un-cleared side holding entries strictly older than anything the cleared sides will ever produce
+ * again. That side then has to be drained one resync pass at a time before the first pairing can
+ * succeed -- and if it was already full when $AE ran (pulse_shaper_core_0's FIFO is 32 deep, not
+ * the 1024 psd_core_0 and fci_core_0 get), it is also refusing new events, so its head can never
+ * catch up and pairing deadlocks outright. Measured on hardware: $RB returned 0 indefinitely with
+ * the shaper's status register reading full+overflow, and started pairing immediately once its
+ * FIFO was cleared by hand.
  */
 static int h_ae(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
     return ERR_PARAM;
   Psd_Clear(PSD_CORE_BASEADDR);
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+#endif
 #if CLI_HAVE_RESULTS
   FciSink_Clear(FCI_SINK_BASEADDR);
   Acq_ResetStats(&g_stats);
@@ -722,12 +735,16 @@ static int h_es(const char *c, const s32 *a, int n) {
   return 0;
 }
 
-/** @brief $AR handler: clears both result FIFOs and stats without changing the run flag. */
+/** @brief $AR handler: clears every result FIFO and the stats without changing the run flag.
+ *         Same all-or-nothing requirement as $AE above -- see h_ae()'s comment. */
 static int h_ar(const char *c, const s32 *a, int n) {
   (void)a;
   if (n != 0)
     return ERR_PARAM;
   Psd_Clear(PSD_CORE_BASEADDR);
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+#endif
 #if CLI_HAVE_RESULTS
   FciSink_Clear(FCI_SINK_BASEADDR);
   Acq_ResetStats(&g_stats);

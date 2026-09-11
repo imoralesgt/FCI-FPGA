@@ -25,8 +25,8 @@ architecture sim of pulse_shaper_core_tb is
   constant DATA_WIDTH : integer := 16;
   constant ACC_WIDTH  : integer := 32;
   constant FIFO_DEPTH : integer := 32;
-  constant K_MAX      : integer := 128;
-  constant M_MAX      : integer := 128;
+  constant K_MAX      : integer := 256; -- matches the core's own default; 5.12 us at 50 Msps
+  constant M_MAX      : integer := 256;
   constant DECAY_BITS : integer := 9;
   constant CLK_PERIOD : time := 20 ns;
 
@@ -84,6 +84,28 @@ architecture sim of pulse_shaper_core_tb is
 
   signal irq_o : std_logic;
 
+  -- Non-power-of-2 delay-line regression, driven separately from the DUT above.
+  --
+  -- The DUT is instantiated at K_MAX=M_MAX=256, so nothing in the tests above exercises a
+  -- MAX_DELAY that is not already a power of 2. 250 is kept here because it is what
+  -- pulse_shaper_core_0 was actually built with in the block design when this broke -- the config
+  -- has since moved to 256, but the component's contract is "any MAX_DELAY", and this is the case
+  -- that proves it. Under the original variable_delay.vhd that combination wrote
+  -- through an 8-bit pointer wrapping at 256 into an array declared 0 to 249, so six addresses per
+  -- lap fell outside it: a bounds error in simulation, and in hardware a silent dependency on what
+  -- the inferred BRAM did with the overhang. Vivado synthesis does not evaluate the assert that
+  -- was supposed to catch it, so it reached the board.
+  --
+  -- Checked with a free-running ramp rather than a single pulse: the defect only appears once
+  -- write_ptr has lapped, so the sample that comes back has to be right across many laps, not just
+  -- on the first pass through the array.
+  constant VD_MAX   : integer := 250;
+  constant VD_MOD   : integer := 4096; -- ramp wrap; > 2*VD_MAX so the difference below is unambiguous
+  signal vd_en      : std_logic := '0';
+  signal vd_delay   : std_logic_vector(7 downto 0) := (others => '0'); -- clog2(250) = 8 bits
+  signal vd_din     : std_logic_vector(15 downto 0) := (others => '0');
+  signal vd_dout    : std_logic_vector(15 downto 0);
+
   signal test_count : integer := 0;
   signal fail_count : integer := 0;
 
@@ -102,6 +124,33 @@ begin
       end if;
     end if;
   end process monitor_tready;
+
+  -- Free-running ramp feeding the standalone delay line: data_i is simply "the cycle number",
+  -- so the sample coming back out identifies exactly how many cycles ago it went in.
+  vd_ramp : process (clk_i)
+  begin
+    if rising_edge(clk_i) then
+      if rstn_i = '0' then
+        vd_din <= (others => '0');
+      elsif vd_en = '1' then
+        vd_din <= std_logic_vector(to_unsigned((to_integer(unsigned(vd_din)) + 1) mod VD_MOD, 16));
+      end if;
+    end if;
+  end process vd_ramp;
+
+  vd_uut : entity work.variable_delay
+    generic map (
+      DATA_WIDTH => 16,
+      MAX_DELAY  => VD_MAX
+    )
+    port map (
+      clk_i       => clk_i,
+      rstn_i      => rstn_i,
+      en_i        => vd_en,
+      delay_sel_i => vd_delay,
+      data_i      => vd_din,
+      data_o      => vd_dout
+    );
 
   uut : entity work.pulse_shaper_core_top
     generic map (
@@ -248,6 +297,7 @@ begin
     end procedure check;
 
     variable rd, amp, tlo, thi, lvl : integer;
+    variable lag_v : integer; -- measured delay-line lag, in cycles (non-power-of-2 test below)
     variable ok_v : boolean;
     variable amp_matched, amp_mismatched : integer;
 
@@ -413,6 +463,40 @@ begin
     wait until rising_edge(clk_i);
     ok_v := ok_v and (irq_o = '1');
     check("irq asserts at the watermark, not before", ok_v);
+
+    ---------------------------------------------------------------------------
+    report "=== Test: variable_delay with a non-power-of-2 MAX_DELAY (" & integer'image(VD_MAX)
+           & ") ===";
+    -- Run the ramp well past several laps of the 256-entry array before looking at anything, so a
+    -- wraparound that addressed outside the old 250-entry one has had many chances to corrupt a
+    -- tap. Each measured lag is (ramp value in) - (ramp value out), mod the ramp's own wrap.
+    vd_en <= '1';
+    for i in 0 to 1200 loop
+      wait until rising_edge(clk_i);
+    end loop;
+
+    -- A mid-range tap first: this one addressed in bounds even under the old code, so it pins down
+    -- the component's latency convention. If THIS fails, the tap contract moved, not the wrap.
+    vd_delay <= std_logic_vector(to_unsigned(10, 8));
+    for i in 0 to 300 loop
+      wait until rising_edge(clk_i);
+    end loop;
+    lag_v := (to_integer(unsigned(vd_din)) - to_integer(unsigned(vd_dout)) + VD_MOD) mod VD_MOD;
+    check("mid-range tap (10) returns the sample from 10 cycles ago (got " & integer'image(lag_v)
+          & ")", lag_v = 10);
+
+    -- 249 and 250 are the taps that reach furthest back, so they are the ones whose read_addr
+    -- subtraction wraps past the array's end. 250 is also MAX_DELAY itself, the clamp's ceiling.
+    for d in VD_MAX - 1 to VD_MAX loop
+      vd_delay <= std_logic_vector(to_unsigned(d, 8));
+      for i in 0 to 300 loop
+        wait until rising_edge(clk_i);
+      end loop;
+      lag_v := (to_integer(unsigned(vd_din)) - to_integer(unsigned(vd_dout)) + VD_MOD) mod VD_MOD;
+      check("deepest tap (" & integer'image(d) & ") returns the sample from " & integer'image(d)
+            & " cycles ago (got " & integer'image(lag_v) & ")", lag_v = d);
+    end loop;
+    vd_en <= '0';
 
     ---------------------------------------------------------------------------
     wait until rising_edge(clk_i);

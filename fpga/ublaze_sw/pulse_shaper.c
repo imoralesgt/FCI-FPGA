@@ -75,7 +75,7 @@ int PulseShaper_SelfTest(u32 base) {
   u32 saved_decay = Xil_In32(base + PULSE_SHAPER_DECAY_OFFSET);
   int ok = 1;
 
-  /* Values inside each field's own spec range (10..128 / 0..128 / 2..300), so the register-file's
+  /* Values inside each field's own spec range (10..256 / 0..256 / 2..300), so the register-file's
    * own saturating clamp cannot mask a genuine read/write fault here. */
   Xil_Out32(base + PULSE_SHAPER_PEAKING_OFFSET, 123);
   Xil_Out32(base + PULSE_SHAPER_FLAT_TOP_OFFSET, 45);

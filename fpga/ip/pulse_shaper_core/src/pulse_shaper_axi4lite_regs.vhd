@@ -18,12 +18,15 @@ use ieee.numeric_std.all;
 entity pulse_shaper_axi4lite_regs is
   generic (
     C_ADDR_WIDTH : integer := 6;
-    PEAKING_BITS  : integer := 8;
+    -- Defaults track pulse_shaper_core_top's K_MAX/M_MAX of 256 (= 5.12 us at 50 Msps); the top
+    -- level overrides all six from those generics anyway, so these only matter to a direct
+    -- instantiation of this entity.
+    PEAKING_BITS  : integer := 9;
     PEAKING_MIN   : integer := 10;
-    PEAKING_MAX   : integer := 128;
-    FLAT_TOP_BITS : integer := 8;
+    PEAKING_MAX   : integer := 256;
+    FLAT_TOP_BITS : integer := 9;
     FLAT_TOP_MIN  : integer := 0;
-    FLAT_TOP_MAX  : integer := 128;
+    FLAT_TOP_MAX  : integer := 256;
     DECAY_BITS    : integer := 9;
     DECAY_MIN     : integer := 2;
     DECAY_MAX     : integer := 300;
