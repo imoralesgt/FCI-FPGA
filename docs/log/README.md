@@ -3895,6 +3895,300 @@ as one build.
 
 ---
 
+## 8v. First large ambient-background dataset: a 52.7-hour cosmic-ray run resolves a clear thermal-neutron cluster
+
+The first multi-hour unattended acquisition on this instrument, recorded on the DAQ machine
+(`nsil-red`) rather than a dedicated source run: `LIST/cosmics_0001_fci_live.csv`
+(283,955 paired FCI/PSD events, 16.8 MB) and `RAW/cosmics_0001_scope_traces.csv`
+(273,724 raw 2048-sample traces, 1.95 GB), both self-triggered on ambient cosmic-ray muons and
+environmental background, no source present.
+
+**A wrong energy axis produced two wrong conclusions below, both corrected in place rather than
+deleted.** The first pass through this dataset computed "Energy (keVee)" as `energy_long * 0.48`,
+by analogy with the `spectrum.calibration` array in `settings.json`. That is not what the actual
+GUI does: `live_view.py` computes energy from **`peak`** (`E = c0 + c1*peak + c2*peak^2`,
+`peak` being the raw single-sample ADC amplitude the LIST file logs, not the long-gate integral),
+and `energy_long` is a completely different quantity with its own scale (a 32-sample *sum*, roughly
+15-25x larger than `peak` for a typical pulse, per §8v's own later `peak`/`energy_long` ratio
+measurements). Multiplying `energy_long` by a calibration constant meant for `peak` inflated the
+apparent energy of every event by roughly that same factor, which produced two artifacts, both
+corrected below: a grossly overstated "23% of events exceed the physical 6 MeV ceiling" (with the
+correct `peak`-based axis, the real figure is 0.62% -- a genuine but far smaller saturation feature,
+not the pervasive one first reported), and an apparent "no resolvable second population" (the
+smeared, wrong energy axis was diluting a real, tightly-localized cluster across a much wider and
+differently-shaped range than it actually occupies, hiding it inside what looked like a smooth
+single-population trend). Both errors were caught by direct pushback: a live screenshot and an
+independently-produced Excel plot, both showing clear structure the first pass's plots did not.
+
+**Run duration and rate, cross-checked from two independent clocks.** The event timestamp counter
+runs at confirmed **50 MHz**: `(last_ts - first_ts) / 50e6` gives **52.68 hours**, and the RAW
+file's own independent host wall-clock timestamps (`host_timestamp`, epoch seconds, unrelated to
+the FPGA counter) give **52.67 hours** for the same run -- agreement to within a few minutes over a
+two-and-a-quarter-day span, from two clocks that share no hardware. Average trigger rate
+**1.50 events/s** (LIST) — the CFD threshold auto-calibrated to 240 at startup (`$ST`), well above
+the saved project default of 0. Settings actually logged in the run (not `settings.json`'s saved
+values, which reflect the state *before* the auto-calibration step that runs at acquisition start):
+`pre_gate=25, short_gate=10, long_gate=32` and `psa_l=2-38, psa_w=2-120` -- exactly the windows §8s
+settled on, carried forward correctly rather than reset to some other default. **The pulse shaper
+was disabled for this run** (`shaper.enable: false` in `settings.json`) -- `peak` here is the raw
+single-sample amplitude (§8t's `enable=0` bypass), not `pulse_shaper_core`'s shaped amplitude, so
+this dataset says nothing about the shaper's own performance and predates its still-open hardware
+re-verification (§8u).
+
+**The raw-trace branch dropped more events than the FCI/PSD branch, at a much lower rate than
+anything tested before.** RAW captured 273,724 of LIST's 283,955 events -- **96.4%**, a **3.6%**
+differential loss -- at an average rate that is two orders of magnitude below anything the earlier
+backpressure/burst-size work (§7b) or the DD-generator throughput tests exercised. The raw-trace
+path being the one that drops first is consistent with it being the "expensive" branch (2048 samples
+vs. a handful of scalar fields per event), but this is the first time that differential loss has
+been measured at a near-idle trigger rate rather than under deliberate stress -- worth keeping in
+mind as a baseline figure, not just a high-rate phenomenon.
+
+### A clear, tightly-localized thermal-neutron cluster at ~3,150 keVee -- ambient, no dedicated source
+
+With the correct `peak`-based energy axis, both FCI-vs-Energy and PSD-vs-Energy show a distinct
+second population, well separated from the main gamma/muon band, sitting almost exactly on the
+⁶Li(n,α)t capture peak this project has already anchored a calibration point to (§0, §8n:
+Morales et al.'s own Table 1 value, ~3160 keVee):
+
+![FCI/PSD vs Energy, full range -- the capture cluster sits around 3000-3400 keVee, and a second, distinct pileup band is visible right at the top of the range (~5,950-6,100 keVee, the saturation ceiling quantified further below)](images/cosmics_fci_psd_vs_energy.png)
+
+![FCI/PSD vs Energy, zoomed on the cluster -- FCI ~0.90-0.91 and PSD ~0.79-0.80, both clearly separated from the main band underneath](images/cosmics_6li_cluster_zoom.png)
+
+Quantified by isolating events in a 2,900-3,400 keVee window (bracketing the cluster) and splitting
+on FCI within that *same* energy slice, so the comparison is not confounded by the main band's own
+energy dependence:
+
+| population | n (in window) | FCI median | FCI spread (std) | PSD median | PSD spread (std) |
+|---|---|---|---|---|---|
+| main gamma/muon band (FCI < 0.895) | 591 | 0.8834 | 0.0040 | 0.7763 | 0.0045 |
+| **capture cluster (FCI >= 0.895)** | **605** | **0.9034** | **0.0034** | **0.7961** | **0.0040** |
+
+**Separation FoM (same convention as §8p/§8s -- `|median1-median2| / (FWHM1+FWHM2)`, the sum of the
+two FWHMs, not their average): FCI = 1.15, PSD = 0.99** -- both comfortably cleaner than any FoM
+this log has reported for a *dedicated* Cs-137 or Co-60 run (§8s: FCI 1.25-1.34 at the paper's own
+475 keVee cut is actually similar in magnitude, not cleaner -- an earlier version of this paragraph
+divided by the FWHMs' *average* instead of their sum, overstating both numbers by exactly 2x; the
+fully cross-validated version of this same measurement, further below in this section, arrives at
+FCI = 1.135 / PSD = 0.951, consistent with the correction here), because this cluster sits on a
+single, sharp, near-monoenergetic reaction rather than a Compton continuum. The cluster's own median
+energy, **3,146 keVee** (5th-95th percentile: 2,840-3,356), lands within 0.5% of the paper's
+3,160 keVee calibration point -- an independent cross-check of that calibration, not an input to it.
+
+**Rate and significance.** 605 cluster events (FCI cut) out of 283,955 total -- **0.213%** of all
+triggers -- at **11.5 events/hour** over the 52.7-hour run. This is a genuinely small population
+riding on a much larger continuum, which is exactly why it disappeared under the wrong (smeared)
+energy axis and why a coarse energy-binned table (the kind used elsewhere in this section) dilutes
+it into an unremarkable-looking median: the population only becomes visible once the energy axis is
+right and the comparison is made *within* a narrow energy slice, matching the same lesson §8s's own
+"the physics constraint missing" already drew about this system's PSD/FCI analysis.
+
+This is consistent with ambient reality rather than surprising: cosmic-ray secondary neutrons
+(atmospheric spallation, further moderated by surrounding structure) are a real, well-documented
+component of sea-level background, and CLYC's own ⁶Li content makes it sensitive to exactly the
+slow/thermal fraction of that flux via the same capture reaction the paper's own DD-generator
+calibration point rests on (§8n) -- this run reproduces that reaction from ambient sources alone,
+with no source in the room, over a long enough exposure (52.7 hours) for its low natural rate to
+accumulate into a statistically solid cluster.
+
+**What this section got wrong on the first pass, corrected here rather than left standing:** an
+apparent "no resolvable second population" (the cluster above was there all along, just smeared
+across the wrong energy axis into invisibility against 100,000+ continuum events at the same nominal
+"energy"), and a grossly overstated "23% of events exceed a 6 MeVee physical ceiling" traced to the
+same root cause -- `energy_long` (a 32-sample gate sum) multiplied by a calibration constant meant
+for `peak` (a single-sample amplitude) inflates apparent energy by roughly the ratio between those
+two quantities. The `peak`/`energy_long` ratio measured earlier in this section (falling from ~0.10
+at low energy to ~0.04 at high `energy_long`) still stands as a real, separate observation about how
+those two quantities relate to each other -- it just is not itself a keVee axis, and should not be
+read as one.
+
+### A real, much smaller saturation ceiling near 12,500 raw ADC counts (peak), confirmed independently
+
+The corrected plot above still shows a second feature past the capture cluster: a sharp pileup band
+right at the top of the observed `peak` range. Histogrammed directly in raw ADC counts, it is a
+clean, textbook saturation signature -- background-level counts (10-25 per 19-count bin) climbing
+sharply from `peak ~= 12,400`, peaking at **492 events** in the 12,502-12,521 bin, then falling to
+zero by `peak ~= 12,711`, the hard maximum across the entire 283,955-event run. **1,770 events
+(0.62%)** sit at `peak >= 12,500`; **3,447 (1.21%)** at `peak >= 12,000`. This matches, count for
+count and position for position, an independently-produced plot of the same file (FCI vs. `peak` in
+raw ADC units, made in Excel): the same cluster near 6,000-7,000 raw counts, and the same vertical
+saturation band terminating right around 12,500-12,700.
+
+This corrects an earlier claim in this same investigation, worth stating plainly rather than
+quietly fixing: `peak`'s observed maximum (12,711) was checked against §8k's `+8191 - raw_baseline`
+digital clipping formula (~14,558-14,561 with this run's own logged `raw_baseline = -6370`) and
+found to sit below it, which was read as "this run never clips." That comparison used the right
+formula and the right numbers, but asked the wrong question: the ADC's own digital rail is not the
+only thing that can saturate, and this data shows something *does* saturate, **about 2,000 counts
+below** where the digital rail sits. Whatever is actually capping `peak` at ~12,500-12,711 saturates
+earlier than the ADC itself -- consistent with an analog-stage ceiling (preamp, VGA, or another
+stage ahead of the digitizer) rather than the digitizer's own bit width, but that is inference, not
+yet confirmed the way the digital rail's own formula was in §8k. Worth the same treatment §8k gave
+the digital rail: identify the actual analog stage responsible and derive its ceiling from first
+principles, rather than leaving "~12,500" as an empirically-observed number nobody has explained.
+
+`energy_short <= 0` still occurs on **0.82% of all 283,955 events**, and PSD's overall range
+([-0.233, 1.183]) is still non-physical at both ends -- neither of those checks depended on the
+energy axis, and both still stand as further, larger-scale confirmation of the negative-tail-charge
+pathology §8d already opened. FCI stays inside [0.460, 0.931] throughout, consistent with §8p's
+finding that FCI needs no baseline correction the way PSD's charge comparison does.
+
+### Full g/n discrimination metrics: a constant ULD, energy-integrated histograms, and FoM vs LLD and vs Energy
+
+Every figure and number in this subsection is reproduced by a single script,
+`sw/analysis/plot_cosmics_gn_metrics.py` (run as `sw/.venv/bin/python -m
+analysis.plot_cosmics_gn_metrics` from `sw/`), rather than the one-off exploratory scripts this
+analysis went through first -- including deriving the class-separation cuts themselves from the
+data (the same-energy-window crossing point below) instead of hardcoding the validated numbers.
+
+Everything below applies a single, fixed **ULD = 5,800 keVee** to the whole dataset first --
+discarding events at or approaching the ~12,500-count `peak` saturation ceiling identified above,
+with headroom (that ceiling sits at `keVee = 0.48*12,500 = 6,000`; 5,800 stays clear of it) -- rather
+than per-analysis cuts. **3,379 of 283,955 events (1.19%) are discarded**, leaving **280,576**.
+
+**Energy-integrated PSD and FCI histograms** (`LLD = 100`, `ULD = 5,800` keVee, log-scale counts,
+x-axis limited to where g/n discrimination actually happens -- PSD to [0.75, 0.82], FCI to
+[0.85, 0.93] -- rather than each metric's full range, which is dominated by the bulk continuum and
+the low-energy noise-broadened tail neither panel needs to show):
+
+![Energy-integrated PSD and FCI histograms, zoomed on the discrimination region](images/cosmics_psd_fci_histograms.png)
+
+**The FCI panel resolves the cluster directly as a second bump** -- a real dip near FCI 0.895-0.90
+and a distinct local peak at 0.90-0.91 -- once the axis is zoomed to where it lives; the full-range
+histogram (0.46-0.93) an earlier version of this section showed made the same 605/280,576 (0.22%)
+population invisible against the bulk continuum's own much taller peak, and that plot's caption
+wrongly concluded the cluster was "too small a fraction to show as its own bump" -- true only at the
+full-range scale, not once the relevant window is shown on its own. PSD shows no comparably resolved
+second bump at this scale, consistent with its lower FoM against the same cluster established
+above (0.951 vs. FCI's 1.135): the separation is real (§8v's vs-Energy plots and the cross-validated
+table both confirm it) but not clean enough to stand out as its own peak in a 1-D projection the way
+FCI's does.
+
+**The same pair, with the paper's own lower neutron-detection limit (475 keVee, section 6.1 of
+Morales et al.: 517 keVee quenched, 476 keVee after the detector's ~8% resolution) applied as the
+LLD instead of 100**, evidencing the same physical-limit argument the paper itself makes: below that
+energy no real neutron can produce this light output at all, so raising the LLD to it should remove
+gamma/muon continuum a neutron could never have contributed while leaving the cluster itself
+untouched:
+
+![Energy-integrated PSD and FCI histograms at the paper's 475 keVee neutron limit](images/cosmics_psd_fci_histograms_lld475.png)
+
+That is exactly what happens: the total population drops by 8x (280,576 to 35,281) while the FCI
+cluster bump's own height is unchanged (still ~50 counts/bin at its peak) -- because, as the
+FoM-vs-Energy analysis above already found directly, the cluster's ~690-event population barely
+moves with LLD at all. The cluster is the same size in both panels; only the continuum around it has
+shrunk, making the second population visually far more prominent at 475 keVee than at 100 -- the
+same relative-prominence argument the paper's own 475 keVee limit is built on, now shown on this
+project's own ambient dataset rather than only a dedicated DD-generator source.
+
+**PSD vs Energy and FCI vs Energy, with cumulative LLD markers and the ULD applied** (same visual
+convention as §8s's `dd_psd_fci_vs_energy_log_shaded.png` -- log-energy axis, viridis log-scale
+density, a dotted marker at each cumulative LLD value, the ⁶Li capture energy marked, a
+class-separation line). The separation line is the crossing point of two Gaussians fit with robust
+(IQR-based) location/scale to the cluster vs. the continuum **at the same energy** (2,900-3,400
+keVee, the window used for the validated FoM below) -- not the contaminated fixed-band-vs-LLD
+groups the table further down warns about, which would put it in the wrong place:
+
+![PSD and FCI vs Energy, cumulative LLD markers, ULD marked](images/cosmics_psd_fci_vs_energy_shaded.png)
+
+**FoM vs LLD, using this project's own established convention** (`sw/analysis/tune_fom.py`'s
+energy-band labels -- neutron-like = 2,800-3,500 keVee, gamma-like = `[LLD, 2,000)` keVee,
+`FoM = |median_n - median_g| / (FWHM_n + FWHM_g)`, widths from each group's IQR):
+
+![FoM vs cumulative LLD cut, cosmics dataset](images/cosmics_fom_vs_lld.png)
+
+| LLD (keVee) | n (gamma band) | n (neutron band) | PSD FoM | FCI FoM |
+|---|---|---|---|---|
+| 0 | 274,766 | 1,427 | 0.058 | 0.752 |
+| 100 | 274,766 | 1,427 | 0.058 | 0.752 |
+| 200 | 146,059 | 1,427 | 0.041 | 0.629 |
+| 300 | 62,227 | 1,427 | 0.039 | 0.434 |
+| 475 | 29,471 | 1,427 | 0.083 | 0.345 |
+| 700 | 16,525 | 1,427 | 0.101 | 0.292 |
+| 1,000 | 8,488 | 1,427 | 0.112 | 0.239 |
+| 1,500 | 2,125 | 1,427 | 0.115 | 0.183 |
+| 1,900 | 291 | 1,427 | 0.130 | 0.159 |
+
+**This inverts the trend §8j's own FoM-vs-LLD curve showed on the DD-generator dataset** (both
+methods improving with LLD, FCI always ahead of PSD, `fom_vs_lld_psd_fci_summary.png`) and the
+reason is a real, dataset-specific limitation rather than a discrepancy to chase: the "neutron-like"
+2,800-3,500 keVee band there was **717/1,167 = 61% genuine capture events** (a strong, dedicated
+DD-generator field); the same band here is only **605/1,427 = 42%** cluster, the rest continuum
+riding through the same energy range at ambient rates. Raising the gamma band's own lower edge
+pushes its median FCI up toward the same saturating value the *majority-continuum* content of the
+"neutron" band already sits at (FCI climbs continuously with energy up to the saturation plateau,
+§8v above) -- so the two class medians converge as LLD rises, and the FoM falls, even though nothing
+about the underlying discrimination got worse. PSD's much flatter energy dependence means the same
+effect barely moves its own FoM. **This band-based FoM is not a good measurement of this cluster's
+separability on this dataset** -- it inherits `tune_fom.py`'s own explicit caveat ("resulting FoM is
+therefore a lower bound") to an extreme this weak, low-purity ambient population was not designed
+for.
+
+**A properly cross-validated cluster FoM, at fixed energy (2,900-3,400 keVee, bracketing the
+cluster), avoids that contamination problem** by comparing the cluster against the continuum at the
+*same* energy rather than a lower one, and selecting each group with the *other* discriminator (so
+neither metric's own FoM is computed on a population selected by itself):
+
+| | selection method | n (cluster) | n (continuum) | FoM |
+|---|---|---|---|---|
+| FCI | groups selected by PSD cut (0.786) | 607 | 589 | **1.135** |
+| PSD | groups selected by FCI cut (0.895) | 605 | 591 | **0.951** |
+
+Cross-validated and same-metric selection give almost identical numbers (FCI 1.135 vs. 1.138, PSD
+0.951 vs. 0.954) -- the two discriminators agree closely on cluster membership, so the circularity
+concern that in principle applies to selecting-and-scoring with the same metric turns out not to
+change the answer here. **FCI separates this cluster from the ambient continuum better than PSD
+does** (1.14 vs. 0.95), consistent with every other dataset this log has scored FCI against.
+
+**FoM vs Energy**, a genuinely different sweep from the LLD table above: at each swept lower-energy
+cut *E*, the population is the **cumulative tail [E, ULD]** -- every event from *E* all the way up
+to the ULD, not a local window -- and iterated at *E* = 100, 250, 500, 1,000, 2,000, 4,000 keVee (a
+roughly-doubling sweep; 4,000 keVee is the last point before the cluster's own energy range is fully
+excluded from the tail). Since a cumulative tail carries no independent energy-band labelling, the
+two classes are the same validated cluster/continuum cut used everywhere else in this subsection
+(FCI >= 0.894, PSD >= 0.787, the same-energy-window crossing point derived above), applied to
+whichever events happen to fall in that tail, with the same
+`FoM = |median_cluster - median_continuum| / (FWHM_cluster + FWHM_continuum)` convention:
+
+![FoM vs Energy, cumulative-tail population with the fixed cluster/continuum cut](images/cosmics_fom_vs_energy.png)
+
+| LLD (keVee) | n (population) | n (continuum) | n (cluster) | PSD FoM | FCI FoM |
+|---|---|---|---|---|---|
+| 100 | 280,576 | 138,882 / 279,886 | 141,694 / 690 | 0.272 | 0.958 |
+| 250 | 95,997 | 62,266 / 95,307 | 33,731 / 690 | 0.126 | 0.722 |
+| 500 | 33,285 | 28,905 / 32,595 | 4,380 / 690 | 0.566 | 0.778 |
+| 1,000 | 14,298 | 13,181 / 13,609 | 1,117 / 689 | 0.642 | 0.954 |
+| 2,000 | 5,810 | 5,111 / 5,131 | 699 / 679 | 0.956 | 1.134 |
+| 4,000 | 2,401 | 2,385 / 2,387 | 16 / 14 | n/a (n<30) | n/a (n<30) |
+
+(the "n (continuum)"/"n (cluster)" columns list PSD's count then FCI's count, since the two metrics
+don't classify identical events.)
+
+Looking at the class populations behind the numbers is what makes this curve interpretable rather
+than just a wiggly line: **FCI's cluster-like population is essentially constant** (679-690 events,
+median ~0.903) all the way from LLD=100 to LLD=2,000 -- the fixed FCI cut practically never picks up
+low- or mid-energy continuum events, because FCI only approaches 0.894 near the capture peak's own
+energy (§8v's vs-Energy plot above shows FCI rising smoothly and only reaching that value close to
+3,000+ keVee). What changes with LLD instead is the **continuum side**: its own median rises
+(0.760 to 0.884, at LLD 100 to 2,000) and its own spread shrinks sharply (IQR-based sigma 0.060 to
+0.004) as the wide, low-energy, noise-broadened continuum tail (the same broadening visible in the
+histogram above and documented in §8d) is progressively excluded from the comparison. The
+combined-FWHM denominator falls faster than the median gap does, so **FoM rises with LLD even though
+the cluster's own population barely moves** -- converging, by LLD=2,000, on almost exactly the
+independently-derived same-energy-window cluster FoM (1.135 FCI / 0.951 PSD) from the cross-validated
+table above. PSD's own cluster-like population shrinks *monotonically* with LLD instead of staying
+flat (141,694 down to 699) -- consistent with PSD's fixed cut sitting close to the center of the
+bulk continuum's own low-energy noise-broadened spread, so most of what it calls "cluster-like" at
+low LLD is that noise tail, not real captures; PSD only converges onto FCI's own ~700-event
+population once LLD is high enough (2,000 keVee) to exclude that noise. At LLD=4,000 keVee the
+cluster's own energy range (2,900-3,400 keVee) is fully excluded from the population, so the
+"cluster-like" side collapses to a handful (14-16) of non-physical high-tail events on both metrics
+-- reported as undefined (n < 30) rather than as a misleading number, which is itself a useful
+negative check: raising the floor past the cluster's own energy correctly makes the cluster
+disappear from this measurement.
+
+---
+
 ## 9. Current state
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
@@ -3937,6 +4231,25 @@ as one build.
   complete current combination is the remaining checkpoint (§8u)
 - Development/DAQ machine as of 2026-09-11: the physical board now lives on a remote machine
   (`nsil-red`, reached over Tailscale), not attached to whichever machine is driving Vivado/Vitis
+- **First large ambient-background dataset (§8v)**: 52.7 hours, 283,955 events, self-triggered on
+  cosmic rays with no source present. **A clear, tightly-localized thermal-neutron capture cluster
+  resolved at ~3,146 keVee** (0.213% of all events; cross-validated cluster FoM: FCI 1.135, PSD
+  0.951), matching the ⁶Li(n,α)t calibration point (§0/§8n) to within 0.5%, from ambient
+  cosmic-ray-induced neutrons alone. Found only after correcting a self-inflicted energy-axis error
+  (`energy_long` mistaken for the GUI's `peak`-based keVee calibration), which had smeared the
+  cluster into apparent invisibility and separately overstated a saturation-ceiling finding as "23%
+  of events" — corrected in place in §8v once the axis was fixed: the real saturation ceiling is
+  ~12,500 raw ADC counts (`peak`), affecting **0.62%** of events, ~2,000 counts below §8k's
+  theoretical digital-clipping formula — a real, small, still-unexplained analog-stage ceiling,
+  confirmed independently in Excel. A fixed-band FoM-vs-LLD sweep (this project's own established
+  convention) inverts on this dataset because the "neutron-like" band is only 42% genuine cluster
+  here, not a bug; a sliding-window FoM-vs-Energy sweep instead shows FCI resolving as two
+  populations *only* in the 2,700-3,450 keVee window bracketing the cluster, confirming the same
+  conclusion by an independent method. PSD still shows the §8d negative-tail-charge pathology at
+  scale (0.82% of all events have `energy_short <= 0`); FCI stays within a physically sensible range
+  throughout ([0.460, 0.931]).
+  Also measured: the raw-trace DMA branch drops ~3.6%
+  more events than the FCI/PSD branch even at this run's near-idle 1.5 evt/s average rate
 
 ### Open items
 
