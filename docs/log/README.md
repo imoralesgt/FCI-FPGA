@@ -4371,30 +4371,66 @@ histogram in this section), which inflates the continuum group's spread enough t
 number depends more on how much of that skew survives than on the actual separation -- part of why
 the table above only reports 100 through 2,000 with a caveat rather than presenting all six sweep
 points as equally meaningful. A single, fixed-LLD number at the paper's own limit (475 keVee,
-Morales et al. §6.1) sidesteps that skew rather than needing to caveat around it each time:
+Morales et al. §6.1) sidesteps that skew rather than needing to caveat around it each time -- and
+because the lobes at a fixed LLD are not simple, symmetric Gaussians either, the FoM here comes from
+a proper fit rather than the median/IQR split used elsewhere in this section: ONE six-parameter
+double-Gaussian (sw/analysis/plot_optimized_psd_fci.py's own established `fit_double_gaussian`,
+already used for this project's other double-Gaussian fits in §8s) fit to the POOLED [LLD, ULD]
+histogram, not two independently-fitted curves -- the cut derived earlier only seeds the initial
+guess and labels which fitted component is which:
 
 ![PSD FoM at LLD=475 keVee, offline-optimal config](images/cosmics_optimal_psd_fom_lld475.png)
 
 ![FCI FoM at LLD=475 keVee, offline-optimal config](images/cosmics_optimal_fci_fom_lld475.png)
 
-**FCI: FoM = 0.864** (406 cluster-like, 21,292 continuum-like) -- a real gap between two visibly
-separated groups, the tight cluster sitting well clear of the broad continuum below it. **PSD: FoM
-= 0.554** (3,034 cluster-like, 18,664 continuum-like) -- numerically defined, but the histogram shows
-why it should be read differently: PSD's cut is slicing through the *tail of one broad, unimodal
-peak*, not separating two visibly distinct groups the way FCI's does. This matches what the rest of
-this section already established about PSD needing a much higher floor (~2,000 keVee, not 475) before
-its own cut isolates a population that looks like a real second class rather than ordinary
-continuum tail -- consistent, not a new problem introduced by fixing the LLD.
+**At LLD=475 keVee, the fit itself shows why the lobes aren't Gaussian-like.** FCI's continuum lobe
+is visibly skewed -- energies just above 475 keVee still have rapidly-rising FCI (the vs-Energy
+curve is far from flat there), so the "continuum" population's own shape is a sharp-edged ramp, not a
+bell curve, and the fitted Gaussian only approximates it (FoM = 0.928, but the fit's own gamma
+component runs visibly wider than the real, more sharply-bounded data). PSD's continuum lobe fits
+its own Gaussian well, but the "cluster" component the fit found is not a real second peak -- it is
+the fit spreading a second, broad Gaussian under the same long tail already flagged as contamination
+elsewhere in this section (FoM = 0.600, not a visually resolved bimodal split).
 
-**Net result: the grid-search optimum is a genuine, if modest, improvement over the deployed
-configuration for FCI specifically** -- FoM 0.864 at the paper's own LLD (475 keVee) and 1.85 at
-LLD=2,000 (vs. deployed's 1.13), both against a visibly, not just numerically, separated cluster.
-PSD's own gain is real at LLD=2,000 (§ above) but should not be claimed at 475 keVee, where its cut
-is not yet isolating a distinct population. Both configurations stay in a physically plausible range
-(§0/measured-pulse-shape's established ~4.9 us decay, ~740-800 ns rise), unlike v1/v2's runs to
-hundreds of bins/samples past anything physically motivated. **Still offline and still unconfirmed on
-hardware** -- see the previous subsection's closing paragraph -- but this is now a result worth that
-confirmation, not one already falsified by its own full-spectrum check.
+**Raising the floor to LLD=1,000 keVee -- past where FCI's own rise has mostly finished -- fixes
+this**, and is the more trustworthy pair of numbers for that reason:
+
+![PSD FoM at LLD=1,000 keVee, offline-optimal config](images/cosmics_optimal_psd_fom_lld1000.png)
+
+![FCI FoM at LLD=1,000 keVee, offline-optimal config](images/cosmics_optimal_fci_fom_lld1000.png)
+
+**FCI: FoM = 1.331**, two genuinely symmetric, well-separated Gaussian lobes with a clear valley
+between them -- the fit tracks the data closely across the whole range, not just near the peaks.
+**PSD: FoM = 0.875**, still weaker than FCI (a real second lobe is now visible, but shallower and
+less cleanly resolved) -- consistent with everything else this section has found about PSD needing a
+higher floor than FCI before it separates a real population rather than a continuum tail.
+
+**A third pair at LLD=2,000 keVee -- matching this section's own earlier cumulative-sweep floor --
+completes the picture**, both fits now clean for both metrics:
+
+![PSD FoM at LLD=2,000 keVee, offline-optimal config](images/cosmics_optimal_psd_fom_lld2000.png)
+
+![FCI FoM at LLD=2,000 keVee, offline-optimal config](images/cosmics_optimal_fci_fom_lld2000.png)
+
+**FCI: FoM = 1.851** and **PSD: FoM = 0.991** -- both visibly two-lobed now, PSD's second lobe
+finally as clearly separated from its main peak as FCI's has been since LLD=1,000. FCI's number
+(1.851) lands almost exactly on the cumulative FoM-vs-Energy sweep's own LLD=2,000 point (1.854,
+computed the median/IQR way rather than by fitting) -- two different methods agreeing is a good sign
+neither is an artifact of its own procedure. PSD's two methods agree less closely (0.991 here vs.
+0.959 there), a modest, expected difference given how differently a skewed lobe's edges get
+weighted by a fit versus a median split, not a discrepancy either casts doubt on.
+
+**Net result: the grid-search optimum is a genuine improvement over the deployed configuration for
+FCI at every LLD checked with a proper fit, and for PSD from LLD=1,000 keVee up** -- FCI FoM rises
+from 0.928 (475 keVee, poorly-fit lobe) to 1.331 (1,000) to 1.851 (2,000, vs. deployed's 1.13),
+consistently against a visibly, not just numerically, separated cluster. PSD only reaches a visibly
+two-lobed fit from LLD=1,000 keVee (0.875) up (0.991 at 2,000) -- its gain should not be claimed at
+the paper's own 475 keVee floor, where its cut is not yet isolating a distinct population. Both
+configurations stay in a physically plausible range (§0/measured-pulse-shape's established ~4.9 us
+decay, ~740-800 ns rise), unlike v1/v2's runs to hundreds of bins/samples past anything physically
+motivated. **Still offline and still unconfirmed on hardware** -- see the previous subsection's
+closing paragraph -- but this is now a result worth that confirmation, not one already falsified by
+its own full-spectrum check.
 
 ---
 
@@ -4466,13 +4502,15 @@ confirmation, not one already falsified by its own full-spectrum check.
   full [2,000, 4,000] keVee region; use the plain peak for energy), the search now finds a genuine
   improvement, confirmed by the same full-spectrum check that caught the earlier failures (stable
   ~405-event cluster population across LLD, correctly collapsing above the cluster's own energy) and
-  by a single fixed-LLD FoM at the paper's own neutron limit (475 keVee) rather than the
-  cumulative sweep's own skew-prone low-LLD points: **FCI FoM 0.864 at LLD=475 / 1.85 at LLD=2,000
-  (vs. deployed 1.13), against a visibly separated cluster in both cases. PSD's own gain is real at
-  LLD=2,000 but not yet at 475 keVee, where its cut is still slicing the tail of one broad peak
-  rather than isolating a distinct population** — an honest limitation, not glossed over. Still
-  offline and unconfirmed on hardware. Also found along the way: raw scope-trace logging duplicates
-  **36.0%** of all rows dataset-wide (98,472/273,724) — the same buffer logged twice under two
+  by fixed-LLD double-Gaussian fits (ONE pooled six-parameter fit, this project's own established
+  `fit_double_gaussian`) at 475 (the paper's neutron limit), 1,000, and 2,000 keVee rather than the
+  cumulative sweep's own skew-prone low-LLD points: **FCI FoM rises 0.928 → 1.331 → 1.851 across
+  those three floors (vs. deployed 1.13 at 2,000), a visibly separated cluster at every one. PSD only
+  reaches a visibly two-lobed fit from 1,000 keVee up (0.875 → 0.991); at 475 keVee its cut is still
+  slicing the tail of one broad peak, not isolating a distinct population** — an honest limitation,
+  not glossed over. Still offline and unconfirmed on hardware. Also found along the way: raw
+  scope-trace logging duplicates **36.0%** of all rows dataset-wide (98,472/273,724) — the same
+  buffer logged twice under two
   different timestamps — a real firmware/logging bug, now worked around in analysis but not yet
   fixed at the source
 

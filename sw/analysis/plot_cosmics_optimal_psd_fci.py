@@ -37,8 +37,8 @@ from analysis.plot_cosmics_gn_metrics import (
     ULD_KEVEE,
     derive_separation_cuts,
     plot_fom_vs_energy,
-    robust_fom,
 )
+from analysis.plot_optimized_psd_fci import fit_double_gaussian, hist_panel
 
 DATA_PATH = "/home/ivan/datasets/cosmics-CLYC/cosmics_0001_optimal_psd_fci.csv"
 OUT_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "log" / "images"
@@ -152,24 +152,37 @@ def plot_fom_at_lld(values, keVee, cut, name, out_name, color,
     actual cluster/continuum separation. Fixing the floor at the paper's own limit is the same
     argument this section already made for the LLD=475 keVee histogram pair (8v): below it, no real
     neutron can produce this light output at all, so the population above it is a fair one to score.
+
+    The lobes at LLD=475 are not Gaussian-like (checked visually), so the FoM here comes from a
+    proper double-Gaussian fit -- sw/analysis/plot_optimized_psd_fci.py's own established
+    `fit_double_gaussian`, ONE six-parameter fit to the POOLED [LLD, ULD] histogram (not two
+    independently-fitted single Gaussians): the `cut` derived elsewhere in this section only seeds
+    the initial guess and labels which fitted component is which, exactly as that function already
+    does for this project's other double-Gaussian fits (§8s).
     """
     m = (keVee >= lld) & (keVee <= uld)
     v = values[m]
-    cluster, continuum = v[v >= cut], v[v < cut]
-    fom = robust_fom(cluster, continuum)
+    cluster_seed, continuum_seed = v[v >= cut], v[v < cut]
+    fit = fit_double_gaussian(continuum_seed, cluster_seed)
+    # hist_panel draws fit["crossing"] as the separation line, which fit_double_gaussian computes
+    # fresh from ITS OWN fitted components -- a different number, in general, from `cut` (the
+    # same-energy-window crossing point this section uses everywhere else: the vs-Energy plots, the
+    # FoM-vs-Energy sweep, the grid-search histograms). Overriding it here keeps one single
+    # separation value per metric across the whole section instead of a plot-specific refit of it;
+    # the FoM itself is unaffected (it comes from the fitted components' own mu/sigma, not from
+    # wherever the line is drawn).
+    fit["crossing"] = cut
     fig, ax = plt.subplots(figsize=(8, 5.5), dpi=140)
-    ax.hist(cluster, bins=60, color=color, alpha=0.85, label=f"cluster-like (n={len(cluster)})")
-    ax.hist(continuum, bins=60, color="gray", alpha=0.75, label=f"continuum-like (n={len(continuum)})")
-    ax.axvline(cut, color="black", linestyle="--", linewidth=1.3, label=f"cut ({cut:.4f})")
-    ax.set_xlabel(name); ax.set_ylabel("counts")
-    ax.set_title(f"cosmics_0001: {name} FoM at LLD={lld:.0f} keVee (paper's neutron limit), "
-                 f"ULD={uld:.0f} keVee\nFoM = {fom:.3f}")
-    ax.legend()
+    hist_panel(ax, fit,
+               xlabel=name,
+               title=f"cosmics_0001: {name} FoM at LLD={lld:.0f} keVee, ULD={uld:.0f} keVee\n"
+                     f"double-Gaussian fit, FoM = {fit['fom']:.3f}")
     plt.tight_layout()
     out = OUT_DIR / out_name
     plt.savefig(out); plt.close(fig)
-    print(f"saved {out}  FoM={fom:.3f}  n_cluster={len(cluster)}  n_continuum={len(continuum)}")
-    return fom
+    print(f"saved {out}  FoM={fit['fom']:.3f}  n_cluster_seed={len(cluster_seed)}  "
+          f"n_continuum_seed={len(continuum_seed)}")
+    return fit["fom"]
 
 
 def main():
@@ -193,9 +206,17 @@ def main():
                         out_name="cosmics_optimal_fom_vs_energy.png")
 
     plot_fom_at_lld(psd, keVee, sep["psd"], PSD_LABEL,
-                     "cosmics_optimal_psd_fom_lld475.png", "tab:blue")
+                     "cosmics_optimal_psd_fom_lld475.png", "tab:blue", lld=PAPER_NEUTRON_LIMIT_KEVEE)
     plot_fom_at_lld(fci, keVee, sep["fci"], FCI_LABEL,
-                     "cosmics_optimal_fci_fom_lld475.png", "tab:red")
+                     "cosmics_optimal_fci_fom_lld475.png", "tab:red", lld=PAPER_NEUTRON_LIMIT_KEVEE)
+    plot_fom_at_lld(psd, keVee, sep["psd"], PSD_LABEL,
+                     "cosmics_optimal_psd_fom_lld1000.png", "tab:blue", lld=1000.0)
+    plot_fom_at_lld(fci, keVee, sep["fci"], FCI_LABEL,
+                     "cosmics_optimal_fci_fom_lld1000.png", "tab:red", lld=1000.0)
+    plot_fom_at_lld(psd, keVee, sep["psd"], PSD_LABEL,
+                     "cosmics_optimal_psd_fom_lld2000.png", "tab:blue", lld=2000.0)
+    plot_fom_at_lld(fci, keVee, sep["fci"], FCI_LABEL,
+                     "cosmics_optimal_fci_fom_lld2000.png", "tab:red", lld=2000.0)
 
 
 if __name__ == "__main__":
