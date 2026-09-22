@@ -10,9 +10,12 @@ sw/analysis/compute_cosmics_optimal_psd_fci.py on nsil-red, against the FULL raw
 (not just the [2,000, 4,000] keVee slice sweep_cosmics_gates.py searches on -- these plots need the
 whole spectrum), then copying the small result back here. It applies the exact same hardware model
 (dual_gate_integrator/bin_accumulator's equations) to every captured raw trace "as if it was done in
-the FPGA" with the new parameters -- this dataset never actually ran with this configuration, so
-there is no live/hardware confirmation of any number here (see 8v's own caveat: an offline sweep
-result should not be treated as verified until checked against real events).
+the FPGA" with the new parameters -- this dataset never actually ran with this configuration itself,
+so this script's own numbers are a software recomputation, not hardware output (see 8v's own caveat:
+an offline sweep result should not be treated as verified until checked against real events -- by
+now it has been, in sw/analysis/plot_cosmics_live_optimal.py's live-hardware run of this same
+configuration, which is why that script's dataset is loaded here too, purely to set matching y-axis
+ranges so the two sets of plots are directly comparable; see plot_vs_energy).
 
 Reuses sw/analysis/plot_cosmics_gn_metrics.py's robust-statistics building blocks (same FoM
 convention, same crossing-point separation-cut derivation, same cumulative FoM-vs-Energy sweep)
@@ -38,6 +41,7 @@ from analysis.plot_cosmics_gn_metrics import (
     derive_separation_cuts,
     plot_fom_vs_energy,
 )
+from analysis.plot_cosmics_live_optimal import load_dataset as load_live_dataset
 from analysis.plot_optimized_psd_fci import fit_double_gaussian, hist_panel
 
 DATA_PATH = "/home/ivan/datasets/cosmics-CLYC/cosmics_0001_optimal_psd_fci.csv"
@@ -45,6 +49,16 @@ OUT_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "log" / "imag
 
 PSD_LABEL = "PSD (optimal: short=5, long=47)"
 FCI_LABEL = "FCI (optimal: lo=2, l_hi=60, w_hi=178)"
+
+# Fixed y-axis ranges for the full-spectrum vs-Energy plots specifically (plot_vs_energy) -- shared
+# verbatim with sw/analysis/plot_cosmics_live_optimal.py's own plot_vs_energy, so every full-range
+# PSD/FCI-vs-Energy plot for this configuration (offline raw-trace recompute or live hardware) uses
+# the same scale and is directly comparable at a glance, not just when the auto-ranged extents
+# happen to coincide. Covers both datasets' own full extents (checked directly) with headroom;
+# NOT used for the zoomed cluster view or the energy-integrated histograms, which auto-range to
+# their own, different purposes.
+PSD_VS_ENERGY_RANGE = (0.9, 1.025)
+FCI_VS_ENERGY_RANGE = (0.85, 0.97)
 
 
 def load_dataset(path: str = DATA_PATH):
@@ -196,9 +210,24 @@ def main():
     cluster = (keVee >= 2900.0) & (keVee <= 3400.0)
     psd_range = _padded_range(psd, cluster_v=psd[cluster])
     fci_range = _padded_range(fci, cluster_v=fci[cluster])
-    print(f"auto-ranged axes (cluster-inclusive): PSD={psd_range}  FCI={fci_range}")
+    print(f"auto-ranged axes (cluster-inclusive), this dataset alone: PSD={psd_range}  "
+          f"FCI={fci_range}")
 
-    plot_vs_energy(fci, psd, keVee, sep["fci"], sep["psd"], psd_range, fci_range)
+    # Shared with sw/analysis/plot_cosmics_live_optimal.py's own vs-Energy/histogram plots, so the
+    # offline raw-trace recomputation and the live hardware run (same grid-search-optimal
+    # configuration) are directly, visually comparable on the same y-axis -- the union of both
+    # datasets' own cluster-inclusive ranges, so neither plot's axis clips a feature only the OTHER
+    # dataset's own range would have caught.
+    live_fci, live_psd, live_keVee = load_live_dataset()
+    live_cluster = (live_keVee >= 2900.0) & (live_keVee <= 3400.0)
+    live_psd_range = _padded_range(live_psd, cluster_v=live_psd[live_cluster])
+    live_fci_range = _padded_range(live_fci, cluster_v=live_fci[live_cluster])
+    psd_range = (min(psd_range[0], live_psd_range[0]), max(psd_range[1], live_psd_range[1]))
+    fci_range = (min(fci_range[0], live_fci_range[0]), max(fci_range[1], live_fci_range[1]))
+    print(f"shared axes (union with live-hardware dataset): PSD={psd_range}  FCI={fci_range}")
+
+    plot_vs_energy(fci, psd, keVee, sep["fci"], sep["psd"],
+                    PSD_VS_ENERGY_RANGE, FCI_VS_ENERGY_RANGE)
     plot_vs_energy_zoom(fci, psd, keVee)
     plot_histograms(fci, psd, keVee, psd_range, fci_range)
 

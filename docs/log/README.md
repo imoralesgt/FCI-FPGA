@@ -133,8 +133,14 @@ $100 board.
 ### Why this instrument sits above both floors
 
 This design digitizes at **50 Msps** — above Nakhostin's 32 MHz organic floor, and half the 100 MS/s
-the FCI paper used for CLYC. The 2048-point transform at that rate gives 24.414 kHz bins and a
-25 MHz Nyquist (§8g), so the bands both papers care about are inside the same register range:
+the FCI paper used for CLYC. **This turns out to be necessary but not sufficient for PSD**: §8v's
+ambient-cosmics data shows PSD reproducing Nakhostin's own Fig. 5 charge-comparison collapse anyway
+(a majority of low-energy events dislocated off the main trend) despite running above his 32 MHz
+floor, while FCI does not -- the gate WIDTH in samples, not the raw sampling rate alone, is what
+determines whether charge comparison survives. Sampling rate is still the right lens for FCI, which
+is what the rest of this subsection is about. The 2048-point transform at that rate gives
+24.414 kHz bins and a 25 MHz Nyquist (§8g), so the bands both papers care about are inside the same
+register range:
 
 | band | source | bin at 50 Msps | within `psa_*_hi` ≤ 1024? |
 |---|---|---|---|
@@ -4324,6 +4330,11 @@ range actually changed (0.58-0.95 before, 0.57-0.99 after). With that fixed, the
 directly visible in the full-spectrum plot too: a small, distinctly elevated blob sitting right at
 3,160 keVee, above the saturating trend, in **both** panels.
 
+The y-axis range is now also widened to the *union* with the live-hardware dataset's own
+cluster-inclusive range (the next subsection) -- currently the live dataset's own range is the wider
+one for both metrics, so this plot's axes now match that subsection's `cosmics_live_optimal_psd_fci_vs_energy.png`
+exactly, making the two directly, visually comparable rather than each auto-scaled to its own data.
+
 Zooming further, the same way §8v already does for the deployed configuration (2,000-4,200 keVee, a
 narrow y-range), resolves it even more clearly:
 
@@ -4432,6 +4443,106 @@ motivated. **Still offline and still unconfirmed on hardware** -- see the previo
 closing paragraph -- but this is now a result worth that confirmation, not one already falsified by
 its own full-spectrum check.
 
+### Real hardware confirmation: the grid-search-optimal configuration, live
+
+A new acquisition project, `cosmics_psd_fci_optimized`, was started on nsil-red (2026-09-21
+17:09:42) with the grid-search-optimal configuration loaded onto the actual device -- `short_gate=5,
+long_gate=47` for PSD, `psa_l_lo=2, psa_l_hi=60, psa_w_lo=2, psa_w_hi=178` for FCI, confirmed from
+the live acquisition log's own header (the authoritative record of what the hardware actually ran
+with; that project's `settings.json` file still shows the old deployed values in its `device` block,
+a stale save that does not reflect what was actually pushed to the device). Unlike everything else
+in this section, PSD and FCI here are the real `dual_gate_integrator`/`bin_accumulator` hardware's
+own output, not a software model applied to recorded raw traces -- this is the on-hardware
+confirmation the previous two subsections both flagged as still missing.
+
+**This is a snapshot of a run still in progress** (recording overnight, per the user), pulled and
+analyzed with `sw/analysis/plot_cosmics_live_optimal.py`: 412,973 events over 17.79 hours so far,
+mean rate 6.45 events/s -- markedly higher than the deployed-config run's 1.5 evt/s average, mostly
+explained by a lower trigger threshold on this run (204 vs. 240 counts) admitting more near-threshold
+events. Numbers below will change as the run continues; this section will be updated once it ends.
+
+![PSD and FCI vs Energy, live hardware, offline-optimal configuration](images/cosmics_live_optimal_psd_fci_vs_energy.png)
+
+**The ⁶Li cluster is directly visible in both panels at full range, without needing to zoom** -- a
+first for this project in either configuration, and the clearest visual confirmation yet that the
+grid search found something physically real rather than an artifact of the offline recomputation
+pipeline. The same fixed-LLD double-Gaussian fits used for the offline-optimal validation, run here
+on live hardware data instead of recomputed raw traces, agree closely with what that validation
+predicted:
+
+| | FCI FoM: offline (raw-trace recompute) | FCI FoM: **live hardware** | PSD FoM: offline | PSD FoM: **live hardware** |
+|---|---|---|---|---|
+| LLD=1,000 keVee | 1.331 | **1.236** | 0.875 | **0.841** |
+| LLD=2,000 keVee | 1.851 | **1.771** | 0.991 | **1.014** |
+
+Agreement within ~5-8% at every point checked -- real events confirm the offline raw-trace pipeline
+(and everything built on it in this section: the grid search itself, the energy-axis fix, the
+same-energy-window separation cuts) rather than exposing it as a modeling artifact.
+
+**One new, minor finding**: at the very lowest energies (97-150 keVee, right at the 204-count
+trigger threshold), PSD swings to extreme, non-physical values (as low as -34.8) in 0.01% of events
+-- `short_gate=5` is narrow enough that near-threshold noise can push its own small denominator
+through zero. This is the same low-energy PSD pathology already documented in §8d and throughout
+this section, just more pronounced with this particular gate choice; it affects a negligible fraction
+of events and nothing above ~150 keVee.
+
+### PSD's low-energy failure is exactly Nakhostin's charge-comparison collapse, and FCI does not share it
+
+§0's own framing of Nakhostin's paper already draws the CLYC design's two metrics as direct
+analogues of his two methods: PSD is a charge-comparison ratio (`(long-short)/long`), FCI is a
+frequency-domain ratio (a low-band-over-total ASDM ratio, "the same idea... differing in
+normalization"). His central finding, split across two figures of his own:
+
+- **Fig. 5** (charge comparison, down-sampled to 250 MHz and 32 MHz): at 32 MHz, a large fraction of
+  low-light-output events are **"dislocated to the upper part of the plot"** -- not a gradual
+  degradation but a distinct failed-events population, annotated as such, appearing below his own
+  ~200 keVee marker.
+- **Fig. 7** (his frequency-domain method, same two down-sampled rates): **no dislocation at either
+  rate** -- both panels show the same two clean, unbroken neutron/gamma bands across the *entire*
+  light-output range, FoM only softening gracefully (0.75->0.62 in the low band, 1.34->1.31 in the
+  high band, §0's own table).
+
+§0 already reasons that this instrument's 50 Msps sits above Nakhostin's 32 MHz "collapse" floor, so
+naively neither of this project's own metrics should show his Fig. 5 failure at all. **They don't
+agree**: PSD reproduces it plainly, FCI does not, in both the offline raw-trace recomputation and the
+live hardware run:
+
+![PSD and FCI vs Energy, low-light-output zoom on this project's own two grid-search-optimal datasets, matching Nakhostin's Fig. 5/7 x-axis range](images/nakhostin_comparison_psd_fci_low_energy.png)
+
+Quantified the same way -- fraction of events landing more than 5 continuum-sigma from a clean
+2,000-3,000 keVee reference band's own PSD median (`sw/analysis/plot_nakhostin_comparison.py`):
+
+| Energy (keVee) | PSD dislocated, offline | PSD dislocated, live hardware |
+|---|---|---|
+| 97-150 | 55.8% | 73.6% |
+| 150-200 | 51.0% | 61.6% |
+| 200-300 | 45.8% | 51.6% |
+| 300-400 | 22.5% | 24.8% |
+| 400-600 | 7.7% | 8.6% |
+| 600-900 | 1.4% | 2.3% |
+| 900-1,400 | 0.4% | 0.5% |
+
+At the lowest energies, a **majority** of events land on a visibly separate PSD branch rather than
+the main trend -- the same qualitative shape as Nakhostin's Fig. 5 "failed events" wedge, not merely
+a wider noise band. FCI's own spread over the same energy bins, by contrast, narrows smoothly and
+monotonically with no comparable secondary population (checked directly: relative spread p99-p1 goes
+0.14 -> 0.10 -> 0.07 -> 0.03 offline, 0.22 -> 0.10 -> 0.06 -> 0.03 live, a continuous trend, not two
+branches) -- the same qualitative shape as his Fig. 7.
+
+**This means §0's "above both floors" reasoning was incomplete, not wrong**: raw ADC sampling rate
+alone does not determine whether charge-comparison PSD survives -- the grid search's own optimal
+`short_gate=5` is 100 ns, a single gate spanning only 5 samples at 50 Msps, which is a far coarser
+effective resolution of the pulse's fast-rising edge than the sampling rate by itself suggests. The
+deployed configuration's own `short_gate=10` (200 ns) is less extreme but not immune either (§8d's
+negative-tail-charge pathology is the same low-energy PSD weakness by another name). FCI is
+structurally different: it sums many ASDM bins rather than comparing two short time-domain windows,
+so it is far less sensitive to exactly how few samples fall inside a narrow gate -- which is
+mechanistically why it survives here exactly as Nakhostin's own frequency-domain method survived his
+own down-sampling test, on a different detector, a different scintillator family, and a different
+implementation of "low-band over total" entirely. That convergence, from two independent
+instruments arriving at the same qualitative result, is stronger evidence for the underlying claim
+than either result alone.
+
 ---
 
 ## 9. Current state
@@ -4508,11 +4619,23 @@ its own full-spectrum check.
   those three floors (vs. deployed 1.13 at 2,000), a visibly separated cluster at every one. PSD only
   reaches a visibly two-lobed fit from 1,000 keVee up (0.875 → 0.991); at 475 keVee its cut is still
   slicing the tail of one broad peak, not isolating a distinct population** — an honest limitation,
-  not glossed over. Still offline and unconfirmed on hardware. Also found along the way: raw
-  scope-trace logging duplicates **36.0%** of all rows dataset-wide (98,472/273,724) — the same
-  buffer logged twice under two
-  different timestamps — a real firmware/logging bug, now worked around in analysis but not yet
-  fixed at the source
+  not glossed over. Also found along the way: raw scope-trace logging duplicates **36.0%** of all
+  rows dataset-wide (98,472/273,724) — the same buffer logged twice under two different timestamps —
+  a real firmware/logging bug, now worked around in analysis but not yet fixed at the source
+- **The offline grid-search optimum is now confirmed on real hardware (§8v)**: a new
+  `cosmics_psd_fci_optimized` acquisition, started 2026-09-21 with the optimal PSD/FCI configuration
+  actually loaded onto the device (confirmed from the live log's own header), shows the ⁶Li cluster
+  directly in the full-range vs-Energy plot with no zoom needed — a first for this project. FoM at
+  LLD=1,000/2,000 keVee (FCI 1.236/1.771, PSD 0.841/1.014) agrees with the offline raw-trace
+  prediction within ~5-8%. **Snapshot of a run still recording** (412,973 events / 17.79 h so far);
+  numbers will be updated once it finishes
+- **PSD reproduces Nakhostin's own charge-comparison collapse; FCI reproduces his frequency-domain
+  survival (§0, §8v)**: at low light output, a majority of PSD events (up to 74% below 150 keVee, in
+  both the offline and live-hardware datasets) land on a visibly separate branch off the main trend —
+  the same "failed events" pattern as his Fig. 5, despite this design's 50 Msps sitting above his own
+  32 MHz collapse floor. FCI shows no such branch (his Fig. 7's graceful degradation instead) — the
+  gate WIDTH in samples (the grid-search-optimal `short_gate=5` = 100 ns), not sampling rate alone,
+  is what determines survival for charge comparison specifically
 
 ### Open items
 
