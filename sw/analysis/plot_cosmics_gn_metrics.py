@@ -262,7 +262,8 @@ def plot_fom_vs_lld(fci, psd, keVee):
     return results
 
 
-def plot_fom_vs_energy(fci, psd, keVee, sep_fci: float, sep_psd: float):
+def plot_fom_vs_energy(fci, psd, keVee, sep_fci: float, sep_psd: float,
+                        out_name: str = "cosmics_fom_vs_energy.png"):
     """FoM vs Energy, as clarified: at each swept lower-energy cut E, the population is the
     CUMULATIVE tail [E, ULD] (not a local window) -- "integrating the events marked with the x-axis
     Energy value all the way up to the ULD". Since a cumulative tail has no independent energy-band
@@ -321,7 +322,7 @@ def plot_fom_vs_energy(fci, psd, keVee, sep_fci: float, sep_psd: float):
                  "(classes = fixed cluster/continuum cut, population = [Energy, ULD])")
     ax.legend(); ax.grid(alpha=0.3)
     plt.tight_layout()
-    out = OUT_DIR / "cosmics_fom_vs_energy.png"
+    out = OUT_DIR / out_name
     plt.savefig(out); plt.close(fig)
     print(f"saved {out}")
     return results, diagnostics

@@ -4187,6 +4187,215 @@ cluster's own energy range (2,900-3,400 keVee) is fully excluded from the popula
 negative check: raising the floor past the cluster's own energy correctly makes the cluster
 disappear from this measurement.
 
+### Raw-trace grid search: PSD gates and FCI windows, close to the cluster
+
+Everything above uses the single PSD/FCI configuration the live acquisition happened to be running.
+`sw/analysis/sweep_cosmics_gates.py` instead searches offline, on the raw scope traces
+(`cosmics_0001_scope_traces.csv`, filtered on nsil-red to peak-based energy in [2,000, 4,000] keVee
+before transfer -- 1.95 GB down to 27.6 MB), for the PSD gate widths and FCI window bounds that best
+resolve the ⁶Li cluster from the surrounding continuum, using `sw/analysis/fpga_model.py`'s exact
+software model of `dual_gate_integrator.vhd` and `bin_accumulator.vhd` rather than the live hardware.
+
+**Four real bugs turned up building this, in the order found -- the middle two are kept documented
+in `sw/analysis/sweep_cosmics_gates.py`'s own module docstring, not just here, since they're
+instructive failure modes on their own:**
+
+1. **31.9% of the loaded raw-trace rows were exact duplicates** of an earlier row's samples (983 of
+   3,086 in the [2,000, 4,000] keVee slice, in groups of up to 7) -- a logging bug in the raw
+   scope-trace path (the same captured buffer written out more than once, restamped with a fresh
+   `host_timestamp` each time), not anything in this analysis. Deduplicating by trace content
+   (not the raw CSV line, which looks unique because the timestamp differs) is the first thing this
+   script does.
+2. **FCI's two band-start bins (`psa_l_lo`/`psa_w_lo`) must be swept as one shared value, not fixed
+   at 1** the way `sw/analysis/tune_fom.py`'s own `sweep_fci` always did: bin 1's ASDM magnitude on
+   these traces is comparable to the *entire* sum of bins 2-38, so including it washed out
+   essentially all energy/shape dependence. `bin_accumulator.vhd` has one shared `lo` register for
+   both bands, so this sweep treats it as one variable (`FCI_LO_RANGE`, 0-5).
+3. **The scoring objective went through two wrong versions.** *v1* scored cluster (2,900-3,400
+   keVee) against continuum (the rest of [2,000, 4,000] keVee) directly -- both metrics plateau at
+   this energy, so this gave FoM near zero. *v2* restricted scoring to the 2,900-3,400 keVee window
+   and split its own median in half -- non-zero numbers, but (checked against the full spectrum,
+   further below) they turned out not to track the real cluster at all. **v3**, used below: derive
+   the cluster/continuum cut from the 2,900-3,400 keVee window's own median-seeded halves (the same
+   crossing-point procedure `derive_separation_cuts` uses elsewhere in this section), then apply
+   that cut to classify every event across the *entire* [2,000, 4,000] keVee region and score there
+   -- exactly the same procedure as one point (LLD=2,000) on the deployed configuration's own
+   validated cumulative FoM-vs-Energy curve, just swept over candidate configurations instead of
+   held fixed.
+4. **The energy axis itself was wrong**, and this is what actually explains why v2 failed the
+   full-spectrum check. Energy was computed as `trace.max() - (90-sample pre-trigger mean)`, copying
+   `sw/analysis/tune_fom.py`'s own convention. That pre-trigger region is NOT flat noise around zero
+   on this dataset -- its mean runs 360-930 counts (median ~595), a real, per-event-variable
+   component -- so subtracting it doesn't remove noise, it smears the energy axis: checked directly,
+   the deployed configuration's v3 FoM came out at 0.22-0.46 depending on scoring method with the
+   subtraction, against a plain `trace.max()`'s 1.66, itself consistent with the LIST CSV's own
+   established ~1.13-1.15 for the same window. Every number below uses the plain peak, matching how
+   `peak` is computed everywhere else this project has analyzed this dataset.
+
+Even after all four fixes, this raw-trace population is measurably smaller than the LIST branch's
+own event count for the same window: **739 unique raw traces vs. 1,196 LIST events in 2,900-3,400
+keVee** (62%), a bigger RAW-vs-LIST gap than the ~3.6% found for the dataset as a whole (§8v above).
+Not yet explained -- flagged here as an open item alongside the unexplained analog saturation
+ceiling.
+
+The grid search itself is adaptive: a coarse 15x15 pass over the full range, then two further passes
+(11x11 each) re-centered on the best point so far and shrunk to 22% of the previous window --
+finer resolution costs nothing extra in accuracy once ASDM/prefix-sums are computed once per trace,
+so it is spent where the plot needs it rather than uniformly. A first pass at reporting each
+candidate's FoM as the surface color was dropped: color and height would both encode the same FoM,
+so the surface is now a single neutral color and the scatter overlay is colored by *search stage*
+instead, which shows the genuinely new information -- where the coarse pass looked versus where the
+refinement concentrated:
+
+![PSD FoM surface vs (short_gate, long_gate), colored by search stage](images/cosmics_psd_gate_fom_surface.png)
+
+![FCI FoM surface vs (l_hi, w_hi) at the best shared lo, colored by search stage](images/cosmics_fci_window_fom_surface.png)
+
+Both surfaces are single, well-formed peaks with the deployed configuration sitting on the same
+slope leading up to them -- a healthier landscape than v1/v2 ever produced, and itself a sign this
+version of the search is measuring something real:
+
+| | deployed | best found | FoM gain |
+|---|---|---|---|
+| PSD (short_gate, long_gate) | (10, 32) -> 0.862 | (5, 47) -> **0.945** | 1.10x |
+| FCI (lo, l_hi, w_hi) | (2, 38, 120) -> 1.663 | (2, 60, 178) -> **1.882** | 1.13x |
+
+A `MIN_GAP` validity guard (20 bins/samples) excludes candidates where the two bounds nearly
+coincide for both sweeps: PSD = (long-short)/long and FCI = PSA_l/PSA_w both approach a degenerate,
+numerically fragile ratio as the two bounds converge, amplifying whatever a handful of samples right
+at the boundary happen to contain rather than measuring real pulse shape. Without it, an earlier
+version of this search reported (short_gate=263, long_gate=275) and (l_hi=194, w_hi=196) as "best"
+-- both rejected on inspection once the guard exposed how close their bounds actually were.
+
+The value distributions behind each "best" point -- cluster-like/continuum-like split at the cut
+derived from the 2,900-3,400 keVee window, applied to the full [2,000, 4,000] keVee region that is
+actually scored:
+
+![PSD histogram at the best found (short_gate, long_gate)](images/cosmics_psd_best_histogram.png)
+
+![FCI histogram at the best found (lo, l_hi, w_hi)](images/cosmics_fci_best_histogram.png)
+
+Both show two cleanly separated, non-overlapping groups -- a much more convincing picture than
+anything v1/v2 produced, and the next subsection confirms it holds up against the full spectrum, not
+just this training population. **Still, none of this has been run on real hardware.** The found PSD
+gates (5, 47 samples, ~0.1-0.9 us) are narrower than deployed, and the found FCI window (60, 178)
+is wider than deployed (38, 120) but far more modest than the earlier, wrong versions of this search
+ever proposed. Per this project's own prior experience with an offline sweep that "did not work at
+all" when taken at face value (project memory tune-fom-offline-sweep-artifact), this result should
+still be confirmed against live events before being treated as a configuration change, however much
+better-behaved it looks than v1/v2 did.
+
+### Checking the optimum against the full spectrum: it does track the real cluster
+
+The grid search above only ever looked at the [2,000, 4,000] keVee population it was scoring -- it
+never checked whether the configuration it found actually separates the *real* ⁶Li cluster once
+applied to every event across the whole spectrum. `sw/analysis/compute_cosmics_optimal_psd_fci.py`
+closes that gap: it recomputes PSD and FCI for every raw trace in the dataset with the grid search's
+optimal configuration, "as if it was done in the FPGA" (same `dual_gate_integrator`/`bin_accumulator`
+equations and the same plain-peak energy convention, run on nsil-red against the full 1.95 GB trace
+file since these plots need the whole spectrum), and `sw/analysis/plot_cosmics_optimal_psd_fci.py`
+builds the same PSD/FCI-vs-Energy, histogram, and FoM-vs-Energy views this section already has for
+the deployed configuration, so the two are directly comparable.
+
+This check is what caught bug 4 above (the pre-trigger-mean energy error) in the first place: run
+against v2's configuration with the broken energy axis, it showed no cluster bump anywhere and an
+inverted FoM-vs-Energy trend -- a real, useful negative result that pointed straight at the energy
+axis rather than the search itself, since the deployed configuration's OWN FoM cratered under the
+same broken axis. With both the objective (v3) and the energy axis fixed, re-running this same check
+now confirms a real result rather than retracting one:
+
+**The duplicate-trace logging bug is dataset-wide, not specific to the cluster's energy range**:
+across the *entire* dataset, **98,472 of 273,724 raw-trace rows (36.0%)** are duplicates of another
+row's exact samples under a different `host_timestamp` -- the same buffer written out more than
+once, restamped each time. `compute_cosmics_optimal_psd_fci.py` deduplicates by trace content before
+computing anything; every number below already accounts for it.
+
+![PSD and FCI vs Energy, offline-optimal config, full spectrum](images/cosmics_optimal_psd_fci_vs_energy.png)
+
+**An earlier version of this plot hid the FCI cluster outright, not just compressed it**: its y-axis
+came from a plain 0.5-99.5th-percentile crop of all FCI values, and the cluster (406/173,179 =
+0.23% of events, FCI 0.941-0.960) sits almost entirely *above* that 99.5th percentile (0.921) --
+so the axis range excluded the cluster's own values before a single point was even plotted, the same
+class of bug as clipping a signal out of a scope trace by setting the wrong vertical range. Fixed in
+`_padded_range` (`sw/analysis/plot_cosmics_optimal_psd_fci.py`) by explicitly widening the range to
+cover the 2,900-3,400 keVee window's own values whenever they extend past the percentile crop --
+PSD's percentile-based range already happened to cover its own, less extreme cluster, so only FCI's
+range actually changed (0.58-0.95 before, 0.57-0.99 after). With that fixed, the cluster is now
+directly visible in the full-spectrum plot too: a small, distinctly elevated blob sitting right at
+3,160 keVee, above the saturating trend, in **both** panels.
+
+Zooming further, the same way §8v already does for the deployed configuration (2,000-4,200 keVee, a
+narrow y-range), resolves it even more clearly:
+
+![PSD and FCI vs Energy, zoomed on the capture-cluster region, offline-optimal config](images/cosmics_optimal_6li_cluster_zoom.png)
+
+A distinct, elevated band sits right at 2,950-3,400 keVee in both PSD and FCI, centered almost
+exactly on the 3,160 keVee marker -- confirming visually, not just statistically, that this
+configuration separates the real cluster in both metrics. The energy-integrated histograms show the
+same second lobe from a third angle -- and for FCI specifically, a clean, fully-resolved second peak
+at 0.945-0.955 with a visible valley below it, not a truncated shoulder: the same axis-range fix
+applies here too (`plot_histograms` reuses the same cluster-inclusive `psd_range`/`fci_range`), so
+this lobe is no longer cut off at the old 0.9466 ceiling either:
+
+![Energy-integrated PSD and FCI histograms, offline-optimal config](images/cosmics_optimal_psd_fci_histograms.png)
+
+**FoM vs Energy confirms it with the same cross-check that caught the v2 failure**: the deployed
+configuration's own FoM-vs-Energy curve (this section, above) *increases* with LLD once the noisy
+low-energy tail is excluded, because its cluster-like population is genuinely concentrated near
+3,160 keVee. The optimal configuration's curve does the same thing, at a consistently higher level:
+
+![FoM vs Energy, offline-optimal config](images/cosmics_optimal_fom_vs_energy.png)
+
+| LLD (keVee) | FCI FoM (optimal) | FCI FoM (deployed, this section above) | n (cluster-like, optimal) |
+|---|---|---|---|
+| 100 | 1.26 | n/a (band not resolvable this low) | 406 |
+| 1,000 | 1.32 | n/a | 406 |
+| 2,000 | **1.85** | 1.13 | 404 |
+| 4,000 | n/a (n<30) | n/a (cluster excluded) | 9 |
+
+The cluster-like population is **stable at 404-406 events from LLD=100 all the way to LLD=2,000**
+-- the same signature the deployed configuration's own FCI showed in the original FoM-vs-Energy
+section above (there ~690 events, essentially constant with LLD): the fixed cut is finding the same
+real, energy-localized population regardless of how much low-energy continuum is included, not
+picking up spurious low-energy noise. At LLD=4,000 the cluster's own energy range is excluded and
+the population correctly collapses to a handful of non-physical events (n=9), exactly like the
+deployed configuration's own null result there. **This is the opposite of what the v2 search
+produced** (FoM highest at LLD=100 and falling toward the cluster's own energy, with the
+cluster-like count in the tens of thousands) -- the clearest sign that v3 plus the energy-axis fix
+recovered a real result rather than the same failure mode with smaller numbers.
+
+**The cumulative sweep's own low-LLD points are not a trustworthy FoM, though**, and shouldn't be
+read as one: below the paper's own neutron-detection limit the population is dominated by the
+strongly skewed, low-energy noise-broadened tail (§8d, and visible in every energy-integrated
+histogram in this section), which inflates the continuum group's spread enough that the resulting
+number depends more on how much of that skew survives than on the actual separation -- part of why
+the table above only reports 100 through 2,000 with a caveat rather than presenting all six sweep
+points as equally meaningful. A single, fixed-LLD number at the paper's own limit (475 keVee,
+Morales et al. §6.1) sidesteps that skew rather than needing to caveat around it each time:
+
+![PSD FoM at LLD=475 keVee, offline-optimal config](images/cosmics_optimal_psd_fom_lld475.png)
+
+![FCI FoM at LLD=475 keVee, offline-optimal config](images/cosmics_optimal_fci_fom_lld475.png)
+
+**FCI: FoM = 0.864** (406 cluster-like, 21,292 continuum-like) -- a real gap between two visibly
+separated groups, the tight cluster sitting well clear of the broad continuum below it. **PSD: FoM
+= 0.554** (3,034 cluster-like, 18,664 continuum-like) -- numerically defined, but the histogram shows
+why it should be read differently: PSD's cut is slicing through the *tail of one broad, unimodal
+peak*, not separating two visibly distinct groups the way FCI's does. This matches what the rest of
+this section already established about PSD needing a much higher floor (~2,000 keVee, not 475) before
+its own cut isolates a population that looks like a real second class rather than ordinary
+continuum tail -- consistent, not a new problem introduced by fixing the LLD.
+
+**Net result: the grid-search optimum is a genuine, if modest, improvement over the deployed
+configuration for FCI specifically** -- FoM 0.864 at the paper's own LLD (475 keVee) and 1.85 at
+LLD=2,000 (vs. deployed's 1.13), both against a visibly, not just numerically, separated cluster.
+PSD's own gain is real at LLD=2,000 (§ above) but should not be claimed at 475 keVee, where its cut
+is not yet isolating a distinct population. Both configurations stay in a physically plausible range
+(§0/measured-pulse-shape's established ~4.9 us decay, ~740-800 ns rise), unlike v1/v2's runs to
+hundreds of bins/samples past anything physically motivated. **Still offline and still unconfirmed on
+hardware** -- see the previous subsection's closing paragraph -- but this is now a result worth that
+confirmation, not one already falsified by its own full-spectrum check.
+
 ---
 
 ## 9. Current state
@@ -4250,6 +4459,22 @@ disappear from this measurement.
   throughout ([0.460, 0.931]).
   Also measured: the raw-trace DMA branch drops ~3.6%
   more events than the FCI/PSD branch even at this run's near-idle 1.5 evt/s average rate
+- **Raw-trace grid search for PSD gates / FCI windows on cosmics_0001 (§8v)**: two earlier scoring
+  objectives and a bad energy-axis convention (pre-trigger-mean subtraction, wrong for this dataset)
+  produced illusory "optima" that failed a full-spectrum check — no bump at the real 3,160 keVee
+  cluster, inverted FoM-vs-Energy trends. Fixed (derive the cluster cut locally, score it across the
+  full [2,000, 4,000] keVee region; use the plain peak for energy), the search now finds a genuine
+  improvement, confirmed by the same full-spectrum check that caught the earlier failures (stable
+  ~405-event cluster population across LLD, correctly collapsing above the cluster's own energy) and
+  by a single fixed-LLD FoM at the paper's own neutron limit (475 keVee) rather than the
+  cumulative sweep's own skew-prone low-LLD points: **FCI FoM 0.864 at LLD=475 / 1.85 at LLD=2,000
+  (vs. deployed 1.13), against a visibly separated cluster in both cases. PSD's own gain is real at
+  LLD=2,000 but not yet at 475 keVee, where its cut is still slicing the tail of one broad peak
+  rather than isolating a distinct population** — an honest limitation, not glossed over. Still
+  offline and unconfirmed on hardware. Also found along the way: raw scope-trace logging duplicates
+  **36.0%** of all rows dataset-wide (98,472/273,724) — the same buffer logged twice under two
+  different timestamps — a real firmware/logging bug, now worked around in analysis but not yet
+  fixed at the source
 
 ### Open items
 
