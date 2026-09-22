@@ -731,7 +731,7 @@ class AppController(QObject):
     def open_calibration_wizard(self) -> None:
         if self.config_client is None:
             return
-        dlg = CalibrationWizard(self.config_client, self.view)
+        dlg = CalibrationWizard(self.config_client, self.worker, self.view)
         if dlg.exec() != CalibrationWizard.DialogCode.Accepted:
             return
         try:

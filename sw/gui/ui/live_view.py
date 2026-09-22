@@ -15,13 +15,16 @@ Clearing what's plotted is Reset's job alone, so a Stop followed by another Star
 freeze the display, or because the CSV segment should roll over) continues the same accumulated
 view rather than silently discarding it.
 
-Energy: E = c0 + c1*peak + c2*peak^2, `peak` being pulse_shaper_core's shaped-pulse plateau
-amplitude (a Jordanov-Knoll recursive trapezoidal filter -- see trapezoidal_filter.vhd) -- a
-whole-pulse property, independent of the PSD gates, unlike the energy_long this axis used before.
-The coefficients live in HistogramView
+Energy: E = c0 + c1*ch + c2*ch^2, where `ch` is `peak` folded into HistogramView's channel units
+(_energy_from_peak() below; histogram_view.DEFAULT_PEAK_FOLD). `peak` is pulse_shaper_core's shaped-pulse
+plateau amplitude (a Jordanov-Knoll recursive trapezoidal filter -- see trapezoidal_filter.vhd) --
+a whole-pulse property, independent of the PSD gates, unlike the energy_long this axis used before.
+The fold matters because the coefficients are not this tab's own: they live in HistogramView
 (set_calibration() below receives them via MainWindow's cross-tab wiring, the same pattern used for
-PSD pre_trigger / Trigger delay) and default to the identity map (c0=0, c1=1, c2=0), so an
-uncalibrated session still plots a sensible raw-peak axis rather than a meaningless one. Because the
+PSD pre_trigger / Trigger delay) and are defined against ITS accumulation channel, so applying them
+to a raw peak here puts this axis a factor of the fold off the Spectrum tab's. They default to the
+identity map (c0=0, c1=1, c2=0), so an uncalibrated session still plots a sensible folded-peak axis
+on the same scale as the Spectrum tab rather than a meaningless one. Because the
 underlying stored value is `peak`, not a pre-computed energy, a calibration change retroactively
 rescales every already-plotted point (see _recompute_energy()) rather than only affecting events
 that arrive afterwards.
@@ -57,6 +60,25 @@ from PySide6.QtWidgets import (
 from fci_api import AcqEvent, FciClient, Stats
 
 from .config_panel import FCI_FIELDS, PSD_FIELDS, SubsystemPanel
+from .histogram_view import DEFAULT_PEAK_FOLD
+
+
+def _energy_from_peak(peak, cal, fold):
+    """E = c0 + c1*ch + c2*ch^2, where `ch` is the peak folded into HistogramView's channel units.
+
+    The fold is not optional decoration: this tab does not own its calibration, it receives the
+    Spectrum tab's (HistogramView.calibration_changed), and those coefficients are defined against a
+    FOLDED accumulation channel, not a raw AcqEvent.peak -- see histogram_view.DEFAULT_PEAK_FOLD.
+    Applying them to a raw peak here is what put the two tabs' energy axes a factor of 256 apart.
+    `fold` tracks the device's `peaking` (set_peak_fold(), from HistogramView.peak_fold_changed),
+    so it has to be passed in rather than read from a module constant.
+
+    Scalar or ndarray `peak` both work, which is why all three call sites share this one function
+    rather than each spelling the arithmetic out and only some of them getting the fold.
+    """
+    c0, c1, c2 = cal
+    ch = peak / fold
+    return c0 + c1 * ch + c2 * ch * ch
 
 logger = logging.getLogger(__name__)
 
@@ -266,8 +288,12 @@ class LiveView(QWidget):
         on the GUI thread -- the exact cost that was starving the reader. Arrays grow by doubling
         and are compacted in place when the window overflows."""
         self._cal: tuple[float, float, float] = (0.0, 1.0, 0.0)
-        """(c0, c1, c2) for E = c0 + c1*peak + c2*peak^2, pushed in from HistogramView via
-        set_calibration(). Identity by default so an uncalibrated session plots raw peak values."""
+        """(c0, c1, c2) for E = c0 + c1*ch + c2*ch^2 against a folded channel (see
+        _energy_from_peak()), pushed in from HistogramView via set_calibration(). Identity by
+        default so an uncalibrated session plots folded-peak values, on the Spectrum tab's scale."""
+        self._peak_fold = DEFAULT_PEAK_FOLD
+        """Raw shaper counts per channel, from HistogramView.peak_fold_changed via
+        set_peak_fold(). Must match what the calibration above was defined against."""
         self._total_events = 0
         self._excluded_events = 0
         self._fci_captured = 0
@@ -502,10 +528,9 @@ class LiveView(QWidget):
         and unrelated to this cut. The energy each event is compared against is computed fresh
         from e.peak and the CURRENT calibration, matching what the region's own bounds mean now
         that the plot's axis is keVee rather than energy_long -- see the module docstring."""
-        c0, c1, c2 = self._cal
         out = []
         for e in events:
-            energy = c0 + c1 * e.peak + c2 * e.peak * e.peak
+            energy = _energy_from_peak(e.peak, self._cal, self._peak_fold)
             if self.fci_controls.chk_cut_enabled.isChecked():
                 lo, hi = self.fci_energy_region.getRegion()
                 if not (lo <= energy <= hi):
@@ -655,10 +680,21 @@ class LiveView(QWidget):
         self._refresh_plots()
         self._refresh_side_panels()
 
+    def set_peak_fold(self, fold: int) -> None:
+        """Receives the fold from HistogramView.peak_fold_changed (the device's `peaking`). Same
+        retroactive rescale as set_calibration(), and for the same reason: `peak` is what is
+        stored, so changing what a channel means re-derives every point already plotted. Unlike
+        HistogramView, nothing is discarded here -- this view's stored ground truth is unaffected
+        by the fold, only its derived energy axis is."""
+        if fold <= 0 or fold == self._peak_fold:
+            return
+        self._peak_fold = fold
+        self._recompute_energy()
+        self._refresh_plots()
+        self._refresh_side_panels()
+
     def _recompute_energy(self) -> None:
-        c0, c1, c2 = self._cal
-        peak = self._peak[: self._n]
-        self._energy[: self._n] = c0 + c1 * peak + c2 * peak * peak
+        self._energy[: self._n] = _energy_from_peak(self._peak[: self._n], self._cal, self._peak_fold)
 
     @staticmethod
     def _cut_mask(controls: "_ControlsPanel", region: pg.LinearRegionItem,
@@ -700,8 +736,7 @@ class LiveView(QWidget):
         p_arr = np.fromiter((e.psd for e in events), dtype=np.float64, count=len(events))[keep]
         self._total_events += k
 
-        c0, c1, c2 = self._cal
-        energy_arr = c0 + c1 * peak_arr + c2 * peak_arr * peak_arr
+        energy_arr = _energy_from_peak(peak_arr, self._cal, self._peak_fold)
 
         self._grow(self._n + k)
         self._energy[self._n:self._n + k] = energy_arr

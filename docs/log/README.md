@@ -82,6 +82,79 @@ sections are the record of getting there.
 
 ---
 
+## Optimized PSD and FCI parameters — quick reference
+
+The discrimination parameters currently established as best, kept here at the top because they are
+looked up far more often than anything else in this log. Derived by the offline grid search of §8v
+(`sw/analysis/sweep_cosmics_gates.py`) and then **verified on real hardware**, not just offline: a
+412,973-event live cosmics run (`cosmics_psd_fci_optimized_0001_fci_live.csv`, 17.8 h, 6.45 evt/s)
+was recorded with exactly these values.
+
+### PSD — `$SP` / `$GP`
+
+| index | parameter | value | notes |
+|---|---|---|---|
+| 0 | pre-trigger | **100** | must equal the trigger delay (`$ST` index 2) |
+| 1 | pre-gate | **25** | both gates open at `pre_trigger - pre_gate` = sample 75 |
+| 2 | short gate | **5** | samples [75, 80) — on the rising edge |
+| 3 | long gate | **47** | samples [75, 122) |
+| 4 | baseline reference | **0** | fed by the baseline restorer |
+
+### FCI — `$SF` / `$GF`
+
+| index | parameter | value | notes |
+|---|---|---|---|
+| 0 | `psa_l` low bin | **2** | shared lower edge — see the note below |
+| 1 | `psa_l` high bin | **60** | |
+| 2 | `psa_w` low bin | **2** | set equal to index 0 |
+| 3 | `psa_w` high bin | **178** | |
+
+The two lower edges are kept equal **by method, not by hardware.** `fci_axi4lite_regs.vhd` has two
+genuinely independent registers (0x00 `psa_l_lo`, 0x08 `psa_w_lo`), each driving its own comparison
+in `bin_accumulator.vhd`, and `$SF` can still set them separately. They are tied because FCI is the
+ratio of a narrow band to a wide band that *contains* it: a lower edge differing between the two is
+not a different tuning of the index, it is a different quantity, and every result here — this table,
+and `sweep_cosmics_gates.py`, which sweeps one shared `lo` — assumes the shared edge. The GUI
+enforces it with a single control (`Field.mirrors` in `config_panel.py`); the CLI does not.
+
+### Supporting configuration that run used
+
+| subsystem | values |
+|---|---|
+| trigger (`$ST`) | `threshold=204, rising=True, delay=100, depth=2048, cfd_fraction=64, cfd_delay=24` |
+| BLR (`$SB`) | `shift=12, gate_thr=120, holdoff=384, bypass=False, hold=False` (tracked baseline −6366) |
+
+### Measured separation, live
+
+Figure of merit `|Δmedian| / (FWHM₁ + FWHM₂)`, from a pooled double-Gaussian fit, integrating each
+LLD up to the 5800 keVee ULD. Separation cuts: FCI 0.9454, PSD 0.9458.
+
+| LLD | PSD FoM | FCI FoM |
+|---|---|---|
+| 475 keVee (⁶Li physical limit) | 0.658 | **0.886** |
+| 1000 keVee | 0.841 | **1.236** |
+| 2000 keVee | 1.014 | **1.771** |
+
+### The gate lengths and `pre_gate` are one inseparable triple
+
+**Do not transplant `short_gate`/`long_gate` to a different `pre_gate`.** Both gates open at
+`pre_trigger - pre_gate`, so that origin decides how much pulse a gate of a given length actually
+contains — and at `short_gate=5` the whole gate is only five samples wide, so a few samples of
+origin shift moves it off the pulse entirely. Measured, with a median pulse onset at sample 73:
+
+| `pre_gate` | short gate spans | short/long charge | PSD median | events with PSD > 1.0 |
+|---|---|---|---|---|
+| **25** (validated) | [75, 80) — on the rising edge | 0.05–0.09 | 0.91–0.95 | 3.1% of 412,973 |
+| 32 (mis-transplanted) | [68, 73) — pre-pulse baseline | 0.008–0.015 | 0.99 | 12.5% of 2,188 |
+
+PSD = `(long - short)/long` exceeds 1.0 exactly when `energy_short` goes negative, so a short gate
+sitting in baseline noise does not merely lose resolution — it reads back out of range. This was
+found live with a Cs-137 source and is why the sweep now rejects any candidate whose short gate
+carries under 2% of the long gate's median charge (a fraction, not a length, so it stays valid at
+any `pre_gate`).
+
+---
+
 ## 0. Scope: one datapath, two scintillator families
 
 Two published results define what this instrument is for. Neither is a hardware implementation;

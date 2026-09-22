@@ -27,6 +27,7 @@
 #include "blr.h"
 #include "fci_sink.h"
 #include "psd.h"
+#include "pulse_shaper.h"
 #include "registers.h"
 #include "vga_dac.h"
 #include "xil_io.h"
@@ -136,6 +137,20 @@ static void test_psd_core(void) {
   Psd_Clear(PSD_CORE_BASEADDR);
   check_ok("psd FIFO empty after clear", Psd_Level(PSD_CORE_BASEADDR) == 0);
 }
+
+#if PULSE_SHAPER_CORE_PRESENT
+/** @brief Bring-up register check for pulse_shaper_core, mirroring test_psd_core(): SelfTest
+ *         round-trips peaking/flat_top/decay through their own spec ranges and restores the
+ *         caller's prior values, then Clear is checked to actually empty the FIFO. Guarded on
+ *         PULSE_SHAPER_CORE_PRESENT so a build against an older, pre-shaper bitstream still
+ *         compiles and simply skips this section (see registers.h). */
+static void test_pulse_shaper_core(void) {
+  xil_printf("-- pulse_shaper_core registers --\r\n");
+  check_ok("shaper register write/read", PulseShaper_SelfTest(PULSE_SHAPER_CORE_BASEADDR));
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+  check_ok("shaper FIFO empty after clear", PulseShaper_Level(PULSE_SHAPER_CORE_BASEADDR) == 0);
+}
+#endif
 
 #if FCI_RESULT_VIA_FCI_SINK
 /** @brief Bring-up register check for fci_sink: watermark write/read-back, and FIFO-empties-on-
@@ -1378,6 +1393,9 @@ void Bringup_Init(void) {
   test_fci_core();
   test_blr_core();
   test_psd_core();
+#if PULSE_SHAPER_CORE_PRESENT
+  test_pulse_shaper_core();
+#endif
 #if FCI_RESULT_VIA_FCI_SINK
   test_fci_sink();
 #endif

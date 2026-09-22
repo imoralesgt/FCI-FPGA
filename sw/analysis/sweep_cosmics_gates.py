@@ -85,6 +85,21 @@ CLUSTER_WINDOW_KEVEE = (2900.0, 3400.0)
 DEPLOYED_PSD = dict(short_gate=10, long_gate=32)
 DEPLOYED_FCI = dict(l_hi=38, w_hi=120)
 PRE_TRIGGER, PRE_GATE = 100, 25
+"""These are the GATE ORIGIN this whole sweep is defined against, not incidental bookkeeping: both
+PSD gates open at pre_trigger - PRE_GATE (psd_from_traces), so a (short_gate, long_gate) pair found
+here is only meaningful when deployed at this same PRE_GATE. That is not a theoretical caveat -- it
+already went wrong once. This sweep's short_gate=5 result was found at PRE_GATE=25 (gate opens at
+sample 75) and deployed to the device at pre_gate=32 (gate opens at sample 68). Real Cs-137 traces
+put the median pulse onset at sample 73, so the same 5-sample gate sat ON the rising edge where it
+was optimized and entirely in PRE-PULSE BASELINE where it was deployed -- S/N 4.8 vs 1.9, and a
+PSD median of 0.947 vs 0.988. If the device's pre_gate changes, re-run this sweep; do not carry
+gate lengths across.
+
+The sweep result itself was sound at its own origin, and the failure above is specifically a
+transplant: run live at pre_gate=25 on real hardware, short_gate=5/long_gate=47 held PSD at a
+0.91-0.95 median across 475-5800 keVee with only 3.1% of 412,973 events above 1.0
+(cosmics_psd_fci_optimized_0001_fci_live.csv). The same pair at pre_gate=32 gives 12.5% above 1.0.
+Treat a (short_gate, long_gate) pair and its PRE_GATE as one inseparable triple."""
 
 # PSA_l/PSA_w's shared lower bin edge is swept too (sweep_fci's FCI_LO_RANGE, 0..5), not fixed at
 # sw/analysis/tune_fom.py's sweep_fci convention of always fixing it to 1 -- that fixed choice
@@ -288,8 +303,38 @@ def sweep_psd(cum: np.ndarray, cluster_mask: np.ndarray):
     # fragile artifact, not a real gate pair, the same failure mode already found and fixed for FCI.
     MIN_GAP = 20
 
+    # MIN_SHORT_FRACTION guards the OPPOSITE end of the same ratio. MIN_GAP only constrains how far
+    # apart the two gates are; nothing stops the short gate from carrying so little charge that
+    # PSD -> 1 instead of -> 0, and then reading back above 1.0 outright whenever its sum goes
+    # negative on noise.
+    #
+    # Deliberately a charge FRACTION and not a minimum short_gate in samples, because the quantity
+    # that actually matters is placement, not length, and a sample count cannot see placement. Both
+    # gates open at pre_trigger - PRE_GATE, a few samples ahead of the pulse so the foot of the
+    # rising edge is not clipped; how much pulse a short gate contains therefore depends on
+    # PRE_GATE as much as on its own length. Measured on real hardware at short_gate=5, the same
+    # five samples give:
+    #     pre_gate=25 (this sweep's frame): short/long ~ 0.05-0.09, PSD median 0.91-0.95, and only
+    #                                        3.1% of a 412,973-event live cosmics run above 1.0
+    #     pre_gate=32 (as deployed once):   short/long ~ 0.008-0.011, PSD median 0.99, and 12.5% of
+    #                                        a 2,188-event Cs-137 run above 1.0, ranging to 1.21
+    # A length-based floor would have rejected the first of those, which is a genuinely good
+    # operating point; the fraction separates them cleanly, at either PRE_GATE, with no per-frame
+    # retuning.
+    MIN_SHORT_FRACTION = 0.02
+
     def valid(short_gate, long_gate):
-        return long_gate >= short_gate + MIN_GAP
+        if long_gate < short_gate + MIN_GAP:
+            return False
+        gs = max(0, PRE_TRIGGER - PRE_GATE)
+        n = cum.shape[1] - 1
+        se, le = min(n, gs + short_gate), min(n, gs + long_gate)
+        short = cum[:, se] - cum[:, gs]
+        long_ = cum[:, le] - cum[:, gs]
+        ok = long_ > 0
+        if not ok.any():
+            return False
+        return float(np.median(short[ok] / long_[ok])) >= MIN_SHORT_FRACTION
 
     points, best = adaptive_grid_search((2, 300), (3, 800), score, valid)
     deployed_fom = score(DEPLOYED_PSD["short_gate"], DEPLOYED_PSD["long_gate"])
