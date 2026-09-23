@@ -649,6 +649,11 @@ class AppController(QObject):
             ("psd", self.config_client.get_psd),
             ("fci", self.config_client.get_fci),
             ("blr", self.config_client.get_blr),
+            # The shaper belongs here more than any of the others: the `peak` column IS its
+            # output, and `peaking` is also the divisor that turns that column into calibrated
+            # channels (see the calibration line below). A dataset recorded without it cannot be
+            # converted to keVee after the fact at all.
+            ("shaper", self.config_client.get_shaper),
         ):
             try:
                 cfg = getter()
@@ -666,6 +671,17 @@ class AppController(QObject):
             fields = ", ".join(f"{k}={v}" for k, v in dataclasses.asdict(cfg).items()
                                 if k != "watermark")
             lines.append(f"{label}: {fields}")
+
+        # Energy calibration, which is NOT a device setting -- it lives in the Spectrum tab, on the
+        # host. Recorded here anyway because without it the `peak` column is raw shaper counts and
+        # nothing downstream can turn it into keVee. The formula and the fold are spelled out
+        # rather than just the three numbers: `peak` is a shaped plateau that scales with
+        # `peaking`, so the coefficients apply to peak/peak_fold, not to peak -- a relationship
+        # that is not guessable from the file and has been got wrong more than once.
+        c0, c1, c2 = self.view.histogram_view.calibration()
+        fold = self.view.histogram_view.peak_fold()
+        lines.append(f"energy: c0={c0}, c1={c1}, c2={c2}, peak_fold={fold}"
+                     f"  [E_keVee = c0 + c1*ch + c2*ch^2, ch = peak/peak_fold]")
         return lines
 
     def _ensure_recording_session(self) -> bool:
@@ -705,7 +721,11 @@ class AppController(QObject):
                     return False
 
         settings_lines = self._device_settings_lines()
-        self.csv_logger = CsvLogger(list_dir, prefix, index, settings_lines)
+        # Same calibration/fold the header's `energy:` line reports, so the file's energy_cal
+        # column and its own header can never describe different mappings.
+        self.csv_logger = CsvLogger(list_dir, prefix, index, settings_lines,
+                                     calibration=self.view.histogram_view.calibration(),
+                                     peak_fold=self.view.histogram_view.peak_fold())
         self.scope_csv_logger = TraceCsvLogger(raw_dir, prefix, index, settings_lines)
         self.view.set_recording_active(True)
         logger.info(f"Recording started: {self.csv_logger.path}, {self.scope_csv_logger.path}")

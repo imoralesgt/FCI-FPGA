@@ -382,6 +382,12 @@ class HistogramView(QWidget):
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
 
+    def peak_fold(self) -> int:
+        """Raw shaper counts per channel (the device's `peaking`). Paired with calibration() by
+        anything that has to reproduce this tab's peak->keVee mapping elsewhere -- the CSV header
+        (controllers.py) records both, since the coefficients are meaningless without it."""
+        return self._peak_fold
+
     def set_peak_fold(self, peaking: int) -> None:
         """Sets the raw-shaper-counts-per-channel fold from the device's `peaking` (see
         DEFAULT_PEAK_FOLD). Wired from the Shaper panel's config_changed in main_window.py, so it
