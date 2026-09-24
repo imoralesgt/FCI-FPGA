@@ -147,6 +147,18 @@ class MainWindow(QMainWindow):
         self.histogram_view.calibration_changed.connect(self.live_view.set_calibration)
         self.live_view.set_calibration(*self.histogram_view.calibration())
 
+        # The fold from shaped-plateau amplitude back to ADC-code channels is the device's own
+        # `peaking` (histogram_view.DEFAULT_PEAK_FOLD explains why), so the Spectrum tab has to
+        # learn it from the Shaper panel rather than assume a value -- assuming one is what
+        # previously put the spectrum's full-span axis about 10x past anything the detector can
+        # produce. config_changed carries the freshly-read ShaperConfig on every connect and after
+        # every shaper Apply, which is exactly when the fold can change.
+        self.config_panel.shaper_config.config_changed.connect(
+            lambda cfg: self.histogram_view.set_peak_fold(cfg.peaking))
+        # And onward to LiveView, so the two energy axes keep sharing one channel definition --
+        # the calibration above is meaningless without the fold it was written against.
+        self.histogram_view.peak_fold_changed.connect(self.live_view.set_peak_fold)
+
         self.set_connected_controls_enabled(False)
         self.set_project_open(False)
 

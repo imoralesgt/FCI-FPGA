@@ -43,7 +43,7 @@ from PySide6.QtWidgets import (
 
 from fci_api import FciClient, FciError
 
-from .slider_spin import SliderSpinField
+from .slider_spin import CycleTimeField, SliderSpinField
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,28 @@ class Field:
     fields are the case in point: their minima are protocol bounds, while the value that actually
     works is the one firmware boots with (bringup.c's CFD_FRACTION / CFD_DELAY). Showing 1/256 and
     a 1-sample delay implied a configuration that would trigger on almost nothing."""
+    mirrors: str | None = None
+    """Name of another field in the same list whose control also drives this one. A mirrored field
+    gets NO control of its own -- it is written, read back and project-saved as a full field, but
+    its value always comes from the named field's widget, so the panel can only ever produce one
+    value for the pair.
+
+    Used for FCI's psa_l_lo/psa_w_lo. Note this is a constraint of the METHOD, not of the hardware:
+    fci_axi4lite_regs.vhd really does have two independent registers (0x00 psa_l_lo, 0x08
+    psa_w_lo), each driving its own comparison in bin_accumulator.vhd, and the CLI can still set
+    them independently over $SF. But FCI is the ratio of a narrow band to a wide one that CONTAINS
+    it, so a lower edge that differs between them is not a different tuning of the index, it is a
+    different quantity -- and every result in this project (docs/log/README.md's parameter table,
+    the sweep in sw/analysis/sweep_cosmics_gates.py, which sweeps one shared `lo`) assumes the
+    shared edge. Two spin boxes invited a combination none of that analysis covers."""
+    cycle_period_ns: float | None = None
+    """Set on a field whose wire value is a clock cycle count but whose natural human unit is
+    time (pulse_shaper_core's peaking/flat_top/decay, at 20 ns/cycle @ 50 Msps). When set, the
+    control is a CycleTimeField instead of a SliderSpinField: a microsecond-labelled spin box that
+    only ever lands on exact multiples of this period, stepping by one cycle at a time. The
+    dataclass value stays a plain integer cycle count either way -- this only changes what the
+    control DISPLAYS, matching the module's config values keep the wire unit convention (see
+    fci_api/types.py's own module docstring)."""
 
 
 class SubsystemPanel(QGroupBox):
@@ -114,13 +136,23 @@ class SubsystemPanel(QGroupBox):
         grid = QGridLayout(self)
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
-        for row, f in enumerate(fields):
+        row = -1
+        for f in fields:
+            if f.mirrors is not None:
+                # No control of its own: _widget_for() routes it to the field it mirrors, which is
+                # the whole point -- one widget, so the pair cannot be given two values here.
+                continue
+            row += 1
             lbl = QLabel(f.label + ":")
             if f.tooltip:
                 lbl.setToolTip(f.tooltip)
             grid.addWidget(lbl, row, 0)
             if f.is_bool:
                 w = QCheckBox()
+            elif f.cycle_period_ns is not None:
+                w = CycleTimeField(f.minimum, f.maximum, f.cycle_period_ns)
+                if f.default is not None:
+                    w.setValue(f.default)
             else:
                 w = SliderSpinField(f.minimum, f.maximum)
                 if f.default is not None:
@@ -131,7 +163,7 @@ class SubsystemPanel(QGroupBox):
             grid.addWidget(w, row, 1)
             self._controls[f.name] = w
 
-        btn_row = len(fields)
+        btn_row = row + 1  # rows actually added, which is fewer than len(fields) when any mirror
         self.btn_refresh = QPushButton("Refresh")
         self.btn_apply = QPushButton("Apply")
         self.btn_refresh.clicked.connect(self.refresh)
@@ -151,11 +183,19 @@ class SubsystemPanel(QGroupBox):
         if client is not None:
             self.refresh()
 
+    def _widget_for(self, f: Field):
+        """The control that holds `f`'s value -- its own, or the one it mirrors (Field.mirrors).
+        Every value path goes through here, which is what keeps a mirrored field a real field
+        everywhere (applied, project-saved, range-checked) while still having exactly one widget
+        behind it."""
+        return self._controls[f.mirrors or f.name]
+
     def set_controls_enabled(self, enabled: bool) -> None:
         self.btn_refresh.setEnabled(enabled)
         self.btn_apply.setEnabled(enabled)
-        for f in self._fields:
-            self._controls[f.name].setEnabled(enabled and not f.read_only)
+        for name, w in self._controls.items():
+            read_only = next((f.read_only for f in self._fields if f.name == name), False)
+            w.setEnabled(enabled and not read_only)
 
     def refresh(self) -> None:
         if self._client is None:
@@ -175,6 +215,20 @@ class SubsystemPanel(QGroupBox):
         self._last = cfg
         for f in self._fields:
             value = getattr(cfg, f.name)
+            if f.mirrors is not None:
+                # Displayed by the field it mirrors; nothing to populate here. Do surface a device
+                # state this panel cannot represent, though, rather than hiding it: the CLI and the
+                # RTL both allow the pair to differ (see Field.mirrors), so a value set outside
+                # this GUI can legitimately arrive split, and silently showing only one of the two
+                # would misreport what the device is actually running.
+                source = getattr(cfg, f.mirrors, None)
+                if value is not None and source is not None and value != source:
+                    logger.warning(f"{self.title()}: device has {f.mirrors}={source} but "
+                                   f"{f.name}={value}; this panel shows one control for both and "
+                                   f"an Apply will set {f.name} to {source}")
+                    self.lbl_status.setText(f"Device has {f.name}={value}, {f.mirrors}={source}; "
+                                            f"Apply will set both to {source}")
+                continue
             w = self._controls[f.name]
             if f.optional and value is None:
                 if f.settable_when_none:
@@ -231,7 +285,9 @@ class SubsystemPanel(QGroupBox):
         for f in self._fields:
             if f.read_only:
                 continue
-            w = self._controls[f.name]
+            # Mirrored fields are saved too, at the mirrored value -- a project file stays a
+            # complete description of the device's registers, with the same keys as before.
+            w = self._widget_for(f)
             current = w.isChecked() if f.is_bool else w.value()
             if f.optional:
                 if self._last is None or not f.settable_when_none:
@@ -257,6 +313,16 @@ class SubsystemPanel(QGroupBox):
                 logger.warning(f"{self.title()}: project sets unknown field '{name}'; ignored")
                 continue
             if field.read_only:
+                continue
+            if field.mirrors is not None:
+                # The field it mirrors carries the pair's value into the one shared control, so
+                # loading this one too would just overwrite it with the same number -- or, for a
+                # project saved before the two were tied, with a DIFFERENT one, silently letting
+                # key order decide which wins. Warn on that case and keep the source field's.
+                source = values.get(field.mirrors)
+                if source is not None and int(value) != int(source):
+                    logger.warning(f"{self.title()}: project has {field.mirrors}={source} but "
+                                   f"{name}={value}; loading {source} for both (see Field.mirrors)")
                 continue
             w = self._controls[name]
             if field.is_bool:
@@ -288,12 +354,15 @@ class SubsystemPanel(QGroupBox):
                 # Apply silently clobbered the fine gain the user had just set with a raw code of
                 # 0, i.e. essentially zero gain. On hardware that read as "event rate drops to zero
                 # after any VGA change, whatever value you set". Found 2026-09-03.
-                w = self._controls[f.name]
+                w = self._widget_for(f)
                 current = w.isChecked() if f.is_bool else w.value()
                 if current != self._shown_when_none.get(f.name, current):
                     kwargs[f.name] = current
                 continue
-            w = self._controls[f.name]
+            # _widget_for, so a mirrored field is still diffed against ITS OWN device value and
+            # written when they differ -- which is what pulls a device found with a split pair
+            # back into agreement on the next Apply.
+            w = self._widget_for(f)
             new_value = w.isChecked() if f.is_bool else w.value()
             if new_value != old_value:
                 kwargs[f.name] = new_value
@@ -394,9 +463,14 @@ PSD_FIELDS = [
 FCI_FIELDS = [
     # Upper bound is the Nyquist bin of the 2048-point transform. Bin spacing is 50 Msps / 2048 =
     # ~24.4 kHz, so bin k is k * 24.4 kHz.
-    Field("psa_l_lo", "PSA_l low", 0, 1024, tooltip="PSA_l low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_l_lo", "Low bin (both)", 0, 1024,
+          tooltip="Shared low FFT bin index for BOTH bands (~24.4 kHz per bin). One control, "
+                  "because FCI is the ratio of a narrow band to a wide band that contains it -- "
+                  "the two bands share a lower edge by construction, and every tuning result in "
+                  "this project assumes that. Applied to psa_l_lo and psa_w_lo alike."),
     Field("psa_l_hi", "PSA_l high", 0, 1024, tooltip="PSA_l high FFT bin index (~24.4 kHz per bin)."),
-    Field("psa_w_lo", "PSA_w low", 0, 1024, tooltip="PSA_w low FFT bin index (~24.4 kHz per bin)."),
+    Field("psa_w_lo", "PSA_w low", 0, 1024, mirrors="psa_l_lo",
+          tooltip="Mirrors the shared low bin; not separately settable here."),
     Field("psa_w_hi", "PSA_w high", 0, 1024, tooltip="PSA_w high FFT bin index (~24.4 kHz per bin)."),
     # Watermark deliberately not exposed here -- same reasoning as PSD_FIELDS above.
 ]
@@ -407,11 +481,25 @@ VGA_FIELDS = [
     Field("fine_dac_code", "Fine DAC code", 0, 4095, optional=True, tooltip="Raw DAC code."),
 ]
 
+SHAPER_CYCLE_NS = 20.0  # 1 clock period @ 50 Msps
+
 SHAPER_FIELDS = [
-    Field("peaking", "Peaking time", 0, 65535, tooltip="Peaking time (samples)."),
-    Field("gap", "Gap time", 0, 65535, tooltip="Gap time (samples)."),
-    Field("decay", "Decay", 0, 65535, tooltip="Decay / pole-zero time constant (samples)."),
-    Field("enable", "Enable", is_bool=True),
+    Field("peaking", "Peaking time", 10, 256, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Peaking (rise) time. Should sit a bit past the detector's own physical rise "
+                  "time so the trapezoid's ramp fully captures it. The flat-top plateau height "
+                  "scales with this value; changing it after calibrating requires recalibrating."),
+    Field("flat_top", "Flat-top", 0, 256, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Flat-top length. 0 is a valid \"triangular, no plateau\" configuration. Longer "
+                  "averages more samples (better noise rejection) at the cost of more dead time "
+                  "per pulse."),
+    Field("decay", "Decay (pole-zero)", 2, 300, cycle_period_ns=SHAPER_CYCLE_NS,
+          tooltip="Pole-zero decay time constant. Match this to the detector's own measured pulse "
+                  "decay tau -- for a matched value the flat-top plateau is exactly flat, "
+                  "independent of the pulse's true decay; a mismatch shows up as a slope or "
+                  "under/overshoot on the plateau instead."),
+    Field("enable", "Enable", is_bool=True,
+          tooltip="Off bypasses shaping entirely: the raw single-sample peak is reported instead, "
+                  "useful as an A/B reference against the shaped amplitude."),
 ]
 
 
@@ -446,6 +534,12 @@ class ConfigPanel(QWidget):
             self.panels.append(panel)
             inner_layout.addWidget(panel)
         inner_layout.addStretch(1)
+
+        self.shaper_config = next(p for p in self.panels if p.key == "shaper")
+        """Named accessor for the one panel another view has to reach into: HistogramView needs
+        `peaking` to know what a spectrum channel means (main_window.py wires config_changed to
+        it). Matches how LiveView/ScopeView expose psd_config/trigger_config for their own
+        cross-tab syncs, rather than making callers index self.panels positionally."""
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)

@@ -58,10 +58,20 @@ pre-trigger window inflates that ONE capture's own internal sigma well above the
 captured window's sigma is compared against the average across all of them and any capture whose
 own sigma exceeds that average is dropped before pooling.
 
-Calls the config client (a RemoteFciClient -- see acquisition_worker.py and config_panel.py's own
-docstring for why this is safe alongside the worker's concurrent polling) directly from the GUI
-thread while its modal dialog is open -- appropriate here too since this is a short,
-user-initiated, blocking action, not something in an automatic background path.
+Calls the config client (a RemoteFciClient) directly from the GUI thread while its modal dialog is
+open, the same way config_panel.py's own SubsystemPanel does for plain get/set RPCs -- but
+_poll_for_captures() below calls read_trace() in a loop for up to CAPTURE_TIMEOUT_S, and
+config_panel.py's own docstring is explicit that trace/batch reads are NOT safe as a one-off RPC
+alongside the worker's own streaming polls, because both would draw from state (FIFO
+level/adaptive pacing) the poll loop assumes it alone owns -- see AcquisitionWorker.
+suspend_batch_polling()'s docstring, and fom_sweep_worker.py for the same race in a different
+wizard. Confirmed the hard way, not just by re-reading that docstring: a live run hung the device
+completely (every command, not just this wizard's own -- $GT, $RA, $RS, $ST, $AD -- started
+returning zero bytes) during a calibration pass run without this guard, and never recovered for
+the rest of that session. `_run_calibration()` below now suspends the worker's batch polling for
+its whole span (not just the collection loop -- get_trigger()/set_trigger() are exactly as much a
+direct RPC as read_trace() is) and resumes it in a `finally`, mirroring FomSweepWorker.run()'s
+identical suspend/resume span exactly.
 """
 
 from __future__ import annotations
@@ -153,9 +163,14 @@ class CalibrationError(Exception):
 
 
 class CalibrationWizard(QDialog):
-    def __init__(self, client: FciClient, parent=None):
+    def __init__(self, client: FciClient, acquisition_worker, parent=None):
         super().__init__(parent)
         self._client = client
+        self._acq_worker = acquisition_worker
+        """Suspended for the duration of _run_calibration (see its own comment) -- the same race
+        FomWizard/FomSweepWorker already guard against: this wizard's own set_trigger()/read_trace()
+        RPCs would otherwise interleave with the background poller's $RA/$RB/$RS on the same
+        connection, at depth/delay values the poller doesn't know just changed."""
         self._proposed_threshold: int | None = None
         self._proposed_rising: bool | None = None
 
@@ -204,39 +219,48 @@ class CalibrationWizard(QDialog):
         self.btn_run.setEnabled(False)
         self.lbl_result.setText("Collecting captures...")
         self.progress_bar.setVisible(True)
+        # Suspended for this whole method, not just the collection loop: get_trigger()/set_trigger()
+        # below are just as much a direct RPC against the shared connection as read_trace() is, and
+        # the background poller racing ANY of them against a depth/delay it doesn't know just
+        # changed is the failure mode this guards against -- see __init__'s own comment and
+        # fom_sweep_worker.py's identical pattern for the same race.
+        self._acq_worker.suspend_batch_polling()
         try:
-            original = self._client.get_trigger()
-        except FciError as e:
-            QMessageBox.warning(self, "Calibration Failed", f"Could not read trigger config: {e}")
-            self.btn_run.setEnabled(True)
-            self.progress_bar.setVisible(False)
-            return
-
-        rising = bool(self.combo_polarity.currentData())
-        try:
-            baseline_samples, n_survivors = self._collect_pooled_baseline(original, rising)
-        except CalibrationError as e:
-            QMessageBox.warning(self, "Calibration Failed", str(e))
-            self.lbl_result.setText("")
-            self.btn_run.setEnabled(True)
-            self.progress_bar.setVisible(False)
-            return
-        except FciError as e:
-            QMessageBox.warning(self, "Calibration Failed", f"Device communication error: {e}")
-            self.lbl_result.setText("")
-            self.btn_run.setEnabled(True)
-            self.progress_bar.setVisible(False)
-            return
-        finally:
-            # depth/delay (and any bootstrap threshold) were only ever temporary instrumentation --
-            # always put them back, regardless of how collection went.
             try:
-                self._client.set_trigger(threshold=original.threshold, rising=original.rising,
-                                          delay=original.delay, depth=original.depth)
+                original = self._client.get_trigger()
             except FciError as e:
-                logger.warning(f"could not restore original trigger config after calibration: {e}")
-            self.btn_run.setEnabled(True)
-            self.progress_bar.setVisible(False)
+                QMessageBox.warning(self, "Calibration Failed", f"Could not read trigger config: {e}")
+                self.btn_run.setEnabled(True)
+                self.progress_bar.setVisible(False)
+                return
+
+            rising = bool(self.combo_polarity.currentData())
+            try:
+                baseline_samples, n_survivors = self._collect_pooled_baseline(original, rising)
+            except CalibrationError as e:
+                QMessageBox.warning(self, "Calibration Failed", str(e))
+                self.lbl_result.setText("")
+                self.btn_run.setEnabled(True)
+                self.progress_bar.setVisible(False)
+                return
+            except FciError as e:
+                QMessageBox.warning(self, "Calibration Failed", f"Device communication error: {e}")
+                self.lbl_result.setText("")
+                self.btn_run.setEnabled(True)
+                self.progress_bar.setVisible(False)
+                return
+            finally:
+                # depth/delay (and any bootstrap threshold) were only ever temporary instrumentation
+                # -- always put them back, regardless of how collection went.
+                try:
+                    self._client.set_trigger(threshold=original.threshold, rising=original.rising,
+                                              delay=original.delay, depth=original.depth)
+                except FciError as e:
+                    logger.warning(f"could not restore original trigger config after calibration: {e}")
+                self.btn_run.setEnabled(True)
+                self.progress_bar.setVisible(False)
+        finally:
+            self._acq_worker.resume_batch_polling()
 
         mean = statistics.fmean(baseline_samples)
         sigma = statistics.pstdev(baseline_samples, mu=mean)

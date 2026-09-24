@@ -54,6 +54,19 @@
  * FIFOs are 32 deep, so a watermark of 8 leaves 24 events of headroom for interrupt latency. */
 #define ACQ_WATERMARK 8
 
+/* Shaping defaults, from this detector's measured pulse shape (rise ~740-800 ns / ~37-40 cycles,
+ * decay tau ~4.9 us / ~245 cycles at 50 Msps -- see the measured-pulse-shape project note):
+ * peaking is a bit past the physical rise so the trapezoid's ramp fully captures it, flat_top is a
+ * modest plateau to average out noise, and decay matches the measured tau so the pole-zero
+ * correction is exact rather than merely close. Written explicitly here rather than relied upon
+ * from pulse_shaper_axi4lite_regs.vhd's own reset value (which happens to match today) for the
+ * same reason PSD_LONG_GATE is: this project has already been bitten once by a hardware reset
+ * default and a firmware constant silently drifting apart (see PSD_LONG_GATE's own comment above).
+ * These are discrimination-adjacent knobs and meant to be retuned, same as PSD_PRE_GATE/etc. */
+#define PULSE_SHAPER_PEAKING_DEFAULT 50
+#define PULSE_SHAPER_FLAT_TOP_DEFAULT 20
+#define PULSE_SHAPER_DECAY_DEFAULT 245
+
 /** @brief See acquisition.h. */
 void Acq_Configure(u32 trigger_delay, u32 sigma) {
   u32 gate_thr = (sigma > 0u) ? Blr_GateThresholdForSigma(sigma) : BLR_DEFAULT_GATE_THR;
@@ -77,6 +90,13 @@ void Acq_Configure(u32 trigger_delay, u32 sigma) {
    * afterwards belongs to this run. */
   Psd_Clear(PSD_CORE_BASEADDR);
   FciSink_Clear(FCI_SINK_BASEADDR);
+
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaper_Configure(PULSE_SHAPER_CORE_BASEADDR, PULSE_SHAPER_PEAKING_DEFAULT,
+                        PULSE_SHAPER_FLAT_TOP_DEFAULT, PULSE_SHAPER_DECAY_DEFAULT, 1);
+  PulseShaper_SetWatermark(PULSE_SHAPER_CORE_BASEADDR, ACQ_WATERMARK);
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+#endif
 }
 
 /** @brief See acquisition.h. */
@@ -84,8 +104,10 @@ void Acq_ResetStats(AcqStats *stats) {
   stats->paired = 0;
   stats->dropped_psd = 0;
   stats->dropped_fci = 0;
+  stats->dropped_shaper = 0;
   stats->psd_overflows = 0;
   stats->fci_overflows = 0;
+  stats->shaper_overflows = 0;
   stats->fci_framing_errors = 0;
 }
 
@@ -113,15 +135,59 @@ static s32 psd_parameter_scaled(s32 energy_short, s32 energy_long) {
 int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   PsdResult p;
   FciResult f;
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaperResult sh;
+  u64 min_ts;
+#endif
 
   if (!Psd_Peek(PSD_CORE_BASEADDR, &p))
     return 0;
   if (!FciSink_Peek(FCI_SINK_BASEADDR, &f))
     return 0;
+#if PULSE_SHAPER_CORE_PRESENT
+  if (!PulseShaper_Peek(PULSE_SHAPER_CORE_BASEADDR, &sh))
+    return 0;
 
+  /* Resynchronize: whichever side(s) are holding the oldest event have one the others already
+   * lost, so discard and re-peek until all three agree. Generalizes the original 2-way PSD/FCI
+   * recovery below to three sides -- each pass discards every side sitting at the OLD minimum (a
+   * snapshot taken before any of this pass's discards), which strictly reduces how far apart the
+   * three sides are, so the loop terminates in a bounded number of passes. Timestamps come from a
+   * single free-running counter, so "older" is a plain comparison -- no wrap handling, since 64
+   * bits at 50 MHz lasts ~11,700 years. */
+  while (!(p.timestamp == f.timestamp && f.timestamp == sh.timestamp)) {
+    min_ts = p.timestamp;
+    if (f.timestamp < min_ts)
+      min_ts = f.timestamp;
+    if (sh.timestamp < min_ts)
+      min_ts = sh.timestamp;
+
+    if (p.timestamp == min_ts) {
+      Psd_Discard(PSD_CORE_BASEADDR);
+      stats->dropped_psd++;
+      if (!Psd_Peek(PSD_CORE_BASEADDR, &p))
+        return 0;
+    }
+    if (f.timestamp == min_ts) {
+      FciSink_Discard(FCI_SINK_BASEADDR);
+      stats->dropped_fci++;
+      if (!FciSink_Peek(FCI_SINK_BASEADDR, &f))
+        return 0;
+    }
+    if (sh.timestamp == min_ts) {
+      PulseShaper_Discard(PULSE_SHAPER_CORE_BASEADDR);
+      stats->dropped_shaper++;
+      if (!PulseShaper_Peek(PULSE_SHAPER_CORE_BASEADDR, &sh))
+        return 0;
+    }
+  }
+
+  Psd_Discard(PSD_CORE_BASEADDR);
+  FciSink_Discard(FCI_SINK_BASEADDR);
+  PulseShaper_Discard(PULSE_SHAPER_CORE_BASEADDR);
+#else
   /* Resynchronize: whichever side is holding the older event has one the other side already lost,
-   * so discard it and look again. Timestamps come from a single free-running counter, so "older"
-   * is a plain comparison -- no wrap handling, since 64 bits at 50 MHz lasts ~11,700 years. */
+   * so discard it and look again. */
   while (p.timestamp != f.timestamp) {
     if (p.timestamp < f.timestamp) {
       Psd_Discard(PSD_CORE_BASEADDR);
@@ -138,6 +204,7 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
 
   Psd_Discard(PSD_CORE_BASEADDR);
   FciSink_Discard(FCI_SINK_BASEADDR);
+#endif
 
   out->timestamp = p.timestamp;
   out->psa_l = f.psa_l;
@@ -146,7 +213,12 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   out->energy_short = p.energy_short;
   out->energy_long = p.energy_long;
   out->psd_scaled = psd_parameter_scaled(p.energy_short, p.energy_long);
-  out->peak = p.peak;
+#if PULSE_SHAPER_CORE_PRESENT
+  out->peak = sh.amplitude;
+#else
+  out->peak = 0; /* no amplitude source in a bitstream built without pulse_shaper_core -- see
+                  * AcqEvent.peak's own doc comment in acquisition.h */
+#endif
 
   stats->paired++;
 
@@ -167,6 +239,10 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
     stats->fci_overflows = 1;
   if (FciSink_FramingError(FCI_SINK_BASEADDR))
     stats->fci_framing_errors = 1;
+#if PULSE_SHAPER_CORE_PRESENT
+  if (PulseShaper_Overflowed(PULSE_SHAPER_CORE_BASEADDR))
+    stats->shaper_overflows = 1;
+#endif
 
   return 1;
 }
@@ -217,9 +293,11 @@ void Acq_PrintEventCsv(const AcqEvent *ev) {
 
 /** @brief See acquisition.h. */
 void Acq_PrintStats(const AcqStats *stats) {
-  xil_printf("  [STATS] paired=%u  dropped(psd=%u fci=%u)  overflow(psd=%u fci=%u)  framing=%u\r\n",
-             stats->paired, stats->dropped_psd, stats->dropped_fci, stats->psd_overflows,
-             stats->fci_overflows, stats->fci_framing_errors);
+  xil_printf("  [STATS] paired=%u  dropped(psd=%u fci=%u shaper=%u)  "
+             "overflow(psd=%u fci=%u shaper=%u)  framing=%u\r\n",
+             stats->paired, stats->dropped_psd, stats->dropped_fci, stats->dropped_shaper,
+             stats->psd_overflows, stats->fci_overflows, stats->shaper_overflows,
+             stats->fci_framing_errors);
 }
 
 #endif /* FCI_RESULT_VIA_FCI_SINK */

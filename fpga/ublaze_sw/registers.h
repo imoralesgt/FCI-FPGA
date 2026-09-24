@@ -93,7 +93,6 @@
 #define PSD_TS_HI_OFFSET 0x28        /* RO */
 #define PSD_EVENT_COUNT_OFFSET 0x2C  /* RO */
 #define PSD_WATERMARK_OFFSET 0x30    /* irq_o asserts at this FIFO level; 0 disables */
-#define PSD_PEAK_OFFSET 0x34         /* RO, signed -- max deviation over the whole frame */
 
 #define PSD_CTRL_POP_MASK (1U << 0)
 #define PSD_CTRL_CLEAR_MASK (1U << 1)
@@ -101,7 +100,91 @@
 #define PSD_STATUS_FULL_MASK (1U << 1)
 #define PSD_STATUS_OVERFLOW_MASK (1U << 2)
 #define PSD_STATUS_LEVEL_SHIFT 8
-#define PSD_STATUS_LEVEL_MASK 0x3FU
+/* FIFO_DEPTH=512 in the block design (psd_core_0's own CONFIG.FIFO_DEPTH override) ->
+ * LEVEL_WIDTH = clog2(512)+1 = 11 bits (psd_core_pkg.vhd's clog2 returns a value's BIT-LENGTH,
+ * not the standard ceil-log2 -- clog2(512)=10, one more than the textbook 9, because 512 itself
+ * needs 10 bits to represent as a number; see variable_delay.vhd's own header for the same
+ * convention). This mask has disagreed with the real depth before (see pulse_shaper's version of
+ * this comment) -- computed fresh here against the CURRENT depth rather than copied forward. */
+#define PSD_STATUS_LEVEL_MASK 0x7FFU
+
+/* ---------------------------------------------------------------------------------------------
+ * pulse_shaper_core (fpga/rtl/pulse_shaper_core) -- hand-written AXI4-Lite register map, keep in
+ * sync with pulse_shaper_axi4lite_regs.vhd.
+ *
+ * Jordanov-Knoll recursive trapezoidal filter, replacing psd_core's former single-sample raw-peak
+ * estimate (PSD_PEAK_OFFSET, removed above) as the spectroscopy energy channel: same broadcaster
+ * tap as psd_core/fci_core, same result-FIFO-plus-timestamp shape, one amplitude field instead of
+ * PSD's three.
+ *
+ * Guarded on the cell's own XPAR symbol, not assumed present, so firmware still builds -- and
+ * $GH/$SH still work in their pre-shaper shadow form -- against an older bitstream that predates
+ * this core. Mirrors FCI_CORE_HAS_RESULT_FIFO's presence-detection precedent above.
+ * ------------------------------------------------------------------------------------------- */
+#ifdef XPAR_PULSE_SHAPER_CORE_0_BASEADDR
+#define PULSE_SHAPER_CORE_PRESENT 1
+#define PULSE_SHAPER_CORE_BASEADDR XPAR_PULSE_SHAPER_CORE_0_BASEADDR
+#else
+#define PULSE_SHAPER_CORE_PRESENT 0
+#endif
+
+#define PULSE_SHAPER_PEAKING_OFFSET 0x00  /* RW, samples, saturating 10..256 */
+#define PULSE_SHAPER_FLAT_TOP_OFFSET 0x04 /* RW, samples, saturating 0..256 */
+#define PULSE_SHAPER_DECAY_OFFSET 0x08    /* RW, samples, saturating 2..300 */
+#define PULSE_SHAPER_ENABLE_OFFSET 0x0C   /* RW, [0] */
+#define PULSE_SHAPER_CTRL_OFFSET 0x10     /* W, self-clearing: [0] pop, [1] clear */
+#define PULSE_SHAPER_STATUS_OFFSET 0x14   /* RO */
+#define PULSE_SHAPER_AMPLITUDE_OFFSET 0x18 /* RO, signed -- shaped-peak amplitude */
+#define PULSE_SHAPER_TS_LO_OFFSET 0x1C     /* RO */
+#define PULSE_SHAPER_TS_HI_OFFSET 0x20     /* RO */
+#define PULSE_SHAPER_EVENT_COUNT_OFFSET 0x24 /* RO */
+#define PULSE_SHAPER_WATERMARK_OFFSET 0x28   /* irq_o asserts at this FIFO level; 0 disables --
+                                               * built for parity with psd_core/fci_core but not
+                                               * wired to an interrupt input in the block design
+                                               * (see registers.h's own xlconcat vector-numbering
+                                               * note below); firmware polls. */
+/* Firmware-computed 1/decay, Q2.16 fixed point (SIGNED field, though the value is always
+ * non-negative for a valid decay) -- what the pole-zero correction in trapezoidal_filter.vhd
+ * actually uses. Not part of the $SH/$GH indexed field set: no
+ * CLI command writes this directly. PulseShaper_Configure()/shaper_set()'s decay case write both
+ * this and PULSE_SHAPER_DECAY_OFFSET together, so the CLI-visible `decay` parameter (in samples)
+ * and what the datapath consumes never disagree. See trapezoidal_filter.vhd's header comment for
+ * why the reciprocal is computed in software rather than by a per-sample fabric divider. */
+#define PULSE_SHAPER_DECAY_RECIP_OFFSET 0x2C
+#define PULSE_SHAPER_DECAY_RECIP_FRAC_BITS 16
+
+#define PULSE_SHAPER_CTRL_POP_MASK (1U << 0)
+#define PULSE_SHAPER_CTRL_CLEAR_MASK (1U << 1)
+#define PULSE_SHAPER_STATUS_EMPTY_MASK (1U << 0)
+#define PULSE_SHAPER_STATUS_FULL_MASK (1U << 1)
+#define PULSE_SHAPER_STATUS_OVERFLOW_MASK (1U << 2)
+#define PULSE_SHAPER_STATUS_LEVEL_SHIFT 8
+/* FIFO_DEPTH=512 in the block design (pulse_shaper_core_0's own CONFIG.FIFO_DEPTH override) ->
+ * LEVEL_WIDTH = clog2(512)+1 = 11 bits (this core's own clog2 returns a value's BIT-LENGTH, not
+ * the standard ceil-log2 -- clog2(512)=10, one more than the textbook 9; see variable_delay.vhd's
+ * header for the same convention). Same value as PSD_STATUS_LEVEL_MASK/FCI_SINK_STATUS_LEVEL_MASK
+ * above, since all three cores now share the same 512-deep override and the identical
+ * clog2(FIFO_DEPTH)+1 formula.
+ *
+ * This core's own RTL DEFAULT (pulse_shaper_core_top.vhd) stays 128, not 512 -- same relationship
+ * psd_core_top.vhd/fci_core_rtl_top.vhd already have with THEIR RTL default of 32: a small,
+ * always-safe fallback for a standalone instantiation, with the block design as the one place
+ * that sets what actually gets built. 512 itself is a deliberate step down from an earlier
+ * attempt at 1024: result_fifo.vhd's memory read is combinational, so it can never infer block
+ * RAM at any depth, and going to 1024 on this core alone measured +2499 LUTs (standalone OOC
+ * synthesis; see pulse_shaper_core_top.vhd's FIFO_DEPTH comment) on top of psd_core_0/fci_core_0
+ * already running the same pattern at 1024 each -- together enough to put the whole design over
+ * its LUT budget (DRC UTLZ-1). Dropping all three to 512 recovered enough from the other two to
+ * fit, while keeping them equal -- since Acq_PopPaired() pairs all three FIFOs in lockstep, the
+ * system-wide burst buffer is bounded by the SHALLOWEST of the three regardless, so an uneven
+ * split buys nothing.
+ *
+ * This exact mask went stale once already going from 1024/128 to today's 512 -- it was written
+ * once per depth rather than derived, and nothing caught the disagreement until it was checked by
+ * hand. If this depth changes again, update this mask (and PSD_STATUS_LEVEL_MASK and
+ * FCI_SINK_STATUS_LEVEL_MASK, which move with it since all three track the same override) to
+ * clog2(depth)+1 bits alongside it. */
+#define PULSE_SHAPER_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * fci_core (fpga/rtl/fci_core_rtl) -- hand-written VHDL core: 2048-point FFT, two programmable bin
@@ -196,7 +279,12 @@
  * FciSink_FramingError() still compiles and reports "no error". */
 #define FCI_SINK_STATUS_FRAMING_ERR_MASK (1U << 3)
 #define FCI_SINK_STATUS_LEVEL_SHIFT 8
-#define FCI_SINK_STATUS_LEVEL_MASK 0x3FU
+/* FCI_SINK_BASEADDR is FCI_CORE_BASEADDR (see above) -- this mask is really fci_core_0's, whose
+ * FIFO_DEPTH is 512 in the block design. LEVEL_WIDTH = clog2(512)+1 = 11 bits (fci_core_pkg.vhd's
+ * clog2 returns a value's BIT-LENGTH, not the standard ceil-log2 -- clog2(512)=10, one more than
+ * the textbook 9; see variable_delay.vhd's own header for the same convention). Computed fresh
+ * against the current depth, same reasoning as PSD_STATUS_LEVEL_MASK above. */
+#define FCI_SINK_STATUS_LEVEL_MASK 0x7FFU
 
 /* ---------------------------------------------------------------------------------------------
  * axi_dma_0 (Simple DMA, no Scatter-Gather) -- S2MM path carries {PSA_l, PSA_w} per event into

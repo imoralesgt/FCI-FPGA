@@ -27,6 +27,7 @@
 #include "blr.h"
 #include "fci_sink.h"
 #include "psd.h"
+#include "pulse_shaper.h"
 #include "registers.h"
 #include "vga_dac.h"
 #include "xil_io.h"
@@ -136,6 +137,20 @@ static void test_psd_core(void) {
   Psd_Clear(PSD_CORE_BASEADDR);
   check_ok("psd FIFO empty after clear", Psd_Level(PSD_CORE_BASEADDR) == 0);
 }
+
+#if PULSE_SHAPER_CORE_PRESENT
+/** @brief Bring-up register check for pulse_shaper_core, mirroring test_psd_core(): SelfTest
+ *         round-trips peaking/flat_top/decay through their own spec ranges and restores the
+ *         caller's prior values, then Clear is checked to actually empty the FIFO. Guarded on
+ *         PULSE_SHAPER_CORE_PRESENT so a build against an older, pre-shaper bitstream still
+ *         compiles and simply skips this section (see registers.h). */
+static void test_pulse_shaper_core(void) {
+  xil_printf("-- pulse_shaper_core registers --\r\n");
+  check_ok("shaper register write/read", PulseShaper_SelfTest(PULSE_SHAPER_CORE_BASEADDR));
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+  check_ok("shaper FIFO empty after clear", PulseShaper_Level(PULSE_SHAPER_CORE_BASEADDR) == 0);
+}
+#endif
 
 #if FCI_RESULT_VIA_FCI_SINK
 /** @brief Bring-up register check for fci_sink: watermark write/read-back, and FIFO-empties-on-
@@ -628,7 +643,14 @@ int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
  *     Idle=1 with no IOC means armed and waiting -- the trigger genuinely never fired.
  *     Idle=0 means a transfer is in flight, i.e. beats are stuck mid-stream.
  *   INTC ISR raw status / IER enables / IPR pending. IOC set in DMASR while the matching IPR bit
- *     never clears points at the interrupt path, not the datapath. */
+ *     never clears points at the interrupt path, not the datapath.
+ *   psd_event_count -- psd_core_0's own hardware event counter, read directly (bypassing $RC,
+ *     which this standalone bring-up tool doesn't run). psd_core sits on a DIFFERENT branch of the
+ *     same lockstep axis_broadcaster_0 split axi_dma_1/fci_core do. If this is ALSO frozen at the
+ *     same moment axi_dma_1's raw_events stalls, that is a third, independent data point pointing
+ *     at a broadcaster-wide stall (upstream of the split) rather than something specific to one
+ *     consumer branch -- see the project memory on this investigation for why that distinction
+ *     matters here. */
 static void report_raw_path_state(void) {
   xil_printf("  [DIAG] dma1 S2MM_DMASR=0x%08x  MM2S_DMASR=0x%08x  raw_events=%d\r\n",
              Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET),
@@ -638,6 +660,8 @@ static void report_raw_path_state(void) {
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IER_OFFSET),
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_IPR_OFFSET),
              Xil_In32(AXI_INTC_BASEADDR + AXI_INTC_MER_OFFSET), INTC_DMA_1_S2MM_BIT);
+  xil_printf("  [DIAG] psd_event_count=%d (same broadcaster, different branch than dma1/fci_sink)\r\n",
+             Psd_EventCount(PSD_CORE_BASEADDR));
 }
 
 /* --- Automatic threshold calibration ------------------------------------------------------
@@ -1369,6 +1393,9 @@ void Bringup_Init(void) {
   test_fci_core();
   test_blr_core();
   test_psd_core();
+#if PULSE_SHAPER_CORE_PRESENT
+  test_pulse_shaper_core();
+#endif
 #if FCI_RESULT_VIA_FCI_SINK
   test_fci_sink();
 #endif

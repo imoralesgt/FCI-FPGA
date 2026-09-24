@@ -1,12 +1,36 @@
-"""Live energy spectrum tab: accumulates the FPGA-computed peak amplitude (fpga/rtl/psd_core's new
-`peak` field -- see dual_gate_integrator.vhd) into a fixed-channel histogram, offers up to 3
-calibration coefficients to relabel the x-axis in energy units, and exports to the ORTEC/Maestro
-SPE ASCII format. The same coefficients are shared live with LiveView's FCI/PSD-vs-Energy plots
-(see calibration_changed below), so this tab is where a session's one calibration is set.
+"""Live energy spectrum tab: accumulates the FPGA-computed peak amplitude (pulse_shaper_core's
+shaped-pulse plateau -- see fpga/rtl/pulse_shaper_core/src/trapezoidal_filter.vhd) into a
+fixed-channel histogram, offers up to 3 calibration coefficients to relabel the x-axis in energy
+units, and exports to the ORTEC/Maestro SPE ASCII format. The same coefficients are shared live
+with LiveView's FCI/PSD-vs-Energy plots (see calibration_changed below), so this tab is where a
+session's one calibration is set.
 
 Peak amplitude, not energy_long, is the spectroscopy channel here: it is a whole-pulse property
 independent of the PSD gates and of the energy_long <= 0 BLR-gate pathology LiveView's FCI/PSD
 plots have to exclude (see live_view.py's module docstring) -- every triggered pulse has a peak.
+
+Raw channel range: the shaped amplitude scales with the configured `peaking` time (see
+ShaperConfig), unlike the raw single-sample peak this tab's channel axis (HIST_CHANNELS below) was
+originally sized for -- a full-scale pulse at a large `peaking` can exceed HIST_CHANNELS and clip
+into the top bin before calibration ever sees it (calibration only relabels bin EDGES for display,
+it cannot recover resolution already lost to clipping at accumulation time).
+
+This is not a hypothetical: a live run at the DEFAULT shaper config (peaking=50) put nearly every
+real cosmic-ray event above the old 16384-channel ceiling and piled them into the single top bin
+-- confirmed by replaying a captured raw trace (A0=759 ADC counts) through the documented filter
+algorithm in software, which lands the shaped plateau at ~38698, more than 2x the old ceiling.
+
+A first fix widened HIST_CHANNELS itself to the full worst-case shaper range (ADC span x
+`peaking`'s hardware max) -- that avoided the clipping, but it also moved what "one channel" means
+away from "one ADC code", which is the unit every calibration coefficient here has always been
+defined against. The visible symptom: exported $MCA_CAL no longer matched the typed c0/c1/c2 even
+at the slider's finest position, because that position stopped meaning factor=1 (no decimation) the
+moment HIST_CHANNELS grew past DISPLAY_CHANNEL_CHOICES' own top entry -- see _rebin_calibration.
+HIST_CHANNELS below is back to 16384 (one ADC code per channel, matching calibration's own unit and
+restoring "finest slider position = identity, typed == exported"); add_events() instead folds the
+shaper's wider raw range down into that same 16384-channel accumulation BEFORE binning, dividing
+by the device's own `peaking` -- see DEFAULT_PEAK_FOLD below for why that divisor and not a fixed
+one, which was itself a third iteration on this.
 """
 
 from __future__ import annotations
@@ -38,14 +62,40 @@ from fci_api import AcqEvent
 
 HIST_CHANNELS = 16384
 """One bin per raw ADC code, 1:1, spanning the full 0..16383 theoretical range: 2^14, the ADC's
-native resolution -- NOT the 16-bit width of the AXI-Stream datapath `peak` travels over
-(dual_gate_integrator.vhd's DATA_WIDTH), which is wider than the sample data it actually carries.
+native resolution (see the ADC_WIDTH note in docs/log/README.md). This is the unit every
+calibration coefficient in this tab is defined against -- c0/c1/c2 mean "keVee per ADC code", not
+"keVee per whatever the accumulation array happens to be sized to" -- and DISPLAY_CHANNEL_CHOICES,
+_rebin_counts and _rebin_calibration all key off it too, so changing it changes what a typed
+calibration value MEANS, not just how big an array gets (see this module's own docstring for why
+that distinction matters and tripped up a previous fix here).
+
 Real events cluster in the lower part of that 16384 span -- the upper channels legitimately read
 zero -- but the axis itself covers the whole theoretical ceiling, which is the normal convention
 for this class of instrument rather than an axis auto-scaled to whatever was captured so far. This
 is the accumulation resolution ONLY: DISPLAY_CHANNEL_CHOICES below lets the user view/export at a
 coarser rebin without losing the underlying full-resolution counts (Clear is the only thing that
 discards them)."""
+
+DEFAULT_PEAK_FOLD = 50
+"""Raw shaper counts per accumulation channel, until the device reports its real `peaking`
+(set_peak_fold(), wired from the Shaper panel in main_window.py). The fold IS `peaking`: the shaped
+plateau is approximately dev_peak * peaking (trapezoidal_filter.vhd), so dividing it back out is
+what returns a channel to meaning one raw ADC code -- which is what HIST_CHANNELS above says a
+channel is, and what this tab's calibration coefficients are defined against.
+
+Folding by the CONFIGURED peaking rather than by a fixed number is not a refinement, it is what
+makes the channel axis physical, and getting it wrong is visible on screen. A previous version here
+folded by `peaking`'s hardware MAXIMUM (256) instead, on the reasoning that a worst-case ceiling can
+never clip. It cannot -- but at the peaking actually in use (50) it left only A0*50/256 = 19.5% of
+a channel per ADC code, so just 1,600 of 16,384 channels were reachable and the full-span axis
+(_reset_view_to_full_span) advertised 36,534 keVee against a detector that saturates near 3,568 --
+a 10x overshoot, most of the axis unreachable by construction. Dividing by the real `peaking`
+instead maps A0 onto channels 1:1 at ANY peaking, so the ceiling is the ADC's own span, the clip
+guard in add_events() holds for every peaking rather than only the worst case, and a calibration
+survives a peaking change instead of silently rescaling by the ratio of the two.
+
+50 as the pre-connect default is the firmware's own boot value (PULSE_SHAPER_PEAKING_DEFAULT in
+acquisition.c), so an unconnected session shows the same scale it will show once connected."""
 
 DISPLAY_CHANNEL_CHOICES = [256, 512, 1024, 2048, 4096, 8192, 16384]
 """Selectable spectrum spans, via the slider. This detector's own energy resolution is ~6% at
@@ -152,6 +202,13 @@ def write_spe(path: Path, counts: np.ndarray, calibration: tuple[float, float, f
 
 
 class HistogramView(QWidget):
+    peak_fold_changed = Signal(int)
+    """Emitted whenever the fold changes, so LiveView's own peak->channel conversion tracks it --
+    the two tabs share this tab's calibration, so they must share the channel definition it is
+    written against or their energy axes drift apart by the ratio of the two folds (which is
+    exactly what happened when the fold was introduced here and not there). Wired in
+    main_window.py alongside calibration_changed, the same way."""
+
     calibration_changed = Signal(float, float, float)
     """Emitted with (c0, c1, c2) whenever any coefficient changes, so LiveView's FCI/PSD-vs-Energy
     plots (which compute their own keVee axis from the same coefficients applied to each event's
@@ -170,6 +227,8 @@ class HistogramView(QWidget):
     def __init__(self):
         super().__init__()
         self._counts = np.zeros(HIST_CHANNELS, dtype=np.int64)
+        self._peak_fold = DEFAULT_PEAK_FOLD
+        """Raw shaper counts per channel -- the device's `peaking`. See DEFAULT_PEAK_FOLD."""
         self._total = 0
         self._start_time: float | None = None
         self._running = True
@@ -323,6 +382,32 @@ class HistogramView(QWidget):
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
 
+    def peak_fold(self) -> int:
+        """Raw shaper counts per channel (the device's `peaking`). Paired with calibration() by
+        anything that has to reproduce this tab's peak->keVee mapping elsewhere -- the CSV header
+        (controllers.py) records both, since the coefficients are meaningless without it."""
+        return self._peak_fold
+
+    def set_peak_fold(self, peaking: int) -> None:
+        """Sets the raw-shaper-counts-per-channel fold from the device's `peaking` (see
+        DEFAULT_PEAK_FOLD). Wired from the Shaper panel's config_changed in main_window.py, so it
+        arrives on every connect and after every shaper Apply.
+
+        Deliberately does NOT touch the calibration, and does NOT clear accumulated counts. Both
+        are tempting and both would be wrong: because the fold IS `peaking`, the two cancel in
+        plateau/fold = A0*peaking/peaking = A0, so a given physical pulse lands in the SAME channel
+        at every peaking. The channel axis is already peaking-invariant, so a calibration stays
+        valid across a peaking change and so do counts recorded before it. An earlier version here
+        rescaled c1 by old_fold/peaking on the reasoning that the scale had moved; it had not, and
+        the double compensation made a saturating pulse read 1,784 keVee at peaking=100 against
+        3,568 at peaking=50 for the same physical event.
+        """
+        if peaking <= 0 or peaking == self._peak_fold:
+            return
+        self._peak_fold = peaking
+        self.peak_fold_changed.emit(peaking)
+        self._reset_view_to_full_span()
+
     # ------------------------------------------------------------------- project save/restore
 
     def set_export_directory(self, directory: Path | None) -> None:
@@ -393,12 +478,18 @@ class HistogramView(QWidget):
         if self._start_time is None:
             self._start_time = time.time()
         peaks = np.fromiter((e.peak for e in events), dtype=np.int64, count=len(events))
-        # Clamped rather than dropped: a peak outside [0, HIST_CHANNELS) is a real, if unusual,
+        # Fold the shaped plateau back to ADC-code scale FIRST, then clamp: dividing by `peaking`
+        # is what makes a channel one ADC code (see DEFAULT_PEAK_FOLD), so the clamp afterwards is
+        # against the ADC's own span rather than against a shaper-scaled ceiling that moves with
+        # `peaking`. Clamped rather than dropped: a peak outside the range is a real, if unusual,
         # event (e.g. a triggered frame that never rose above baseline -- see PEAK_MIN's derivation
-        # in dual_gate_integrator.vhd), and folding it into the nearest edge bin keeps every event
+        # in trapezoidal_filter.vhd), and folding it into the nearest edge bin keeps every event
         # counted in _total, matching what the device's own event_count reports.
+        peaks //= self._peak_fold
         np.clip(peaks, 0, HIST_CHANNELS - 1, out=peaks)
-        self._counts += np.bincount(peaks, minlength=HIST_CHANNELS)
+        # np.add.at, not np.bincount: bincount would allocate a full HIST_CHANNELS-length array on
+        # every call just to add a handful of counts into it. np.add.at scatter-adds in place.
+        np.add.at(self._counts, peaks, 1)
         self._total += len(events)
         self._rate_samples.append((time.monotonic(), len(events)))
         self._update_status_label()
