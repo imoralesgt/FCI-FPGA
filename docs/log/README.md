@@ -119,17 +119,21 @@ enforces it with a single control (`Field.mirrors` in `config_panel.py`); the CL
 
 ### Energy calibration
 
-**E = 2.451 + 0.44711 × channel**, where `channel = peak / peaking` (§8w). Measured from the two
-Cs-137 lines directly — 661.66 keV at channel 1474.4, 32.06 keV Ba X-ray at channel 66.2 — and
-cross-checked against the Compton edge with no free parameters. Enter it in the Spectrum tab as
-`c0 = 2.451, c1 = 0.44711, c2 = 0`.
+**E ≈ 3.2 + 0.4402 × channel**, where `channel = peak / peaking` (§8w) — the most recent measured
+value (run 3, 2026-09-23). Enter it in the Spectrum tab as `c0 = 3.2, c1 = 0.4402, c2 = 0`.
 
-This is **gain-dependent**, unlike everything else on this page: it holds for the VGA setting that
-run used, and must be re-measured after any gain change. Note it is defined against a FOLDED
-channel, not the raw `peak` — `C1_KEVEE_PER_COUNT * peak` from the pre-shaper era does not apply,
-because `peak` is now the shaper's `peaking`-scaled plateau. Useful anchors on this scale: the ⁶Li
-capture peak lands at ~3,100 keVee, and the preamplifier's own output limit clips the spectrum at
-~6.4 MeVee.
+**Unlike everything else on this page, this is not a fixed constant — re-measure it.** It drifts:
+the Cs-137 photopeak moved from channel 1474.2 to 1495.7 in a single day, a 1.4% change, so run 2's
+`0.44717` and run 3's `0.44024` are both correct for their own run and neither is correct for a
+later one. `sw/analysis/plot_cs137_overnight.py` re-fits it per dataset rather than assuming, which
+is the pattern to copy. A Cs-137 source makes this easy: it puts two known lines (661.66 keV,
+32.06 keV Ba X-ray) directly in the spectrum, and the Compton edge then checks the result with no
+free parameters.
+
+Note it is defined against a FOLDED channel, not the raw `peak` — `C1_KEVEE_PER_COUNT * peak` from
+the pre-shaper era does not apply, because `peak` is now the shaper's `peaking`-scaled plateau.
+Useful anchors on this scale: the ⁶Li capture peak lands at ~3,050 keVee, and the detector
+preamplifier's own output limit clips the spectrum at ~6.4 MeVee.
 
 ### Supporting configuration that run used
 
@@ -4632,81 +4636,120 @@ than either result alone.
 
 ---
 
-## 8w. Neutrons resolved *with a gamma source on the detector*, and the first real energy calibration
+## 8w. Neutrons resolved *with a gamma source on the detector* — two overnight runs
 
-A 17.37-hour overnight run with a **Cs-137 source sitting close to the crystal**: 15,941,257 events
-at 254.9 evt/s (`noDetector/LIST/cs137_0002_fci_live.csv`), recorded at the validated PSD triple
-(`pre_gate=25, short_gate=5, long_gate=47`) and the optimal FCI windows (`lo=2, l_hi=60,
-w_hi=178`) — the configuration in this log's own parameter table. Analysis:
-`sw/analysis/plot_cs137_overnight.py`.
+Two consecutive overnight runs with a **Cs-137 source sitting close to the crystal**, both at the
+validated PSD triple (`pre_gate=25, short_gate=5, long_gate=47`) and the optimal FCI windows
+(`lo=2, l_hi=60, w_hi=178`) — the configuration in this log's own parameter table. Analysis:
+`sw/analysis/plot_cs137_overnight.py`, which processes both.
 
-Every previous neutron result here came from a quiet ambient run. This one asks a harder and more
+| | run 2 | run 3 |
+|---|---|---|
+| file | `cs137_0002_fci_live.csv` | `cs137_0003_fci_live.csv` |
+| started | 2026-09-22 16:50 | 2026-09-23 17:47 |
+| duration / events | 17.37 h, 15,941,257 | 22.35 h, 20,158,792 |
+| trigger threshold | 180 | 200 |
+
+Every previous neutron result here came from a quiet ambient run. These ask a harder and more
 realistic question: with a gamma emitter deliberately flooding the detector, does the ⁶Li capture
-population still come out? It does, cleanly.
+population still come out? It does, twice, and the two runs agree closely enough that the
+measurement is clearly reproducing rather than one dataset behaving unusually.
 
-### A real energy calibration, from lines rather than from an endpoint estimate
+### Self-calibration per run, because the gain drifts
 
-Every earlier analysis converted energy with `C1_KEVEE_PER_COUNT * peak`. That constant does not
-apply any more: `peak` is now `pulse_shaper_core`'s shaped plateau, which scales with `peaking`
-(§8t), so the raw-peak scale is gone. The source fixes this by putting two known lines directly in
-the spectrum:
+Energy cannot come from the old `C1_KEVEE_PER_COUNT * peak`: `peak` is now `pulse_shaper_core`'s
+shaped plateau, which scales with `peaking` (§8t). Nor can one constant serve both runs — **the
+Cs-137 photopeak moved from channel 1474.2 to 1495.7 between them, a 1.4% gain drift in one day.**
+Each run is therefore calibrated against its own two Cs-137 lines (Ba K X-ray 32.06 keV, gamma
+661.66 keV), which is what makes the two energy axes comparable at all:
 
-| line | energy | channel | resolution |
-|---|---|---|---|
-| Ba K X-ray | 32.06 keV | 66.2 | — (sits on the trigger turn-on, not cleanly resolved) |
-| Cs-137 γ | 661.66 keV | 1474.4 | **12.8% FWHM** |
+| | run 2 | run 3 |
+|---|---|---|
+| photopeak channel | 1474.2 | 1495.7 |
+| photopeak FWHM | 12.76% | 12.37% |
+| calibration | E = 2.447 + 0.44717·ch | E = 3.201 + 0.44024·ch |
 
-giving **E = 2.451 + 0.44711 × channel**, where `channel = peak / peaking`. Cross-checked with no
-free parameters against the Compton edge: predicted 477 keV = channel 1062 against a measured
-steepest fall-off at channel 1114, the few-percent high bias a resolution-broadened edge is
-expected to show. This is the first calibration on this instrument anchored to known lines rather
-than inferred from a saturation estimate.
+Run 2's calibration was cross-checked with no free parameters against the Compton edge: predicted
+477 keV = channel 1062 against a measured steepest fall-off at channel 1114, the few-percent high
+bias a resolution-broadened edge is expected to show. These are the first calibrations on this
+instrument anchored to known lines rather than inferred from a saturation estimate.
 
-**The spectrum clips at ~6.4 MeVee** — counts pile up at 6260–6380 keVee and stop dead. This is
-the detector preamplifier's own output limitation, not a digital ceiling and not a defect; it caps
-the cosmic-muon continuum and leaves the ⁶Li peak at 3.1 MeVee entirely unaffected.
+**The spectrum clips at ~6.4 MeVee.** This is the detector preamplifier's own output limitation —
+a known characteristic of the analog chain, not a digital ceiling and not a defect. It caps the
+cosmic-muon continuum and leaves the ⁶Li peak at ~3.05 MeVee entirely unaffected.
 
-### The neutron population
+### The neutron population, twice
 
-Cutting at **FCI > 0.945** — an empty valley *between* the two lobes, read off rather than fitted;
-the bin at FCI ≈ 0.943 contains literally zero events — returns 537 events above 500 keVee whose
-energy spectrum is an isolated **peak at 3074 keVee**, not a scaled slice of the gamma continuum:
-519 of the 537 fall inside 2500–3900 keVee, FWHM 11.2%. That is ⁶Li(n,α)t capture, 2.7% from this
-project's established ~3160 keVee and inside this calibration's own uncertainty.
+Cutting at **FCI > 0.945** — an empty valley *between* the two lobes, read off rather than fitted,
+and **the same value works for both runs** — returns a population whose energy spectrum is an
+isolated peak, not a scaled slice of the gamma continuum:
 
-**Rate: 29.9 neutrons/hour.** They cannot come from the source — Cs-137 is a pure gamma emitter —
-so they are ambient/cosmic, measured straight through a gamma flux that outnumbers them roughly
-30,000:1.
+| | run 2 | run 3 |
+|---|---|---|
+| ⁶Li events (2500–3900 keVee) | 519 | 601 |
+| centroid | 3075 keVee | 3042 keVee |
+| peak FWHM | 11.2% | 11.7% |
+| **rate** | **29.9 ± 1.3 /h** | **26.9 ± 1.1 /h** |
 
-![FCI and PSD vs energy, Cs-137 overnight run](images/cs137_overnight_fci_psd_vs_energy.png)
+Both centroids sit within ~4% of this project's established ~3160 keVee ⁶Li value, inside these
+calibrations' own uncertainty. The rates differ by 3.0 ± 1.7 /h — about 1.8σ on counting statistics
+alone, so this is consistent between nights; it is **not** evidence of a real flux variation, and
+should not be read as one without a pressure-corrected series.
 
-![The FCI-selected population is a ⁶Li peak](images/cs137_overnight_neutron_spectrum.png)
+They cannot come from the source — Cs-137 is a pure gamma emitter — so they are ambient/cosmic,
+measured straight through a gamma flux outnumbering them roughly 30,000:1.
 
-### FCI against PSD on the same 855 events
+![FCI and PSD vs energy, Cs-137 run 2](images/cs137_overnight_fci_psd_vs_energy.png)
 
-Inside the 2900–3400 keVee cluster window, both discriminants see exactly the same events, and
-separate them very differently:
+![The FCI-selected population is a ⁶Li peak, run 2](images/cs137_overnight_neutron_spectrum.png)
 
-| metric | neutron median | gamma median | gap | FoM |
-|---|---|---|---|---|
-| **FCI** | 0.9563 | 0.9282 | **0.0281** | **1.865** |
-| PSD | 0.9493 | 0.9415 | 0.0078 | 0.964 |
+### FCI against PSD, on identical events, in both runs
 
-FCI's gap is 3.6× wider and its FoM 1.9× better, on one dataset, one detector, one set of pulses —
-no cross-run normalization involved. The vs-energy figure above shows why that matters in practice:
-FCI's neutron island sits clear of the gamma band with empty space around it, while PSD's sits
-barely above a band it nearly touches. This reproduces §8v's cosmic-run result (FCI 1.771 / PSD
-1.014 at LLD 2000 keVee) under a deliberately hostile gamma load, which is the stronger claim.
+Inside the 2900–3400 keVee cluster window both discriminants see exactly the same events. Both are
+scored against the **same** FCI-tagged neutron/gamma split, so the comparison is between the two
+metrics and not between two different ways of splitting the data:
 
-![Cluster-window histograms with double-Gaussian fits](images/cs137_overnight_cluster_histograms.png)
+| | run 2 | run 3 |
+|---|---|---|
+| cluster window (n / γ) | 856 (459 / 397) | 1,029 (511 / 518) |
+| FCI neutron / gamma median | 0.9563 / 0.9282 | 0.9563 / 0.9284 |
+| **FCI gap / FoM** | **0.0281 / 1.863** | **0.0279 / 1.768** |
+| PSD neutron / gamma median | 0.9493 / 0.9415 | 0.9494 / 0.9413 |
+| PSD gap / FoM | 0.0078 / 1.009 | 0.0081 / 1.028 |
 
-### The `pre_gate` transplant fix, confirmed on real data
+**The FCI medians reproduce to four decimal places across two independent nights** — different
+trigger thresholds, independently fitted calibrations, 1.4% of gain drift in between. FCI's gap is
+~3.5× wider than PSD's and its FoM ~1.8× better in both runs.
 
-§8v's parameter table records that gate lengths and `pre_gate` are one inseparable triple. This run
-is the confirmation: recorded at `pre_gate=25`, it shows **3.86% of events with PSD > 1.0**, against
-**12.5%** in the earlier `cs137_0001` run at `pre_gate=32` — and in line with the 3.1% of the
-validated cosmics run. The `energy_long <= 0` BLR pathology (§8d) accounts for a further 0.03%
-(4,370 events), dropped rather than plotted, since firmware reports PSD as a 0.0 sentinel for those.
+PSD does resolve these neutrons — the overlay below shows two genuine lobes, not one smear, which
+is a fairer result for PSD than §8v's cosmic-run framing alone might suggest. It simply resolves
+them with far more overlap: FCI's valley is empty at the cut, PSD's is a fifth of peak height.
+
+![Both runs overlaid in the ⁶Li window](images/cs137_overnight_run_comparison.png)
+
+![Cluster-window histograms with double-Gaussian fits, run 2](images/cs137_overnight_cluster_histograms.png)
+
+Run 3's own copies of the per-run figures are `cs137_overnight3_fci_psd_vs_energy.png`,
+`cs137_overnight3_neutron_spectrum.png` and `cs137_overnight3_cluster_histograms.png`.
+
+### The `pre_gate` transplant fix, confirmed twice
+
+§8v's parameter table records that gate lengths and `pre_gate` are one inseparable triple. These
+runs confirm it on real data: at `pre_gate=25` they show **3.86%** and **2.95%** of events with
+PSD > 1.0, against **12.5%** in the earlier `cs137_0001` run at `pre_gate=32`, and in line with the
+3.1% of the validated cosmics run. (Run 3's lower figure is consistent with its higher trigger
+threshold, 200 against 180, admitting fewer of the marginal low-energy events where the short gate
+is noisiest.) The `energy_long <= 0` BLR pathology (§8d) accounts for a further 0.03% and 0.002%,
+dropped rather than plotted, since firmware reports PSD as a 0.0 sentinel for those.
+
+### Run 3 is the first dataset recorded with the new CSV schema
+
+Its header carries the shaper configuration and an `energy:` line, and its rows carry both `energy`
+(raw shaper counts) and `energy_cal` (keVee) — see csv_logger.py. The recorded coefficients were
+the *estimated* c1 = 0.4355 rather than a measured one, so its `energy_cal` column reads 1.1% low
+(photopeak at 651 keVee instead of 661.7). That is exactly the case the two-column design exists
+for: the raw `energy` column is untouched, and this section's own calibration was re-derived from
+it without needing the run repeated.
 
 ---
 
@@ -4801,19 +4844,24 @@ validated cosmics run. The `energy_long <= 0` BLR pathology (§8d) accounts for 
   32 MHz collapse floor. FCI shows no such branch (his Fig. 7's graceful degradation instead) — the
   gate WIDTH in samples (the grid-search-optimal `short_gate=5` = 100 ns), not sampling rate alone,
   is what determines survival for charge comparison specifically
-- **Neutrons resolved with a gamma source on the detector (§8w)** — the strongest discrimination
-  result here so far, because it is the least favorable condition tested. 17.37 h, 15,941,257
-  events with Cs-137 close to the crystal: **~520 ⁶Li captures at 29.9/hour**, an isolated 3,074
-  keVee peak (FWHM 11.2%) selected by an FCI cut read off an *empty* valley between the two lobes,
-  through a gamma flux outnumbering them ~30,000:1. On the same 855 cluster-window events **FCI
-  FoM 1.865 against PSD 0.964**, a 3.6× wider median gap — reproducing §8v's cosmic-run ordering
-  under deliberate gamma load. Also the **first energy calibration anchored to known lines**
-  (E = 2.451 + 0.44711·channel, from the 661.66 keV γ at channel 1474.4 and the 32.06 keV Ba X-ray,
-  cross-checked against the Compton edge with no free parameters) rather than inferred from a
-  saturation estimate — necessary because `C1_KEVEE_PER_COUNT * peak` stopped applying once `peak`
-  became the shaper's `peaking`-scaled plateau. Confirms the §8v `pre_gate` triple fix on real data:
-  PSD > 1.0 falls from 12.5% (at `pre_gate=32`) to 3.86%. The spectrum's ~6.4 MeVee ceiling is the
-  detector preamplifier's own output limit, not a digital clip, and does not touch the ⁶Li peak
+- **Neutrons resolved with a gamma source on the detector, twice (§8w)** — the strongest
+  discrimination result here so far, because it is the least favorable condition tested, and now
+  replicated. Two overnight Cs-137 runs (17.37 h / 15.9 M events, and 22.35 h / 20.2 M events):
+  **519 and 601 ⁶Li captures, 29.9 ± 1.3 and 26.9 ± 1.1 per hour**, isolated ~3.05 MeVee peaks
+  (FWHM 11.2% / 11.7%) selected by an FCI cut read off an *empty* valley between the two lobes —
+  the same cut value in both — through a gamma flux outnumbering them ~30,000:1. Scored on
+  identical FCI-tagged populations, **FCI FoM 1.863 / 1.768 against PSD 1.009 / 1.028**, a ~3.5×
+  wider median gap. **The FCI neutron and gamma medians reproduce to four decimal places across the
+  two nights** (0.9563 / 0.9282 and 0.9563 / 0.9284) despite different trigger thresholds and 1.4%
+  of gain drift between them. PSD does resolve these neutrons as two genuine lobes — a fairer
+  result for PSD than §8v alone suggests — just with far more overlap. Also the **first energy
+  calibrations anchored to known lines** (the 661.66 keV γ and the 32.06 keV Ba X-ray, cross-checked
+  against the Compton edge with no free parameters), necessary because `C1_KEVEE_PER_COUNT * peak`
+  stopped applying once `peak` became the shaper's `peaking`-scaled plateau — and re-fitted per run,
+  since the photopeak moved 1474.2 → 1495.7 channels in a day. Confirms the §8v `pre_gate` triple
+  fix on real data: PSD > 1.0 falls from 12.5% (at `pre_gate=32`) to 3.86% and 2.95%. The spectrum's
+  ~6.4 MeVee ceiling is the detector preamplifier's own output limit, not a digital clip, and does
+  not touch the ⁶Li peak
 
 ### Open items
 
