@@ -116,6 +116,21 @@ significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (256x ran
 rebinning is always an exact integer grouping with no remainder. Every choice spans the same energy
 range; a coarser one only groups more channels per bin."""
 
+SPAN_MARGIN = 1.10
+"""The energy axis ends this factor above the highest channel holding counts (see
+_span_end_channel()). A span computed from the settings instead -- the shaper's worst-case output
+through the calibration -- cannot be both honest and useful: the only exact bound is
+16383*(1 + (peaking+flat_top)/decay) channels, which a rail-clipped muon can approach but no
+unclipped event does, and with a short `decay` it put the axis end at 100-300 MeVee on the PMT CLYC
+while real events stopped near 20. The realistic bound, where the ADC rail is reached, depends on
+the pulse SHAPE (channel/peak-amplitude ratio 0.31 for gammas at 1/1/1 us, 1.4 at 1.00/0.02/0.20
+us), which the settings do not determine. The recorded data does."""
+
+MIN_SPAN_KEVEE = 4000.0
+"""The axis never ends below this energy, so an empty or low-energy spectrum still shows the
+range where the 6Li thermal-capture peak (~3.1-3.5 MeVee in CLYC) lands. Applies from startup,
+before any data, onward."""
+
 RATE_WINDOW_S = 3.0
 """Instantaneous-rate sliding window -- same value and reasoning as live_view.py's own
 RATE_WINDOW_S: long enough to smooth batch-to-batch noise, short enough to track a real rate
@@ -248,11 +263,21 @@ class HistogramView(QWidget):
         gates whether add_events() accumulates incoming batches into the histogram. Defaults to
         running so behavior is unchanged for anyone not using the button."""
         self.bars: pg.BarGraphItem | None = None
+        self._max_channel = -1
+        """Highest accumulation channel that has received a count since the last Clear; drives the
+        axis span (see SPAN_MARGIN)."""
+        self._view_end_channel = 0
+        """The accumulation channel the automatic x-span currently ends at -- the span is only
+        widened when data passes it, not on every event."""
+        self._user_view = False
+        """Set once the user zooms or pans the x-axis by hand; automatic span growth then leaves
+        the view alone until the next Clear, calibration or rebin change."""
         self._export_dir: Path | None = None
         """Set to the open project's SPECTRA/ by the controller -- see set_export_directory()."""
         self._init_ui()
+        self.plot_widget.getViewBox().sigRangeChangedManually.connect(self._on_view_changed_manually)
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -418,7 +443,7 @@ class HistogramView(QWidget):
             return
         self._peak_fold = peaking
         self.peak_fold_changed.emit(peaking)
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     # ------------------------------------------------------------------- project save/restore
 
@@ -502,20 +527,25 @@ class HistogramView(QWidget):
         # np.add.at, not np.bincount: bincount would allocate a full HIST_CHANNELS-length array on
         # every call just to add a handful of counts into it. np.add.at scatter-adds in place.
         np.add.at(self._counts, peaks, 1)
+        self._max_channel = max(self._max_channel, int(peaks.max()))
         self._total += len(events)
         self._rate_samples.append((time.monotonic(), len(events)))
         self._update_status_label()
         self._update_rate_labels()
         self._redraw()
+        if not self._user_view and self._span_end_channel() > self._view_end_channel:
+            self._reset_view_to_data_span()
 
     def clear(self) -> None:
         self._counts[:] = 0
         self._total = 0
+        self._max_channel = -1
         self._start_time = None
         self._rate_samples.clear()
         self._update_status_label()
         self._update_rate_labels()
         self._redraw()
+        self._reset_view_to_data_span()
 
     # ------------------------------------------------------------------------------------- rate
 
@@ -554,11 +584,11 @@ class HistogramView(QWidget):
     def _on_span_changed(self) -> None:
         self._update_channels_label()
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     def _on_calibration_changed(self) -> None:
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
         self.calibration_changed.emit(*self.calibration())
 
     # ------------------------------------------------------------------------------------- plot
@@ -568,12 +598,35 @@ class HistogramView(QWidget):
         return _rebin_calibration(self.spin_c0.value(), self.spin_c1.value(),
                                    self.spin_c2.value(), factor)
 
+    def _span_end_channel(self) -> int:
+        """Accumulation channel the energy axis ends at: SPAN_MARGIN above the highest channel
+        holding counts, but never below the channel where the calibration reaches MIN_SPAN_KEVEE
+        (the whole array, if it never does). See SPAN_MARGIN for why this is taken from the data
+        rather than computed from the shaper settings."""
+        c0, c1, c2 = self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value()
+        ch = np.arange(HIST_CHANNELS, dtype=np.float64)
+        reached = np.nonzero(c0 + c1 * ch + c2 * ch * ch >= MIN_SPAN_KEVEE)[0]
+        floor_ch = int(reached[0]) if reached.size else HIST_CHANNELS - 1
+        data_ch = int(np.ceil((self._max_channel + 1) * SPAN_MARGIN)) if self._max_channel >= 0 else 0
+        return min(HIST_CHANNELS - 1, max(floor_ch, data_ch))
+
+    def _span_display_bins(self) -> int:
+        """Number of display bins (at the current rebin) needed to reach _span_end_channel()."""
+        factor = HIST_CHANNELS // self._display_channels()
+        return min(self._display_channels(), self._span_end_channel() // factor + 1)
+
+    def _on_view_changed_manually(self, *_args) -> None:
+        self._user_view = True
+
     def _redraw(self) -> None:
         if self.bars is not None:
             self.plot_widget.removeItem(self.bars)
             self.bars = None
-        n = self._display_channels()
-        counts = _rebin_counts(self._counts, n)
+        # Only the bins up to the span end are drawn -- everything above is empty by construction
+        # (see _span_end_channel()), and leaving them out is also what makes pyqtgraph's "view all"
+        # button fit the recorded range rather than the whole 65536-channel array.
+        n = self._span_display_bins()
+        counts = _rebin_counts(self._counts, self._display_channels())[:n]
         c0, c1, c2 = self._display_calibration()
         idx = np.arange(n, dtype=np.float64)
         x = c0 + c1 * idx + c2 * idx * idx
@@ -608,11 +661,9 @@ class HistogramView(QWidget):
         axis_left.setRange(0.0, max(top, 1.0))
         axis_left.setLogMode(log_y)
         self.plot_widget.setLabel("left", "Counts")
-        # ALL bins, not just nonzero ones: BarGraphItem's own bounding box is what pyqtgraph's
-        # "view all" / autoscale button fits to, and masking to nonzero bins would make that button
-        # (and the initial view) fit to whatever happened to be populated instead of the full
-        # theoretical span -- exactly the jumpy behavior _reset_view_to_full_span() exists to avoid.
-        # A zero-height bar draws nothing visible, so this costs nothing but a wider bounding box.
+        # Every bin up to the span end, not just nonzero ones: BarGraphItem's own bounding box is
+        # what pyqtgraph's "view all" / autoscale button fits to, and masking to nonzero bins would
+        # make that button jump between isolated populated bins. A zero-height bar draws nothing.
         #
         # (0, 200, 120) is the same green live_view.py's rate curve uses -- reused here rather than
         # introducing a new shade, and picked over the blue this replaced because it reads clearly
@@ -624,20 +675,22 @@ class HistogramView(QWidget):
                                      pen=pg.mkPen(0, 200, 120, 150))
         self.plot_widget.addItem(self.bars)
 
-    def _reset_view_to_full_span(self) -> None:
-        """Sets the x-view to the full theoretical span once (also switching that axis out of
-        continuous autorange, the same side effect scope_view.py's fixed Y-range relies on), rather
-        than on every redraw -- ordinary data arrival must not fight a zoom/pan the user is actively
-        doing. Called when the axis's own definition changes (span slider, calibration) and once at
-        startup; never from add_events()'s redraw path. pyqtgraph's own "view all" button (present
-        by default on every PlotWidget) remains available to return here manually at any time, and
-        because _redraw() always includes the full bin range in the BarGraphItem's bounds (see
-        there), that button fits to the same full span this sets initially."""
-        n = self._display_channels()
+    def _reset_view_to_data_span(self) -> None:
+        """Sets the x-view to 0 .. _span_end_channel() in energy (also switching that axis out of
+        continuous autorange, the same side effect scope_view.py's fixed Y-range relies on) and
+        hands the view back to automatic growth. Called at startup, on Clear, when the axis's own
+        definition changes (rebin, calibration, fold), and from add_events() when data passes the
+        current end -- the last only while the user has not zoomed or panned by hand, so arriving
+        data never fights a view the user chose. pyqtgraph's "view all" button returns here too,
+        since _redraw() draws exactly this range of bins."""
+        self._view_end_channel = self._span_end_channel()
+        self._user_view = False
         c0, c1, c2 = self._display_calibration()
-        x0 = c0
-        x1 = c0 + c1 * (n - 1) + c2 * (n - 1) * (n - 1)
-        lo, hi = (x0, x1) if x1 >= x0 else (x1, x0)
+        idx = np.arange(self._span_display_bins(), dtype=np.float64)
+        x = c0 + c1 * idx + c2 * idx * idx
+        # min/max over every bin, not the two ends: with c2 < 0 the calibration turns over at
+        # c1/(2|c2|) and can fold back inside the span.
+        lo, hi = float(x.min()), float(x.max())
         if hi <= lo:
             hi = lo + 1.0
         self.plot_widget.setXRange(lo, hi, padding=0)
