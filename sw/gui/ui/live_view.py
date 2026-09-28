@@ -235,6 +235,11 @@ class LiveView(QWidget):
     start_clicked = Signal()
     stop_clicked = Signal()
     fom_wizard_clicked = Signal()
+    cuts_changed = Signal()
+    """Either panel's LLD/ULD cut changed (enabled/disabled, or its region dragged). The recorder
+    listens: filter_for_recording() decides which rows reach fci_live.csv by these cuts, so a
+    change mid-recording changes what the file contains and has to be noted in it -- see
+    cut_settings_line()."""
 
     MAX_POINTS = 1_000_000
     """Sliding-window cap on RETAINED points. Raised from 20,000: at the 10 kcps this instrument
@@ -499,6 +504,26 @@ class LiveView(QWidget):
         update_stats() would otherwise run again until the next batch."""
         self._refresh_plots()
         self._refresh_side_panels()
+        self.cuts_changed.emit()
+
+    def cut_settings_line(self) -> str:
+        """One line describing both LLD/ULD cuts, in keVee, for the list-mode CSV header (and for
+        the notes written when a cut changes mid-recording). Host state, not a device register,
+        but it decides which events are in the file at all (filter_for_recording()), so a dataset
+        whose cuts are not recorded cannot tell a detector's real spectral edge from an operator's
+        cut -- the 43.7 h PMT CLYC run's hard stop at 4.2 MeVee (project log section 10) was
+        exactly that, and had to be reconstructed from memory. Bounds are in the calibration
+        in force when the line is written, i.e. the header's own `energy:` line."""
+        parts = []
+        for name, controls, region in (("fci", self.fci_controls, self.fci_energy_region),
+                                       ("psd", self.psd_controls, self.psd_energy_region)):
+            if controls.chk_cut_enabled.isChecked():
+                lo, hi = region.getRegion()
+                parts.append(f"{name}_lld={lo:.1f}, {name}_uld={hi:.1f}")
+            else:
+                parts.append(f"{name}=off")
+        return ("cuts: " + ", ".join(parts)
+                + "  [keVee; a row is recorded only if it passes every enabled cut]")
 
     @staticmethod
     def _cut_keeps(controls: "_ControlsPanel", region: pg.LinearRegionItem,

@@ -18,6 +18,13 @@ is the one header entry that is not a device register: it is host state, recorde
 reconstructed from the file or from the device afterwards. A recording whose settings block has no
 `energy:` line predates this; its `peak` column is still valid, but which calibration was on screen
 at the time is not recoverable.
+
+The block's `cuts:` line is host state of the same kind: the Live FCI/PSD tab's LLD/ULD cuts, in
+keVee under that `energy:` calibration. Unlike the rest of the block it can change while recording,
+and it decides which rows are written at all, so each change is appended where it happened as a
+`# <time> cuts changed: ...` line (CsvLogger.note()). Rows before that line were filtered by the
+previous cuts. Readers already skip `#` lines wherever they occur (sw/analysis/*.py). A file with no
+`cuts:` line predates this; its energy range may have been cut, and by how much is not recoverable.
 """
 
 from __future__ import annotations
@@ -81,6 +88,9 @@ class CsvLogger:
             f.write(f"{CSV_HEADER}\n")
 
         self._count = 0
+        self._last_note = next((l for l in settings_lines or [] if l.startswith("cuts:")), None)
+        """Seeded with the header's own `cuts:` line, so a change signal that leaves the cuts as
+        they were at recording start writes nothing."""
 
     def _row(self, event: AcqEvent) -> str:
         c0, c1, c2 = self._cal
@@ -93,6 +103,16 @@ class CsvLogger:
     @property
     def event_count(self) -> int:
         return self._count
+
+    def note(self, line: str) -> None:
+        """Appends a timestamped `#` line between data rows -- for a setting that changes what the
+        rows after it mean (see the module docstring's `cuts:` paragraph). Identical consecutive
+        notes are dropped: re-enabling a cut resets its region, which fires the change twice."""
+        if line == self._last_note:
+            return
+        self._last_note = line
+        with open(self.path, "a", encoding="utf-8") as f:
+            f.write(f"# {time.strftime('%Y-%m-%d %H:%M:%S')} {line.replace('cuts:', 'cuts changed:', 1)}\n")
 
     def append(self, event: AcqEvent) -> None:
         with open(self.path, "a", encoding="utf-8") as f:

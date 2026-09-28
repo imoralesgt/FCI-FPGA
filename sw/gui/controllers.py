@@ -84,6 +84,7 @@ class AppController(QObject):
         self.view.scope_view.single_clicked.connect(self.scope_single)
         self.view.scope_view.calibrate_clicked.connect(self.open_calibration_wizard)
         self.view.live_view.fom_wizard_clicked.connect(self.open_fom_wizard)
+        self.view.live_view.cuts_changed.connect(self._on_cuts_changed)
         self.view.histogram_view.run_clicked.connect(self._on_spectrum_run)
         self.view.histogram_view.stop_clicked.connect(self._on_spectrum_stop)
         self.view.act_new_project.triggered.connect(self.new_project)
@@ -682,7 +683,17 @@ class AppController(QObject):
         fold = self.view.histogram_view.peak_fold()
         lines.append(f"energy: c0={c0}, c1={c1}, c2={c2}, peak_fold={fold}"
                      f"  [E_keVee = c0 + c1*ch + c2*ch^2, ch = peak/peak_fold]")
+        # LLD/ULD cuts, also host state: they decide which events reach the list file at all
+        # (LiveView.filter_for_recording()). Changes during recording are appended as notes --
+        # see _on_cuts_changed().
+        lines.append(self.view.live_view.cut_settings_line())
         return lines
+
+    def _on_cuts_changed(self) -> None:
+        """A cut changed while recording: the rows from here on are filtered differently from the
+        header's `cuts:` line, so say so in the file, at the point it happened."""
+        if self.csv_logger is not None:
+            self.csv_logger.note(self.view.live_view.cut_settings_line())
 
     def _ensure_recording_session(self) -> bool:
         """Returns whether a session is (now) active. False only means the user declined an

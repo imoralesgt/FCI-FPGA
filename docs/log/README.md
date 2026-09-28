@@ -4959,7 +4959,7 @@ This section collects, for the forthcoming follow-up paper, what the PMT-coupled
 **established**, what is **conditional**, and what was **claimed and then refuted** during the
 analysis. It is kept apart from the chronological log on purpose: every entry below says what
 measurement it rests on, so that nothing reaches the manuscript on the strength of how it was
-first phrased. Six claims made along the way turned out to be wrong (§10.9); they are recorded so
+first phrased. Seven claims made along the way turned out to be wrong (§10.9); they are recorded so
 they are not revived.
 
 ### 10.1 Why this is the announced follow-up, not a new direction
@@ -5030,20 +5030,65 @@ not volume:
 without either datasheet, that both crystals are 6Li-enriched. Neither rate needs a neutron source
 to explain it.
 
-### 10.5 Energy scale: the 6Li peak sits at ~3.56 MeVee, and it is not PMT saturation
+### 10.5 Energy scale: the response is non-linear, and the 6Li peak sits at ~3.1 MeVee
 
-| feature | true | measured (Cs-anchored, through origin) |
-|---|---|---|
-| Cs-137 photopeak | 661.66 keV | ch 2511.3 (defines the scale, 0.26347 keVee/ch) |
-| K-40 photopeak (NORM) | 1460.8 keV | ch 5644 → **1487 keV (+1.8%)**, 93 net counts, 3.2σ |
-| 6Li(n,α)t | ~3160–3200 keVee (typical) | **3560 keVee** on 931 events (reproducible to 0.06% across 16.8 h) |
+**Revised 2026-09-28.** An earlier version of this section concluded that the 6Li peak sits at
+~3.56 MeVee and that this crystal's 6Li light output is genuinely that high. That conclusion rested
+on a linear scale anchored at one line (Cs-137) and checked against one weak line (K-40, 93 net
+counts, 3.2σ). It is withdrawn: three NORM lines show the scale is non-linear, and with the
+non-linearity corrected the 6Li peak lands at the typical CLYC value.
 
-PMT space-charge saturation compresses high-amplitude pulses, so a higher-amplitude gamma must read
-*low*. K-40 at 2.2× the Cs amplitude reads *high*, which rules saturation out — including the
-subtler route in which the CVL spike compresses only the gamma calibration point. Saturation, if
-present above 1461 keV at all, could only make the true 6Li excess larger. The +1.8% at K-40 is
-ordinary CLYC non-proportionality. The most likely reading is that **this crystal's 6Li light output
-is genuinely ~3.5 MeVee** (3.2 MeVee is a typical value, not a constant) — likely, not established.
+**Calibration from NORM lines.** Source: the Spectrum-tab export of the weekend run (no source
+nearby, only NORM and cosmics; same HV −1400 V and shaper `50/1/10` as every dataset in §10;
+244,881 s, 1.88 M events; `SPECTRA/CLYCPMT_overnight_K40NORM_Cosmics_Weekend.spe`). The file name's
+former "Cs137" prefix was wrong: there is no structure at 662 keV. The low-energy lines are ²²⁶Ra
+progeny (building materials / radon), fitted as a Gaussian on a quadratic background:
+
+| line | true (keV) | linear, 0.2625 keVee/ch | quadratic (below) | FWHM |
+|---|---|---|---|---|
+| ²¹⁴Pb | 351.9 | 350.3 ± 1.7 (0.996) | 356.0 ± 1.3 (1.012) | 9.6% |
+| ²¹⁴Bi | 609.3 | 610.3 ± 1.3 (1.002) | 608.7 ± 1.2 (0.999) | 7.1% |
+| ⁴⁰K | 1460.8 | **1520.0 ± 1.9 (1.040)** | 1461.2 ± 1.3 (1.000) | 4.3% |
+| 6Li(n,α)t | — | 3530 | **3095** (α/β = 0.65) | — |
+
+The quadratic, per spectrum channel (`ch = peak / peak_fold`, `peak_fold = 50`):
+
+    E [keVee] = 1.959 + 0.267493·ch − 2.7865×10⁻⁶·ch²
+
+**The curvature has the opposite sign to saturation.** Amplitude grows *faster* than energy: a
+linear scale anchored at ≤ 609 keV reads K-40 4% high and the 6Li peak ~14% high. PMT space-charge
+saturation compresses large pulses and cannot do this, so that route stays excluded. The likely
+source is PMT superlinearity at −1400 V, which passive voltage dividers typically show at high
+anode current before they saturate. CLYC's electron response is close to proportional, so the
+crystal is a less likely source — likely, not established.
+
+**The 6Li position is an extrapolation.** Three lines fix a quadratic exactly (no degrees of
+freedom), and all lie at or below 1461 keV — half the 6Li energy. The peak landing on the
+literature value (~3.1–3.3 MeVee) is strong circumstantial support, not a measurement. To close
+it: ²⁰⁸Tl 2614 keV (Th chain; not resolvable in this run), e.g. a thoriated welding rod or lantern
+mantle for a few hours. With four lines the quadratic also gets a residual.
+
+**Do not extrapolate this curve to fast neutrons.** It peaks at ch ≈ 48,000 (~6.4 MeVee) and folds
+back above that. The Spectrum tab's histogram ends at ch 16,383 (3.64 MeVee under this curve), so it
+is safe there, but LiveView applies the same coefficients to every event. DT work (14.1 MeV) needs
+a refit with a high-energy point.
+
+**Cross-check with the earlier dataset.** The previous overnight run placed Cs-137 at ch 2511.3 and
+the 6Li peak at ch 13,512. Under the quadratic these give 656 keVee (−0.8%) and 3108 keVee
+(0.4% from the weekend's 3095), so the two runs share one scale at both ends. Its K-40 at ch 5644
+does not fit (1423 keVee, −2.6%; the weekend puts K-40 at ch 5790). That was the 3.2σ line the
+withdrawn conclusion leaned on; its position was the weak point, not the gain.
+
+**Numbers elsewhere in §10 remain on the old linear scale** (0.26347 keVee/ch, Cs-anchored). Event
+selections are unchanged — only the labels move. They will be re-run once ²⁰⁸Tl confirms the curve.
+Conversion for the values used:
+
+| linear (keVee) | 475 | 700 | 1000 | 1500 | 2000 | 2500 | 3000 | 3300 | 4200 | 4800 | 5800 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| quadratic (keVee) | 475 | 693 | 977 | 1435 | 1872 | 2289 | 2686 | 2915 | 3558 | 3950 | *4540†* |
+
+† beyond the highest calibration line by 3×; indicative only. On this scale the 6Li peak is 3.56 → **3.11**
+MeVee, the §10.12 island 2.77 → **2.51** MeVee, and the main peak's shoulder 3.85 → **3.32** MeVee.
 
 These runs used shaper settings `peaking=50, flat_top=1, decay=10`, which are blind to light
 arriving later than ~1.6 µs (marginal weighting 0.000 beyond 1600 ns, computed on the measured
@@ -5219,9 +5264,13 @@ a fast-neutron source (DD, DT or AmBe), as in the NET paper's datasets.
    labels (107 vs 90). With identical labels it is 18%, CI [6%, 33%].
 5. **"The 6Li peak is at 3560 keVee because of pole-zero over-correction" and "because of PMT
    saturation."** The first predicts the wrong sign (the shaper under-weights the slower neutron
-   pulse); the second is ruled out by K-40 (§10.5).
+   pulse); the second compresses rather than expands large pulses (§10.5). Both explained an effect
+   that is not there: the 3560 keVee came from a linear scale on a superlinear response, and it is
+   ~3.1 MeVee once corrected (§10.5).
 6. **"cfd_delay = 24 degenerates the CFD into leading-edge timing."** False for an ideal CFD; the
    real mechanism is the noise margin before the zero crossing (§10.8).
+7. **"This crystal's 6Li light output is genuinely ~3.5 MeVee."** Rested on one weak K-40 line;
+   three NORM lines show a non-linear scale instead (§10.5).
 
 ### 10.10 Candidate contributions and what each still needs
 
@@ -5232,10 +5281,10 @@ a fast-neutron source (DD, DT or AmBe), as in the NET paper's datasets.
 | One bitstream for SiPM and PMT CLYC via register-only retuning | **established** | — |
 | FCI's insensitivity to trigger timing vs PSD's gate dependence at low energy | **conditional** — walk fix confirmed live; residual PSD widening remains | PSD re-optimized for the low-energy band; gamma-leakage-per-energy comparison |
 | FCI discrimination below 1 MeVee on PMT CLYC | **open** | fast-neutron source run (DD / DT / AmBe) |
-| Higher FCI FoM than PSD on identical live events (§10.11) | **established** at LLD 0 and 1000 keVee; favorable, not significant, at 475 and 2000 | more neutrons (an overnight run gives ~9× the 52 here); FCI window sweep |
-| Relaxed parameter setting: wide empty FCI margin for a straight-line label (§10.11) | **supported** (0.470 vs 0.583 margin; unoptimized windows; PSD ridge) | same margin with low-energy neutrons present |
+| Higher FCI FoM than PSD on identical live events (§10.11) | **established** at every LLD on 2,287 neutrons (43.7 h); small at 475 keVee (+0.05, P = 0.007) | FCI window sweep confirmed live |
+| Relaxed parameter setting: empty FCI gap and a broad window plateau (§10.11, §10.13) | **supported** (0.530 vs 0.566 gap over 43.7 h; deployed windows within 5% of the optimum plateau; PSD ridge) | same gap with low-energy neutrons present |
 | Automatic straight-line discrimination threshold in hardware (§10.11) | **proposed** | show the valley stays empty with low-energy neutrons; a rule for bounded movement |
-| Symmetric FCI-vs-PSD FoM, both optimized | **open** | FCI window sweep on the same labeled traces |
+| Symmetric FCI-vs-PSD FoM, both optimized (§10.13) | **offline done** — PSD 64/7/7/34, FCI 3/48/551 | live run with both optima; FCI absolute value subject to the §10.6 gap |
 | Offline-to-live transfer of optimized parameters (#26 req. 3) | **PSD: exact. FCI: 18% gap, cause open** | the two §10.6 tests |
 
 Two confounds to state in any readout comparison: the crystals differ in size (1/2"×1" vs 1"×1"),
@@ -5248,38 +5297,44 @@ thermal captures only.
 curved or energy-detrended classification line: the label must be a straight line. A horizontal
 line is division-free on the quantities each core already accumulates —
 `psa_l · 2^k > round(c · 2^k) · psa_w` for FCI and `(long − short) · 2^k > round(c · 2^k) · long`
-for PSD — and a sloped line `c0 + c1·E` costs one more multiply-add with the shaper output. Every
-figure below uses a single horizontal threshold per method.
+for PSD — and a sloped line `c0 + c1·E` costs one more multiply-add with the shaper output.
 
 **Dataset.** Live list mode, `cs137_CLYC-PMT-NORMs+Cosmics-newPSD_params_HV-1400_0001` (cosmics +
 NORM, no source, HV −1400 V, threshold 350, CFD delay 4 / fraction 0.5, PSD 64 / 6 / 2 / 25, FCI
-2–60 / 2–512), frozen snapshot of 24,395 events over 0.91 h. Energy uses the overnight Cs-137
-self-calibration (0.26347 keVee/ch; same shaper and HV). Both methods agree on all 104 events in
-the 6Li window (3.0–4.8 MeVee), so the 52 neutron labels do not depend on either method; gammas
-are labeled by energy (< 2.5 MeVee, where no thermal captures exist). These are hardware values, so
-the offline/live FCI gap of §10.6 does not enter.
+2–60 / 2–512): **1,183,609 events over 43.73 h** (2026-09-25 14:50 to 2026-09-27 10:33). The header
+records settings only at the start, so stability was checked in 4 h blocks: no timestamp gaps,
+neutron FCI 0.608–0.610 and PSD 0.915–0.917, gamma bands fixed, 6Li peak within ±1%, neutron rate
+44–54 /h (consistent with counting statistics, ±3.5 /h per block) — one dataset. Energy uses the
+Cs-137 self-calibration of the previous overnight run (0.26347 keVee/ch; same shaper and HV; linear,
+see §10.5 for the non-linear correction and the conversion table). Both
+methods agree on 4,721 of 4,723 events in the 6Li window (3.0–4.8 MeVee), so the neutron labels
+(2,287 with FCI > 0.52, 52.3 /h; 2,127 with both FCI > 0.52 and PSD > 0.878 inside the window) do not
+depend on either method. Gammas are labeled by energy (< 2.5 MeVee, where no thermal captures
+exist), excluding the 27 events there that both methods flag as neutrons (last limit below). These
+are hardware values, so the offline/live FCI gap of §10.6 does not enter. (The first 0.91 h and 13.6 h
+of this run gave the same results within their larger intervals; the tables below supersede them.)
 
-**FoM versus LLD** (project convention: median separation over the sum of IQR-based FWHMs;
-bootstrap 95% CIs; the difference is a *paired* bootstrap on identical resampled events):
+**FoM versus LLD** (median separation over the sum of IQR-based FWHMs; bootstrap 95% CIs; the
+difference is a *paired* bootstrap on identical resampled events):
 
 | LLD (keVee) | gammas | neutrons | FCI FoM | PSD FoM | FCI − PSD | P(FCI ≤ PSD) |
 |---|---|---|---|---|---|---|
-| 0 | 24,343 | 52 | **1.91** [1.78, 1.99] | 0.99 [0.93, 1.07] | +0.92 [+0.78, +1.01] | < 0.001 |
-| 475 | 2,718 | 52 | **2.28** [1.98, 2.49] | 1.99 [1.82, 2.29] | +0.29 [−0.11, +0.54] | 0.076 |
-| 1000 | 952 | 52 | **3.09** [2.56, 3.62] | 2.25 [2.01, 2.64] | +0.85 [+0.20, +1.40] | 0.003 |
-| 2000 | 171 | 52 | **3.43** [2.53, 4.18] | 2.43 [2.11, 3.08] | +1.01 [−0.16, +1.73] | 0.057 |
+| 0 | 1,181,322 | 2,287 | **1.88** [1.86, 1.90] | 1.02 [1.01, 1.03] | +0.86 [+0.84, +0.89] | < 0.001 |
+| 475 | 137,318 | 2,287 | **2.11** [2.08, 2.14] | 2.06 [2.02, 2.09] | +0.05 [+0.01, +0.09] | 0.007 |
+| 1000 | 48,772 | 2,287 | **2.90** [2.84, 2.95] | 2.35 [2.30, 2.40] | +0.54 [+0.48, +0.61] | < 0.001 |
+| 2000 | 8,531 | 2,274 | **2.82** [2.76, 2.89] | 2.55 [2.48, 2.61] | +0.27 [+0.19, +0.37] | < 0.001 |
 
-**Straight-line label: gamma leakage** (FCI > 0.53, the empty valley; PSD > 0.878, midway between
-its lobes at the 6Li energy; both accept 51 of 51 agreed neutrons):
+**Straight-line label: gamma leakage** (FCI > 0.53; PSD > 0.878, midway between its lobes at the
+6Li energy; both accept 2,127 of 2,127 agreed neutrons):
 
 | gamma keVee | gammas | FCI leakage | PSD leakage |
 |---|---|---|---|
-| 0–100 | 4,449 | 0 (< 2×10⁻⁴) | 44% |
-| 100–200 | 10,048 | 0 (< 1×10⁻⁴) | 8.0% |
-| 200–300 | 4,733 | 0 (< 2×10⁻⁴) | 3.4% |
-| 300–475 | 2,395 | 0 (< 4×10⁻⁴) | 0.71% |
-| 475–1000 | 1,766 | 0 (< 6×10⁻⁴) | 0.28% |
-| 1000–2500 | 848 | 0 (< 1.2×10⁻³) | 0.59% |
+| 0–100 | 204,356 | 0 (< 5×10⁻⁶) | 43% |
+| 100–200 | 493,303 | 0 (< 2×10⁻⁶) | 7.7% |
+| 200–300 | 230,104 | 0 (< 4×10⁻⁶) | 3.0% |
+| 300–475 | 116,241 | 0 (< 9×10⁻⁶) | 0.71% |
+| 475–1000 | 88,546 | 0 (< 1.1×10⁻⁵) | 0.50% |
+| 1000–2500 | 44,073 | 0 (< 2.3×10⁻⁵) | 0.58% |
 
 This is the FoM's non-Gaussian-safe companion: at low LLD both gamma distributions are far from
 Gaussian (FCI's band is smeared by its energy drift, PSD's by its widening), and leakage at a fixed
@@ -5287,46 +5342,279 @@ line makes no shape assumption.
 
 **The three advantages, and what each rests on:**
 
-1. **Higher FoM — demonstrated where the statistics resolve it.** FCI exceeds PSD at every LLD;
-   the difference is significant at LLD 0 and 1000 keVee and favorable but not significant at 475
-   and 2000 keVee with 52 neutrons. It holds although the PSD gates were optimized (at 3.0–4.8 MeVee,
+1. **Higher FoM — demonstrated.** FCI exceeds PSD at every LLD, significantly (paired bootstrap).
+   The margin is large with no LLD (+0.86) and at 1000 keVee (+0.54), and small but now resolved at
+   475 keVee (+0.05, P = 0.007). It holds although the PSD gates were optimized (at 3.0–4.8 MeVee,
    §10.7) and the FCI windows were never swept — so the comparison, if anything, favors PSD.
-2. **Relaxed parameter setting — supported by three independent measurements.** (a) The FCI
-   windows used here were never optimized for this detector and still separate. (b) The straight
-   line has a wide empty margin: the largest FCI of any gamma below 2.5 MeVee is 0.470 and the
-   smallest neutron FCI is 0.583, so any constant in that 0.113-wide gap gives zero observed
-   leakage and full acceptance — the threshold does not need tuning to the third decimal. (c) PSD
-   needs sample-exact gate placement: its optimum is a ridge where a one-sample shift costs
-   two-thirds of the FoM (§10.7). FCI's straight-line behavior also benefits from its low-energy
-   gammas drifting *away* from the neutrons.
-3. **Onset independence — measured.** Shifting a pulse ±40 samples in the frame moves
-   `|Re|+|Im|` FCI by < 5% (§10.6), so trigger walk cannot dislodge it. PSD's low-energy collapse
-   under the walking trigger was precisely a gate-timing failure (§10.8). This is Nakhostin's
-   argument that frequency-domain methods do not depend on localizing the pulse start,
-   demonstrated in hardware at 50 Msps.
+2. **Relaxed parameter setting — supported, with a narrower margin than a short run suggests.**
+   (a) The FCI windows used here were never optimized for this detector and still separate; the mean
+   spectra show why — the neutron/gamma spectral crossover falls at ≈ 1.5 MHz ≈ bin 60 and the
+   spectra converge again near bin 512 (§10.12) — and the offline grid search finds a broad plateau
+   the deployed windows already sit on (§10.13). (b) A horizontal line has an empty gap: the largest
+   FCI of any gamma below 2.5 MeVee is **0.530**, the smallest agreed neutron FCI is **0.566**, a gap
+   of **0.036**. The first 0.91 h showed 0.113 and the first 13.6 h 0.038: extreme values grow with
+   sample size until the gap settles, so it is a property of the data, not of a short run — but the
+   threshold is not free to sit anywhere between the lobes. (c) PSD needs sample-exact gate placement
+   (§10.7, §10.13). FCI's straight-line behavior also benefits from its low-energy gammas drifting
+   *away* from the neutrons.
+3. **Onset independence — measured.** Shifting a pulse ±40 samples in the frame moves `|Re|+|Im|`
+   FCI by < 5% (§10.6), so trigger walk cannot dislodge it. PSD's low-energy collapse under the
+   walking trigger was precisely a gate-timing failure (§10.8). This is Nakhostin's argument that
+   frequency-domain methods do not depend on localizing the pulse start, demonstrated in hardware at
+   50 Msps.
+
+**Working methodology: one horizontal line per method.** Sloped and clamped lines were evaluated
+on the 43.7 h run and **not adopted**: a horizontal line has one parameter an operator can place from
+the empty valley, while a sloped-and-clamped line needs three, and they must be re-derived whenever
+the gain, HV or energy calibration changes — too much tuning for time-constrained experimental
+windows on the deployed device. The evaluation is kept here because of the limit it exposes.
+
+*What was evaluated.* Neutron FCI falls with energy (0.609 at the 6Li peak, ~0.56 for the below-peak
+candidates, 0.564 predicted at 2 MeVee by the §10.8 emulation), while the gamma band's upper edge
+*rises* with energy (99.9th percentile 0.441 at 0.5–1 MeVee, 0.468 at 1–2, 0.482 at 2–3, 0.493 at
+3–4.2 MeVee). A horizontal line must clear the high-energy gammas, which puts it above some
+low-energy neutrons. With PSD as the independent witness, every event between FCI 0.48 and 0.53
+below 1.5 MeVee is also a PSD neutron (5 at 0.7–1.0 MeVee, PSD 0.899–0.917; 10 at 1.0–1.5 MeVee):
+
+| FCI line (E in keVee) | gained below 1.5 MeVee | PSD-gamma-like admitted, 1.5–6 MeVee | margin to lowest 6Li neutron | line at 12.4 MeVee (DT) |
+|---|---|---|---|---|
+| **horizontal 0.53 (working methodology)** | — | 1 | 0.036 | 0.530 |
+| horizontal 0.48 | +16 | 52 | 0.086 | 0.480 |
+| sloped 0.460 + 2.0×10⁻⁵·E | +16 | 1 | 0.029 | 0.708 — rejects DT neutrons |
+| sloped + clamped min(0.460 + 2.0×10⁻⁵·E, 0.530) | +16 | 1 | 0.040 | 0.530 |
+
+For PSD the best line (FCI as witness) is `max(0.916 − 1.5×10⁻⁵·E, 0.878)`: it cuts gammas above the
+line from 132,070 to 86,085 below 300 keVee and from 1,032 to 281 at 300–700 keVee, and equals the
+horizontal line above 2.5 MeVee — still unusable below ~300 keVee. An unclamped slope fails at high
+energy for both methods (a rising FCI line would reject 14.1 MeV DT neutrons, which land near
+12.4 MeVee via 35Cl(n,p); a falling PSD line runs into its gamma band), which is why the clamp was
+needed at all. Double-Gaussian FoM of the distance to each line cannot judge a slope aimed at <1%
+of the neutrons: it is dominated by the 6Li captures and scores the clamped FCI line lower
+(2.166 / 2.757 / 2.708 at LLD 475 / 1000 / 2000, against 2.168 / 2.974 / 2.918 horizontal).
+
+*Consequence of the decision, to state with the results.* With the horizontal FCI line at 0.53,
+neutron candidates below ~1.5 MeVee whose FCI has drifted under 0.53 are classified as gammas —
+16 in 43.7 h here (0.4 /h, against 52 /h at the 6Li peak). Low-energy neutron acceptance is the
+open quantity this choice leaves; a fast-neutron source run would measure it. Above 4.2 MeVee (the
+ADC rail at −1400 V) nothing is measured: whether 0.53 still separates at DT energies is for the DT
+run to answer, after re-gaining the detector.
 
 **Proposed, not demonstrated: an automatic discrimination line in hardware.** Because the label is
-a single scalar with a wide, empty valley, the threshold could be set by the instrument itself —
-for example at the minimum of an accumulated FCI histogram (or by Otsu's method) above an energy
-gate — and applied as the division-free comparison above. Two things must be shown first: that
-the valley stays empty once low-energy neutrons are present, and a rule for how far the automatic
-line may move when it is not.
+a single scalar with an empty valley, the instrument could set the threshold itself — for example
+at the minimum of an accumulated FCI histogram (or by Otsu's method) above an energy gate — and
+apply it as the division-free comparison above. Two things must be shown first: that the valley
+stays empty once low-energy neutrons are present, and a rule for how far the automatic line may move
+when it is not. The 0.036 gap is the quantity such a rule must respect. An automatic horizontal line would also
+remove the one operator step the working methodology still needs.
 
 **Limits to state with these results:**
-- *Gamma rejection is measured; low-energy neutron acceptance is not.* All neutrons here are
-  thermal captures at ~3.58 MeVee. In the emulation of §10.8 neutron FCI drifts down with energy
-  (0.450 at 600 keVee, 0.330 at 300 keVee), so a horizontal FCI line could start rejecting
-  neutrons below ~600 keVee; a sloped straight line is the hardware-cheap fallback. A fast-neutron
-  source run (DD, DT or AmBe) is needed to measure it.
+- *Gamma rejection is measured; low-energy neutron acceptance is not.* Almost all neutrons here are
+  thermal captures at ~3.56 MeVee (linear scale; ~3.1 MeVee corrected, §10.5); below ~700 keVee no
+  neutrons are observed at all.
 - *LLD 0 here is not the NET paper's "no lower limit".* There the neutrons spanned the energy range;
-  here the LLD removes only gammas. The closeness of 1.91 to the paper's 1.88 is a coincidence, not
+  here the LLD removes only gammas. The closeness of 1.88 to the paper's 1.88 is a coincidence, not
   a comparison.
-- *"Gamma below 2.5 MeVee" is not strictly true:* cosmic fast neutrons make 35Cl(n,p) events from
-  ~517 keVee. The 10 PSD-flagged events above 475 keVee could be PSD false positives or real fast
-  neutrons that FCI labels as gammas; this data cannot separate the two.
-- *PSD at its best per band has not been tested.* Its 2-sample short gate is optimal at 3.0–4.8
-  MeVee and worst-case for photostatistics at low energy; gates optimized for the low-energy band
-  may narrow its leakage.
+- *PSD at its best across energy has since been searched offline (§10.13):* 64/7/7/34, more robust
+  to onset jitter, not yet confirmed live.
+- *"Gamma below 2.5 MeVee" is not strictly true, and it matters in both directions.* 27 events at
+  1.11–2.42 MeVee (0.6 /h, mostly 1.8–2.4 MeVee) are flagged as neutrons by **both** methods — most
+  likely cosmic fast neutrons via 35Cl(n,p) or 6Li captures with partial energy deposition; the 9
+  with traces have neutron-like pulse shapes (§10.12). They are excluded from the gamma set.
+  Conversely, PSD alone flags 697 events at 475–2,500 keVee that FCI calls gammas: 592 belong to
+  the distinct low-FCI population (FCI ≈ 0.11, far from every observed neutron at 0.51–0.61; §10.12),
+  so they are not fast neutrons FCI misses; 50 sit at FCI 0.16–0.30 and 55 in the main gamma band.
+
+### 10.12 Mean pulse shapes and the FCI/PSD-vs-energy matrices (43.7 h)
+
+Same run as §10.11. Raw-trace file: 617,623 traces, **526,869 unique** (15% duplicates at 7.5
+evt/s — the `$RT` re-read artifact of §10.3, milder at this rate); 26,122 lie above ~1 MeVee.
+
+**Labels and selection.** FCI and PSD recomputed offline on the traces (offline PSD equals hardware
+PSD exactly, §10.6), with both methods required to agree: neutrons FCI > 0.50 and PSD > 0.88,
+gammas FCI < 0.46 and PSD < 0.86; the few events between are dropped (> 2 MeVee: 9 events in FCI
+0.46–0.52, 18 in PSD 0.86–0.88). Energy-matched comparison at 3.0–4.8 MeVee: **893 neutrons, 1,507
+gammas**, plus the **9 below-peak neutron candidates** that have traces (1.11–2.28 MeVee, offline FCI
+0.505–0.557). Each trace is baseline-subtracted on its first 40 samples and aligned on its onset (first
+sample above 20% of its own peak).
+
+**Alignment: onset, not peak.** The CFD pins the *onset* at samples 56–57 for both species
+(neutrons 409 / 484, gammas 72 / 1,435) — as predicted for CFD delay 4 (64 − 4 − 3 ≈ 57). The *peak*
+does not coincide: gammas peak at sample 58 (median), neutrons at 62. An earlier pass selected
+traces by peak position 57–58 and silently excluded every neutron; peak-based alignment or selection
+is wrong for this detector. (§10.8's walk analysis is unaffected: below 2.5 MeVee its population is
+gammas only.)
+
+![Mean pulse shapes of 893 neutrons and 1,507 gammas at 3.0-4.8 MeVee and 9 below-peak neutron candidates from the PMT CLYC 43.7 h run: prompt region peak-normalized, full pulse area-normalized on a log scale, the neutron-gamma difference, and the mean |Re|+|Im| spectra with the PSA_l and PSA_w windows](images/pub_pmt_clyc_mean_pulse_shapes.png)
+
+**What the shapes show:**
+
+1. **The discriminant is in the rise, not the tail (panel a).** A gamma peaks one sample (20 ns)
+   after onset — the CVL spike, faster than 50 Msps can resolve — then falls quickly. A 6Li capture
+   has no CVL: its light rises over ~100 ns to a broad maximum. The PSD optima exploit exactly this
+   (§10.7, §10.13).
+2. **Beyond ~2.5 µs the two shapes are identical (panel b).** Both share the slow component (the
+   ~5.6 µs term of §10.2); all discriminating information lies in the first ~2 µs.
+3. **Where the light differs (panel c):** gammas carry more light in the first ~100 ns, neutrons
+   more between 0.2 and 2 µs. Cumulative charge fraction of the area-normalized mean pulse
+   (reproduced to three decimals from the 13.6 h subset):
+
+   | collected by | 40 ns | 200 ns | 1 µs | 4 µs |
+   |---|---|---|---|---|
+   | gammas (3.0–4.8 MeVee) | 4.9% | 12.6% | 31.9% | 59.8% |
+   | neutrons (3.0–4.8 MeVee) | 1.9% | 8.5% | 29.8% | 61.1% |
+   | below-peak candidates (1.1–2.3 MeVee, n = 9) | 2.4% | 9.7% | 31.7% | 63.5% |
+
+4. **The below-peak candidates have neutron pulses.** No CVL spike, a slow rise to a broad maximum —
+   so their shape, not only their FCI and PSD values, says they are neutrons. That fits cosmic fast
+   neutrons via 35Cl(n,p) (proton recoils also lack CVL). Nine traces make it suggestive, not
+   conclusive, and it cannot separate that from partial-energy 6Li captures.
+5. **Why unoptimized FCI windows work (panel d).** Neutrons carry more spectral weight below ≈ 1.5
+   MHz ≈ **bin 60**, gammas more above it; the spectra converge again near ≈ 12 MHz ≈ **bin 512**. The
+   windows in use (`psa_l_hi = 60` inherited from the SiPM work, `psa_w_hi = 512` chosen without a
+   sweep) sit on the two natural boundaries. Mean PSA_l/PSA_w of the averaged spectra: 0.586
+   neutrons, 0.404 gammas, 0.534 candidates (offline float).
+
+**The matrices** (all 1,183,609 live events, hardware FCI and PSD, log color scale):
+
+![FCI and PSD versus energy for the 43.7 h PMT CLYC cosmics and NORM run, full range and 0-1.2 MeVee zoom, with the straight-line cuts FCI > 0.53 and PSD > 0.878](images/pub_pmt_clyc_fci_psd_vs_energy_matrix.png)
+
+FCI's gamma band drifts *down*, away from its cut, as energy falls (panels a, c); PSD's gamma band
+stays near 0.83 but widens *across* its cut below ~300 keVee, with a broad column below ~100 keVee
+(panels b, d). Two further features, neither yet explained:
+
+- **A second neutron-like island at ~2.6–3.05 MeVee** (linear scale; ~2.35–2.7 MeVee corrected,
+  §10.5). 132 events flagged by *both* methods (FCI
+  0.591, PSD 0.914 — neutron-like, slightly below the main peak's 0.609 / 0.916), beside 2,063 in the
+  main capture peak at 3.3–4.2 MeVee (6.4%; 6.7% in the 13.6 h subset — a stable feature). The main
+  peak itself shows a shoulder near 3.8 MeVee. Candidates: captures with partial energy deposition
+  near the crystal surface, cosmic fast neutrons via 35Cl(n,p), or a shape-dependent energy response
+  of the shaper settings in use (`50/1/10`, blind past ~1.6 µs, §10.5). Needs traces of these events.
+- **A faint flat band at FCI ≈ 0.11, from ~0 to ~2 MeVee.** 1,277 events at 0.4–2.5 MeVee (0.78% of
+  events there), PSD median 0.889 — above the main gamma band's 0.834 and above the PSD cut. It
+  accounts for **592 of the 697** events PSD alone flags as neutrons at 475–2,500 keVee. All neutrons
+  observed lie at FCI 0.51–0.61, so these are not fast neutrons FCI misses; they are a distinct
+  population — pile-up or otherwise distorted pulses are the obvious candidates — that PSD places on
+  its neutron side and FCI places far from it. Not yet identified; needs traces of these events.
+
+### 10.13 Double-Gaussian FoM, and PSD/FCI re-optimized for the PMT CLYC (43.7 h)
+
+**FoM by the established double-Gaussian method.** Same run, scored with the exact procedure of §8v
+for the SiPM detector: ONE six-parameter double-Gaussian
+(`plot_optimized_psd_fci.fit_double_gaussian`) fitted to the POOLED [LLD, ULD = 5,800 keVee]
+histogram, the class cut only seeding the fit and naming the components (FCI 0.53, PSD 0.878), at
+the same LLDs as §8v.
+
+![Pooled double-Gaussian FoM fits for FCI (top) and PSD (bottom) at LLD 475, 1000 and 2000 keVee, PMT CLYC 43.7 h run](images/pub_pmt_clyc_fom_fits_lld.png)
+
+| LLD (keVee) | PMT FCI | PMT PSD | SiPM FCI (§8v) | SiPM PSD (§8v) |
+|---|---|---|---|---|
+| 475 | **2.168** | 2.072 | 0.928 | 0.600 |
+| 1000 | **2.974** | 2.364 | 1.331 | 0.875 |
+| 2000 | **2.918** | 2.575 | 1.851 | 0.991 |
+
+- The fitted values agree with the label-based FoMs of §10.11 within 0.10, and with the 13.6 h subset
+  within 0.04.
+- **One adaptation, and why.** PSD is restricted to [0.6, 1.1] before fitting (removes ~0.4% of
+  events at LLD 475). Without it, pathological values up to 18.2 (events with a tiny long integral)
+  fall above the cut, enter the fit's neutron seed, and blow out its 0.5–99.5 percentile binning to a
+  handful of bins across the gamma peak — which produced 1.59 and 1.76 at LLD 475 and 1000 on the
+  first attempt. FCI needs no restriction.
+- **FCI at LLD 475 shows the same skewed gamma lobe §8v described for SiPM**: the gamma band is still
+  drifting with energy just above 475 keVee, so the Gaussian runs wider than the data on the left.
+  From LLD 1000 up all six fits track the data closely.
+- At LLD 475 PSD's neutron seed is 2,806 against FCI's 2,281: the extra ~500 are gammas above the PSD
+  cut, i.e. PSD's leakage appearing inside the fit.
+- Below 475 keVee the double-Gaussian method fails for both (FCI's gamma projection is a flat
+  plateau; PSD's "neutron" component absorbs the broad low-energy gamma tail), the §8v reason for
+  not reporting there. Label-based FoM and leakage (§10.11) are the numbers to use below 475 keVee.
+- **Cross-detector reading, with its confounds.** Both methods improve strongly on the PMT, but the
+  FCI/PSD ratio narrows from ~1.5–1.9 (SiPM) to ~1.0–1.3 (PMT), consistent with the PMT preserving the
+  fast CVL edge a short PSD gate can exploit (§10.12). The SiPM values are offline-optimized, the PMT
+  values live hardware, and the crystals differ (1/2"×1" vs 1"×1").
+
+**Grid search for the PMT optimum** (`sw/analysis/sweep_pmt_clyc.py`, reusing the SiPM search's
+`adaptive_grid_search`, `plot_surface` and `robust_fom` unchanged). Traces: the 43.7 h run's raw
+file de-duplicated (526,869 unique), those above ~400 keVee of charge, energy from a replay of the
+recorded shaper, 4,696 traces clipped at the ADC rail excluded — **58,141 traces in 475–5,800 keVee,
+972 neutrons, 57,169 gammas.** What differs from the SiPM search, each derived from this detector's
+data:
+
+- **Labels, not a median split.** An event both methods flag at the deployed settings (offline FCI
+  > 0.50 and PSD > 0.88) is a neutron; everything else is a gamma. The methods agree on 4,721 of 4,723
+  events in the 6Li window, so optimizing either against these labels is not circular.
+- **Objective: the worst energy slice.** For each of seven slices (475–700, 700–1,000, 1,000–1,500,
+  1,500–2,500, 2,500–3,300, 3,300–4,200, 4,200–5,800 keVee), the labeled FoM of all neutrons against
+  that slice's gammas; the search maximizes the minimum. This is what the straight-line hardware label
+  requires: one line separates every energy only if every slice is separated.
+- **PSD scored against onset jitter.** Each PSD candidate is scored at the worst of the gate start
+  shifted −1, 0, +1 samples, because the PMT onset sits within a sample or two of the gate start and
+  the §10.7 optimum was a ridge.
+- **Bounds from the pulse (§10.12).** Gate start 52–61 (onset at 56–57), short gate 1–30 samples
+  (gamma spike 1–2 samples, neutron rise ~5), long gate 10–150 samples (the mean shapes are identical
+  beyond ~2.5 µs); FCI `psa_l_hi` 10–300 and `psa_w_hi` 60–1,024 around the spectral crossover (~bin 60)
+  and convergence (~bin 512), shared low bin 1–5.
+
+Two objectives were tried and rejected before this one, and are recorded so they are not reused:
+1. **A pooled FoM over 475–5,800 keVee is gameable.** It is dominated by the low-energy gamma bulk;
+   both searches pushed that bulk away from the neutrons while letting the high-energy gammas — the
+   ones next to the 6Li peak — move closer. Its PSD "optimum" scored FoM 0.663 at LLD 2,000 against
+   the deployed 2.827 (13.6 h subset).
+2. **Saturated pulses must be excluded.** 83% of traces the replay places at 4.2–5.8 MeVee have a
+   sample at the ADC rail (14,563), against essentially none below 4.2 MeVee — most likely cosmic
+   muons. Their FCI and PSD describe the clipping, and they dominated the top slice. In hardware,
+   saturated events should be flagged rather than classified.
+
+![PSD grid-search surface at pre_gate 7, worst energy slice and worst gate start, 43.7 h run](images/pmt_clyc_psd_gate_fom_surface.png)
+
+![Best PSD FoM for each gate start, 43.7 h run](images/pmt_clyc_psd_fom_vs_gate_start.png)
+
+![FCI grid-search surface at low bin 3, worst energy slice, offline float, 43.7 h run](images/pmt_clyc_fci_window_fom_surface.png)
+
+**Result.**
+
+| | deployed | **optimum (43.7 h)** | optimum (13.6 h subset) |
+|---|---|---|---|
+| PSD pre-trigger / pre-gate / short / long | 64 / 6 / 2 / 25 | **64 / 7 / 7 / 34** | 64 / 7 / 6 / 38 |
+| FCI low bin / PSA_l high / PSA_w high | 2 / 60 / 512 | **3 / 48 / 551** | 1 / 51 / 595 |
+
+| same 58,141 events | worst-slice FoM | FoM LLD 475 | FoM LLD 1000 | FoM LLD 2000 |
+|---|---|---|---|---|
+| PSD deployed | 1.84 | 2.10 | 2.38 | **2.54** |
+| **PSD optimum** | **2.04** | **2.24** | **2.46** | 2.52 |
+| FCI deployed | 3.37 | 2.74 | 3.38 | **3.45** |
+| **FCI optimum** | **3.53** | **2.77** | **3.47** | 3.36 |
+
+(FoM LLD columns: pooled label-based FoM on these traces.)
+
+- **The optima are stable.** With 3.2× the data, the PSD gate start is unchanged (sample 57, exactly
+  at the onset) and the gate lengths move by 1 and 4 samples; the FCI optimum moves within its
+  plateau.
+- **PSD: the gain is robustness, not peak FoM.** The optimum's 7-sample short gate spans the gamma
+  CVL spike and the neutron's ~100 ns rise, and its 34-sample (680 ns) long gate stays inside the
+  ~2 µs region where the shapes differ. Against a one-sample shift of the gate start (gap over summed
+  FWHM, same labels):
+
+  | gate start shifted | −1 | 0 | +1 |
+  |---|---|---|---|
+  | deployed 6/2/25 | 1.64 | 2.10 | 1.55 |
+  | optimum 7/7/34 | 1.87 | 2.24 | 1.81 |
+
+  (On the 13.6 h subset the deployed gates degenerated entirely at −1; with the larger sample they
+  score 1.64 — still the weaker of the two in every column.) Across gate starts, opening the gates
+  before the onset gives a flat plateau at ~1.66; opening them even 2–4 samples after it loses the
+  prompt light and the FoM falls steeply.
+- **FCI: a broad plateau.** The best window for each low bin 1–5 scores 3.43–3.53, all within
+  PSA_l high 39–51 and PSA_w high 544–590; the 13.6 h optimum (1/51/595) and this one (3/48/551) are
+  equivalent, and the deployed windows are within 5%. The optimum's `psa_l_hi` sits at the measured
+  spectral crossover. This is direct support for the "relaxed parameter setting" advantage of §10.11.
+  FCI values here are offline float and rank windows only; their absolute FoM does not transfer to
+  hardware (§10.6).
+- **Straight-line leakage above 475 keVee stays at 0–5 gammas per energy slice** (out of up to
+  23,046) for both optima, with neutron acceptance 99.7–99.8%.
+
+**Status: offline, not yet confirmed live.** Applying PSD 64/7/7/34 and FCI 3/48/551 and re-running
+should reproduce the PSD predictions closely (offline PSD equals hardware exactly) and give a
+different absolute FCI value (the open §10.6 gap) — which is issue #26 requirement 3.
 
 ## Appendix: ILA note
 
