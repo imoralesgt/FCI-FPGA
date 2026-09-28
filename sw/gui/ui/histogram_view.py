@@ -26,8 +26,9 @@ away from "one ADC code", which is the unit every calibration coefficient here h
 defined against. The visible symptom: exported $MCA_CAL no longer matched the typed c0/c1/c2 even
 at the slider's finest position, because that position stopped meaning factor=1 (no decimation) the
 moment HIST_CHANNELS grew past DISPLAY_CHANNEL_CHOICES' own top entry -- see _rebin_calibration.
-HIST_CHANNELS below is back to 16384 (one ADC code per channel, matching calibration's own unit and
-restoring "finest slider position = identity, typed == exported"); add_events() instead folds the
+HIST_CHANNELS was then put back to 16384 (one ADC code per channel, matching calibration's own unit and
+restoring "finest slider position = identity, typed == exported"), and later widened to 65536 without
+changing that unit -- see HIST_CHANNELS for why the ADC's span is not the ceiling; add_events() folds the
 shaper's wider raw range down into that same 16384-channel accumulation BEFORE binning, dividing
 by the device's own `peaking` -- see DEFAULT_PEAK_FOLD below for why that divisor and not a fixed
 one, which was itself a third iteration on this.
@@ -60,21 +61,30 @@ from PySide6.QtWidgets import (
 
 from fci_api import AcqEvent
 
-HIST_CHANNELS = 16384
-"""One bin per raw ADC code, 1:1, spanning the full 0..16383 theoretical range: 2^14, the ADC's
-native resolution (see the ADC_WIDTH note in docs/log/README.md). This is the unit every
-calibration coefficient in this tab is defined against -- c0/c1/c2 mean "keVee per ADC code", not
-"keVee per whatever the accumulation array happens to be sized to" -- and DISPLAY_CHANNEL_CHOICES,
-_rebin_counts and _rebin_calibration all key off it too, so changing it changes what a typed
-calibration value MEANS, not just how big an array gets (see this module's own docstring for why
-that distinction matters and tripped up a previous fix here).
+HIST_CHANNELS = 65536
+"""Accumulation channels, 0..65535. A channel is `peak / peak_fold` (see DEFAULT_PEAK_FOLD) -- that
+division, not this array's size, is what fixes the unit every calibration coefficient here is
+defined against, so c0/c1/c2 keep their meaning whatever this constant is. The finest display
+position (the last DISPLAY_CHANNEL_CHOICES entry) must equal it, so that position stays the
+identity rebin and a typed calibration still equals the exported one (see _rebin_calibration).
 
-Real events cluster in the lower part of that 16384 span -- the upper channels legitimately read
-zero -- but the axis itself covers the whole theoretical ceiling, which is the normal convention
-for this class of instrument rather than an axis auto-scaled to whatever was captured so far. This
-is the accumulation resolution ONLY: DISPLAY_CHANNEL_CHOICES below lets the user view/export at a
-coarser rebin without losing the underlying full-resolution counts (Clear is the only thing that
-discards them)."""
+Why 4x the ADC's 2^14 codes, not 2^14: `peak` is the shaper's output, not a sample, and it is not
+bounded by the ADC's span. With `decay` shorter than the pulse's real tail, the pole-zero stage
+integrates, and the output follows the pulse's charge rather than its height -- measured on the PMT
+CLYC at `50/1/10`, channel/peak-amplitude was 1.39 for gammas and 2.75 for 6Li neutrons, and
+rail-clipped cosmic muons reached channel 33,094 (project log section 10). A 16384-channel array
+piled every such event, and everything above ~11 MeVee under a DT-capable gain, into its top bin.
+2^16 holds the largest shaper output observed with 2x margin.
+
+This is range, not linearity: pulses whose samples clipped at the ADC rail are still binned, at
+the channel their clipped shape produces, and read low. Where the rail sits in keVee depends on
+pulse shape -- slow (neutron-like) pulses reach it at higher energy than CVL-spiked gammas.
+
+Real events cluster in the lower part of the span -- the upper channels legitimately read zero --
+but the axis covers the whole range, which is the normal convention for this class of instrument
+rather than an axis auto-scaled to whatever was captured so far. This is the accumulation
+resolution ONLY: DISPLAY_CHANNEL_CHOICES below lets the user view/export at a coarser rebin without
+losing the underlying full-resolution counts (Clear is the only thing that discards them)."""
 
 DEFAULT_PEAK_FOLD = 50
 """Raw shaper counts per accumulation channel, until the device reports its real `peaking`
@@ -90,19 +100,21 @@ never clip. It cannot -- but at the peaking actually in use (50) it left only A0
 a channel per ADC code, so just 1,600 of 16,384 channels were reachable and the full-span axis
 (_reset_view_to_full_span) advertised 36,534 keVee against a detector that saturates near 3,568 --
 a 10x overshoot, most of the axis unreachable by construction. Dividing by the real `peaking`
-instead maps A0 onto channels 1:1 at ANY peaking, so the ceiling is the ADC's own span, the clip
-guard in add_events() holds for every peaking rather than only the worst case, and a calibration
+instead maps A0 onto channels ~1:1 at ANY peaking (only with a `decay` matched to the pulse; a
+short `decay` makes the output charge-like and larger -- see HIST_CHANNELS), the clip guard in
+add_events() holds for every peaking rather than only the worst case, and a calibration
 survives a peaking change instead of silently rescaling by the ratio of the two.
 
 50 as the pre-connect default is the firmware's own boot value (PULSE_SHAPER_PEAKING_DEFAULT in
 acquisition.c), so an unconnected session shows the same scale it will show once connected."""
 
-DISPLAY_CHANNEL_CHOICES = [256, 512, 1024, 2048, 4096, 8192, 16384]
+DISPLAY_CHANNEL_CHOICES = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
 """Selectable spectrum spans, via the slider. This detector's own energy resolution is ~6% at
 Cs-137 (~40 keV FWHM at 662 keV) -- far coarser than one ADC code -- so 16384 raw channels is more
 resolution than the physics can use and just makes every bin wait longer for the same statistical
-significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (64x range end to end), so
-rebinning is always an exact integer grouping with no remainder."""
+significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (256x range end to end), so
+rebinning is always an exact integer grouping with no remainder. Every choice spans the same energy
+range; a coarser one only groups more channels per bin."""
 
 RATE_WINDOW_S = 3.0
 """Instantaneous-rate sliding window -- same value and reasoning as live_view.py's own
@@ -259,7 +271,7 @@ class HistogramView(QWidget):
         controls_layout.addWidget(QLabel("Coarser"))
         self.slider_channels = QSlider(Qt.Orientation.Horizontal)
         self.slider_channels.setRange(0, len(DISPLAY_CHANNEL_CHOICES) - 1)
-        self.slider_channels.setValue(len(DISPLAY_CHANNEL_CHOICES) - 1)  # 16384, no decimation
+        self.slider_channels.setValue(len(DISPLAY_CHANNEL_CHOICES) - 1)  # HIST_CHANNELS, no decimation
         self.slider_channels.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_channels.setTickInterval(1)
         self.slider_channels.setSingleStep(1)
