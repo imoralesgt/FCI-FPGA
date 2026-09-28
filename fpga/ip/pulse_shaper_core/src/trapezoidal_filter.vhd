@@ -97,9 +97,22 @@
 -- must start every frame from a known zero. Pz[n]'s own accumulator resets on the RAW s_last_i
 -- (it lives on the original, unlagged timeline); the final accumulate/compare/publish stage resets
 -- on last_d4, the four-cycle-delayed signal its own inputs (d_reg, x_pipe4) are aligned to. The
--- delay taps (variable_delay.vhd) are themselves genuinely free-running (no per-frame clear at all
--- -- see that file's own header for why two earlier attempts at clearing them made no difference
--- to LUT cost either way).
+-- delay taps (variable_delay.vhd) are themselves free-running (no per-frame clear -- see that
+-- file's own header), so for the first k, l and k+l samples of a frame they still hold the END of
+-- the previous frame. Those taps are therefore MASKED to zero here until the frame has produced
+-- that many samples of its own (tap_k_ok/tap_l_ok/tap_kl_ok below), which is exactly what a
+-- cleared tap would read.
+--
+-- Why masking is required rather than optional: the stale value is Tr' = x + Pz/M at the previous
+-- frame's end, and Pz there is the running sum of all 2048 of that frame's samples -- noise
+-- integrated over 41 us plus whatever pulse it held. With a short `decay` that is hundreds of
+-- counts, and it enters the new frame's trapezoid as a random offset. Measured on the PMT CLYC
+-- (0.2/1.0/0.2 us, -1.2 kV): 1,896 recorded traces replayed through this RTL in xsim matched an
+-- ideal float filter to 0.02% when each followed an all-zero frame, but scattered 3.8% rms when
+-- they followed each other -- the same 3.7-4.0% the hardware showed against the float filter on
+-- the same events, which widened the 511 keV line from 9.6% to 13.3% FWHM (project log, issue
+-- #26). The masks are registered bits updated with the sample index, so the difference stage
+-- gains only an AND per tap, not a comparator.
 --
 -- Accumulator widths are generous rather than tightly bounded to a "well-behaved pulse returns to
 -- baseline quickly" assumption, matching dual_gate_integrator.vhd's own stated reasoning for its
@@ -195,6 +208,13 @@ architecture rtl of trapezoidal_filter is
   -- left slack at -9.545 ns after only the multiply itself was pipelined.
   signal tr_reg : std_logic_vector(TR_WIDTH - 1 downto 0); -- Tr'[n], stage-3 registered
   signal tr_k, tr_l, tr_kl : std_logic_vector(TR_WIDTH - 1 downto 0); -- delayed taps of tr_reg
+
+  -- Per-frame sample index of the Tr' value in tr_reg, and whether each tap has reached back
+  -- into THIS frame yet (see header, "Per-frame reset"). 12 bits covers a 2048-sample frame with
+  -- room; it saturates rather than wraps, so a longer frame keeps every tap unmasked.
+  signal idx3 : unsigned(11 downto 0);
+  signal tap_k_ok, tap_l_ok, tap_kl_ok : std_logic;
+  signal tr_k_m, tr_l_m, tr_kl_m : std_logic_vector(TR_WIDTH - 1 downto 0); -- masked taps
 
   signal d_var_comb : signed(DIFF_WIDTH - 1 downto 0); -- d[n], combinational from tr_reg/tr_k/
   -- tr_l/tr_kl -- registered into d_reg (stage 4) below for the same reason tr_comb is registered
@@ -339,10 +359,48 @@ begin
     port map (clk_i => clk_i, rstn_i => rstn_i, en_i => valid_d3,
               delay_sel_i => peaking_i, data_i => tr_l, data_o => tr_kl);
 
-  -- d[n] = Tr'[n] - Tr'[n-k] - Tr'[n-l] + Tr'[n-k-l], combinational from tr_reg/tr_k/tr_l/tr_kl
-  -- (all reflect the same original sample index once valid_d3 is set).
-  d_var_comb <= resize(signed(tr_reg), DIFF_WIDTH) - resize(signed(tr_k), DIFF_WIDTH)
-                - resize(signed(tr_l), DIFF_WIDTH) + resize(signed(tr_kl), DIFF_WIDTH);
+  -- Sample index / tap masks. idx3 is the in-frame index of the sample tr_reg holds whenever
+  -- valid_d3 is set; the masks are computed for the NEXT index, so they are ready (registered) in
+  -- the same cycle that sample reaches the difference stage. A tap of delay D reaches back into
+  -- this frame once index >= D. Assumes peaking >= 1, as its specified range (10..256) guarantees:
+  -- at a peaking of 0 the k tap is tr_reg itself and masking it at index 0 would be wrong.
+  process (clk_i)
+    variable nxt : unsigned(11 downto 0);
+    variable k_u, l_u, kl_u : unsigned(11 downto 0);
+  begin
+    if rising_edge(clk_i) then
+      k_u  := resize(unsigned(peaking_i), 12);
+      l_u  := k_u + resize(unsigned(flat_top_i), 12);
+      kl_u := l_u + k_u;
+      if rstn_i = '0' then
+        idx3      <= (others => '0');
+        tap_k_ok  <= '0';
+        tap_l_ok  <= '0';
+        tap_kl_ok <= '0';
+      elsif valid_d3 = '1' then
+        if last_d3 = '1' then
+          nxt := (others => '0');
+        elsif idx3 = (idx3'range => '1') then
+          nxt := idx3;
+        else
+          nxt := idx3 + 1;
+        end if;
+        idx3 <= nxt;
+        if nxt >= k_u then tap_k_ok <= '1'; else tap_k_ok <= '0'; end if;
+        if nxt >= l_u then tap_l_ok <= '1'; else tap_l_ok <= '0'; end if;
+        if nxt >= kl_u then tap_kl_ok <= '1'; else tap_kl_ok <= '0'; end if;
+      end if;
+    end if;
+  end process;
+
+  tr_k_m  <= tr_k  when tap_k_ok  = '1' else (others => '0');
+  tr_l_m  <= tr_l  when tap_l_ok  = '1' else (others => '0');
+  tr_kl_m <= tr_kl when tap_kl_ok = '1' else (others => '0');
+
+  -- d[n] = Tr'[n] - Tr'[n-k] - Tr'[n-l] + Tr'[n-k-l], combinational from tr_reg and the masked
+  -- taps (all reflect the same original sample index once valid_d3 is set).
+  d_var_comb <= resize(signed(tr_reg), DIFF_WIDTH) - resize(signed(tr_k_m), DIFF_WIDTH)
+                - resize(signed(tr_l_m), DIFF_WIDTH) + resize(signed(tr_kl_m), DIFF_WIDTH);
 
   -- Pipeline stage 4: register d[n] itself, rather than feeding the still-combinational
   -- d_var_comb straight into the accumulate/compare/saturate below in the same cycle -- see

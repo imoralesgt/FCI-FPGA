@@ -27,7 +27,10 @@
 -- BRAM synchronously in one cycle is not even straightforwardly possible the way clearing a
 -- register array is. A tap can therefore still read a sample left over from the previous
 -- triggered event or the idle gap before this one, for a window bounded by this instance's own
--- MAX_DELAY -- accepted, not guarded against, per the same reasoning as before.
+-- MAX_DELAY. This component does not guard against that; its user must. trapezoidal_filter.vhd
+-- does, by masking each tap to zero until the frame has produced that tap's delay in samples of
+-- its own -- the leftover was once assumed harmless, and was not (see that file's "Per-frame
+-- reset").
 --
 -- MAX_DELAY is a delay CEILING, not the buffer size: read_addr's subtraction wraps at 2**ADDR_WIDTH
 -- via plain unsigned arithmetic, so the array has to be exactly that big or the wrap addresses
