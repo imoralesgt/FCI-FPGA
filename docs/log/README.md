@@ -5732,7 +5732,7 @@ for this HV + VGA + shaper combination, and any change to one of them needs a ne
 | Live FCI/PSD → PSD | pre-trigger / pre-gate / short / long | **64 / 7 / 6 / 38** samples; baseline ref 0 | sweep optimum (below) |
 | Live FCI/PSD → FCI | low bin (both) / PSA_l high / PSA_w high | **2 / 44 / 293** | sweep optimum (below) |
 | g/n horizontal line | PSD / FCI | **0.75 / 0.47** | operator-set margins (below): FCI 0.015 above the highest gamma up to 16.5 MeVee; PSD below every slow event |
-| Spectrum → calibration | c0 / c1 / c2 | **−4.9 / 2.642 / 0** keVee | ²²Na 511/1275; checked on K-40 (1,480) and ⁶Li (3,328) |
+| Spectrum → calibration | c0 / c1 / c2 | **c0 = −4.9018 keVee, c1 = 2.642 keVee/ch, c2 = 0** | E = c0 + c1·ch + c2·ch², ch = shaper peak / peak_fold, peak_fold = 50 (= peaking); from ²²Na 511/1275 keV; checked on K-40 (1,480 ± 7 keVee) and ⁶Li (3,328 ± 3 keVee); valid only for −1050 V + VGA ×4.5 + shaper 1/1/1 µs |
 | Live FCI/PSD → LLD / ULD | both panels | **350 / 16,500 keVee** | ULD where the live PSD gamma band starts to bend (operator reading) |
 | Recording | list + raw traces | both on; **Trigger-tab scope running** | raw traces are written only while the scope runs |
 
@@ -5798,10 +5798,15 @@ conventions were tried on the same events. Only one of them is fair to a discrim
 band moves with energy, which FCI's does at this operating point (median 0.24 at 350–500 keVee to
 0.43 at 10–16.5 MeVee; PSD's stays at 0.68–0.70).
 
-*1. FoM per energy slice (differential), Gaussian-fitted — the measure used.* Each slice's gammas
-are fitted with one Gaussian, the neutron-like class (⁶Li peak + internal α, §10.14) with another,
-FoM = |μn − μγ| / (FWHMn + FWHMγ). Within a slice the band hardly moves, so the Gaussian model
-holds, and every slice is the situation one horizontal hardware line faces at that energy.
+*1. Gamma-rejection FoM per energy slice, Gaussian-fitted.* Each slice's gammas are fitted with one
+Gaussian, the neutron-like class with another, FoM = |μn − μγ| / (FWHMn + FWHMγ). Within a slice the
+band hardly moves, so the Gaussian model holds. **Caution: this is not a g/n FoM at that energy.**
+Without a neutron source the only neutron-like events are the ⁶Li captures (and internal α, §10.14)
+at ~3.3 MeVee — there are essentially no neutrons at 300–2,500 keVee — so every slice compares that
+slice's gammas with the *3.3 MeVee* class. It measures how far the gammas at each energy sit from
+where the thermal neutrons sit, i.e. gamma rejection for a line placed for them. A same-energy g/n
+FoM exists only where both classes do: the **2,500–5,000 keVee slice, where FCI (2.52) and PSD
+(2.42) are level**.
 
 ![FoM per energy slice, Gaussian fits, FCI and PSD at the DT settings](images/pmt_clyc_dt1050_fom_vs_energy.png)
 
@@ -5817,10 +5822,15 @@ holds, and every slice is the situation one horizontal hardware line faces at th
 | 10,000–16,500 | 3,040 | 0.428 / 0.016 / 1.1 | **2.43 ± 0.03** | 0.704 / 0.017 / 9.4 | **2.51 ± 0.06** |
 | neutron-like (all, 611) | | 0.529 / 0.026 / 0.8 | | 0.804 / 0.023 / 3.0 | |
 
-FCI is ahead in every slice below 2.5 MeVee — **2–4× PSD below 1 MeVee** — and level with it above.
-The fits hold (FCI χ²/ndf 0.9–3.3; PSD 0.8–2.7 except its top slice, 9.4, a non-Gaussian tail). The
-lowest slice's 3.3 is the band still moving within 150 keVee; narrower slices would lower it.
-Together with the leakage tables below, this is the measure to report.
+FCI's gammas sit further from the ⁶Li class than PSD's in every slice below 2.5 MeVee (2–4× below
+1 MeVee), and level above; the fits hold (FCI χ²/ndf 0.9–3.3; PSD 0.8–2.7 except its top slice,
+9.4). **This favors FCI at low energy only on the gamma side.** Real low-energy neutrons (fast
+recoils at 350–2,500 keVee) would carry the same noise bias as the gammas — at −1400 V the neutron
+FCI median fell from 0.579 at 3.5 MeVee to 0.450 at 600 keVee (§10.8) — so at the DT windows they
+may sit near or below the 0.47 line, and FCI's low-energy neutron acceptance may be what pays for
+its gamma rejection. PSD's neutron band would widen at low energy too. **Neutron acceptance below
+~2.5 MeVee is unmeasured for both methods** and needs fast neutrons (DT, DD or AmBe); until then
+report this figure as gamma rejection, with the same-energy FoM limited to the 2.5–5 MeVee slice.
 
 *2. FoM vs cumulative LLD (the §8v SiPM convention) — does not work here.* At each lower cut E the
 population is the tail [E, 16.5 MeVee], classes by each method's own line, robust median/IQR FoM
@@ -5929,7 +5939,9 @@ events, line placed for each acceptance:
   gamma-like FCI (median 0.24, max 0.43, against 0.53 for neutrons): PSD's noise spread near
   threshold pushes them over.
 - Above 1 MeVee the two methods are equivalent (2–5 events each). FCI's advantage is at
-  350 keVee–1 MeVee — where DT gammas are densest.
+  350 keVee–1 MeVee — where DT gammas are densest — **on the gamma side**: whether low-energy
+  neutrons stay above FCI's line there is not measured (no neutrons below ~2.5 MeVee without a
+  source; see the gamma-rejection FoM above).
 
 ![FCI and PSD vs energy at the DT optima, 15.4 h, with the straight-line cuts](images/pmt_clyc_dt1050_fci_psd_vs_energy_matrix.png)
 
@@ -5938,7 +5950,8 @@ FCI's gamma band (a, c) is asymmetric in energy — it rises from ~0.22 at 350 k
 16 MeVee — but no gamma crosses the line anywhere up to 16.5 MeVee; PSD's band (b, d) is flat at
 0.68–0.70, but below ~700 keVee its noise tail reaches through the line into the neutron region
 (801 gammas, against 9 above 700 keVee). For the paper: **report gamma leakage at
-fixed neutron acceptance (per slice and pooled) as the discrimination measure**, and keep the
+fixed neutron acceptance (per slice and pooled) as the gamma-rejection measure** — the acceptance
+being that of the 3.3 MeVee thermal captures, not of neutrons at every energy — and keep the
 double-Gaussian FoM alongside, with its χ²/ndf printed and this explanation, for comparison with
 [Morales et al. 2024].
 
