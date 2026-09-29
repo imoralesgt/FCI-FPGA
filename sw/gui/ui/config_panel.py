@@ -114,7 +114,14 @@ class SubsystemPanel(QGroupBox):
     user's own Refresh click, and again after a successful Apply). Lets an embedding view (e.g.
     ScopeView's trigger dashed line) stay in sync without polling this panel itself."""
 
-    def __init__(self, title: str, fields: list[Field], get_name: str, set_name: str):
+    def __init__(self, title: str, fields: list[Field], get_name: str, set_name: str,
+                 extra_rows: tuple[tuple[str, QWidget, str], ...] = ()):
+        """`extra_rows`: (label, widget, tooltip) rows placed after the device fields and before
+        Refresh/Apply -- for HOST-side controls that belong beside this subsystem's settings but
+        are not registers (LiveView's g/n dividers). They are not in _controls, so refresh(),
+        apply(), get_values()/set_values() and set_controls_enabled() never touch them: nothing is
+        sent to the device, they stay usable while disconnected, and a project stores them
+        separately (LiveView.project_settings())."""
         super().__init__(title)
         self._fields = fields
         self._get_name = get_name
@@ -126,6 +133,14 @@ class SubsystemPanel(QGroupBox):
         so there is no second place for the two to drift apart, and no construction site needs
         touching to gain one."""
         self._client: FciClient | None = None
+        self._commit_locked = False
+        """Set while a recording is being written (set_commit_locked()): Apply stays disabled
+        whatever set_controls_enabled() says, so a connect/refresh cannot re-enable it mid-run."""
+        self._populated = False
+        """True once the controls hold real values -- read from the device (refresh()) or loaded from
+        a project (set_values()). Until then they show widget minimums, and get_values() returns
+        nothing, so a Save cannot write those minimums into a project: that is how clyc-PMT's
+        settings were wiped (2026-09-29), by a GUI closed before it ever connected."""
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
         self._shown_when_none: dict[str, Any] = {}
@@ -163,6 +178,15 @@ class SubsystemPanel(QGroupBox):
             grid.addWidget(w, row, 1)
             self._controls[f.name] = w
 
+        for label, widget, tooltip in extra_rows:
+            row += 1
+            lbl = QLabel(label + ":")
+            if tooltip:
+                lbl.setToolTip(tooltip)
+                widget.setToolTip(tooltip)
+            grid.addWidget(lbl, row, 0)
+            grid.addWidget(widget, row, 1)
+
         btn_row = row + 1  # rows actually added, which is fewer than len(fields) when any mirror
         self.btn_refresh = QPushButton("Refresh")
         self.btn_apply = QPushButton("Apply")
@@ -191,11 +215,23 @@ class SubsystemPanel(QGroupBox):
         return self._controls[f.mirrors or f.name]
 
     def set_controls_enabled(self, enabled: bool) -> None:
+        self._connected = enabled
         self.btn_refresh.setEnabled(enabled)
-        self.btn_apply.setEnabled(enabled)
+        self.btn_apply.setEnabled(enabled and not self._commit_locked)
         for name, w in self._controls.items():
             read_only = next((f.read_only for f in self._fields if f.name == name), False)
             w.setEnabled(enabled and not read_only)
+
+    def set_commit_locked(self, locked: bool, tooltip: str = "") -> None:
+        """Blocks Apply (writing to the device) while a recording is being written: a register
+        change mid-file would make its rows inconsistent with its own settings header. Refresh
+        (read-only) stays available. Unlocking restores Apply only if connected."""
+        self._commit_locked = locked
+        self.btn_apply.setEnabled(getattr(self, "_connected", False) and not locked)
+        if locked and self.btn_apply.property("unlocked_tooltip") is None:
+            self.btn_apply.setProperty("unlocked_tooltip", self.btn_apply.toolTip())
+        self.btn_apply.setToolTip(
+            tooltip if locked else (self.btn_apply.property("unlocked_tooltip") or ""))
 
     def refresh(self) -> None:
         if self._client is None:
@@ -213,6 +249,7 @@ class SubsystemPanel(QGroupBox):
             return
         self.lbl_status.setText("")
         self._last = cfg
+        self._populated = True
         for f in self._fields:
             value = getattr(cfg, f.name)
             if f.mirrors is not None:
@@ -282,6 +319,8 @@ class SubsystemPanel(QGroupBox):
         deliberate value from a placeholder.
         """
         values: dict[str, int | bool] = {}
+        if not self._populated:
+            return values  # widget minimums, not settings -- see _populated
         for f in self._fields:
             if f.read_only:
                 continue
@@ -290,11 +329,20 @@ class SubsystemPanel(QGroupBox):
             w = self._widget_for(f)
             current = w.isChecked() if f.is_bool else w.value()
             if f.optional:
-                if self._last is None or not f.settable_when_none:
+                if self._last is None:
                     continue
-                if getattr(self._last, f.name) is None and \
-                        current == self._shown_when_none.get(f.name, current):
-                    continue
+                if getattr(self._last, f.name) is None:
+                    # Same rule as apply(): skip a field the device reports as absent, and a
+                    # placeholder the user never moved. A field the device DID report is saved,
+                    # whatever settable_when_none says -- that flag is about what to do when the
+                    # device reports None, not about the field itself. Testing it here instead
+                    # (`or not f.settable_when_none`) silently dropped the CFD fraction and delay
+                    # from every project, so reopening one never restored them and a reflash left
+                    # the firmware's 0.25/24 in place (project log section 10.15).
+                    if not f.settable_when_none:
+                        continue
+                    if current == self._shown_when_none.get(f.name, current):
+                        continue
             values[f.name] = current
         return values
 
@@ -307,6 +355,8 @@ class SubsystemPanel(QGroupBox):
         an extra field must still open here, and the field lists are the authority on what this
         build has.
         """
+        if values:
+            self._populated = True
         for name, value in values.items():
             field = next((f for f in self._fields if f.name == name), None)
             if field is None:

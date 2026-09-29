@@ -6022,6 +6022,62 @@ The neutron-like class includes internal alphas (§10.14); that does not change 
 windows win, but acceptance and FoM are for slow pulses in general, not for captures alone. Fast
 neutrons (DT) have not been measured: this optimizes the gamma side and thermal captures only.
 
+### 10.16 Live g/n classification in the GUI: FCI against PSD with a ²²Na source (2026-09-29)
+
+**What the GUI now does (issue #26 work).** Each discriminator has a host-side **g/n divider**
+(0–1, three decimals) under its configuration form, drawn as a horizontal line on its matrix plot.
+Events above it are class 1 ("neutron"), at or below it class 0 ("gamma"). The statistics panels
+show live time, total, gamma and neutron counts with their rates, and a gamma and a neutron
+rate-vs-time plot; the pairing counters sit under a collapsed "Advanced statistics". The list-mode
+file gains `class_fci` and `class_psd` columns (0/1, appended after `energy_cal`), and its header
+records the dividers (`dividers:`), the LLD/ULD cuts (`cuts:`) and free-text operator notes
+(`Notes:`, e.g. the detector HV, which no register records). While a file is being written, every
+control that would change what it contains is locked: all Apply buttons, the LLD/ULD checkboxes and
+regions, the dividers, the Spectrum calibration and the notes. The classification is the straight
+horizontal line the hardware label requires (§10.11), applied on the host for display, counting and
+recording.
+
+**Run.** PMT CLYC in DT mode (−1050 V, VGA ×4.5, shaper 1/1/1 µs, CFD 0.5/4, §10.15), ²²Na source
+close to the detector, cosmics and NORM. Settings at the §10.15 optima and lines: FCI 2/44/2/293
+with the divider at **0.470**; PSD 64/7/6/38 with the divider at **0.750**. LLD/ULD enabled on both
+plots over the whole range shown. Recording (header: `RECORDING...` with the blinking dot); the
+recording lock is visible — Apply, the g/n dividers and the LLD/ULD checkboxes are greyed out.
+
+![Live FCI/PSD tab while recording, g/n dividers, ²²Na source, 10 min 53 s](images/pub_pmt_clyc_live_gui_na22_dividers.png)
+
+| 653 s live time | FCI, divider 0.470 | PSD, divider 0.750 |
+|---|---|---|
+| total (counts / rate) | 110,980 / 179.92 Hz | 110,980 / 179.91 Hz |
+| gamma, class 0 | 110,964 / 179.92 Hz | 108,817 / 178.14 Hz |
+| **neutron, class 1** | **16 / 0.00 Hz** | **2,163 / 1.77 Hz** |
+
+- **FCI's neutrons are essentially the real ones.** The thermal capture rate measured overnight is
+  49 /h (§10.14), predicting 49 × 653 / 3,600 ≈ **8.9** captures in this window, plus about one
+  internal-alpha event. FCI's 16 is ~2σ above that: most of its class-1 events sit at the ⁶Li capture
+  energy (~3.3–4 MeVee) in the matrix, with one or two close to the line near 2 MeVee — at most a
+  handful of false positives in 110,964 gammas. Its neutron rate-vs-time plot is zero apart from
+  isolated spikes (single captures in the 3 s rate window). The gamma band, although it rises with
+  energy (noise bias, §10.15), stays below the line from threshold to 16 MeVee.
+- **PSD's 2,163 are ~2,150 false positives.** With the same ~9 captures in the data, PSD calls
+  **~2.0% of the gammas neutrons**, sustained — its neutron rate-vs-time plot fluctuates between
+  ~2 and 8 Hz for the whole run. In the matrix they are the noise tail of the gamma band below
+  ~700 keVee reaching through the 0.75 line (PSD up to ~0.9 at a few hundred keVee), the mechanism
+  §10.15 measured offline (801 of 31,458 gammas at 350–700 keVee crossing PSD 0.75, 1.4% of that
+  slice, without a source). The ²²Na source fills exactly that energy region (511 keV and the
+  1,275 keV Compton continuum), so the false-positive rate scales with it.
+- **As a detector reading:** with FCI the operator sees a neutron count consistent with the true
+  thermal background (16 against ~9 expected) in a 180 Hz gamma field; with PSD at a straight line,
+  the same data reads as ~240× that (2,163 against ~9), dominated by misclassified gammas. The
+  earlier 6.6 min screenshot of the same run (not recording) gave the same picture: FCI 6 against
+  ~5.4 expected, PSD 1,287.
+
+**Caveats.** The FCI and PSD lines were set at the §10.15 positions, chosen for 350 keVee–16.5 MeVee
+without a source; PSD's could be raised to cut the false positives, at the cost of the neutron
+acceptance margin (§10.15's scan: 0.7665 halves the low-energy leakage but sits on the edge of the
+neutron cluster). The neutron counts of both methods are for thermal captures (plus internal alphas,
+§10.14); low-energy fast-neutron acceptance is untested for either. Sixteen events is a small number:
+the claim is FCI ≈ expected captures (within ~2σ), PSD ≈ 240× that, not a precise FCI rate.
+
 ## Appendix: ILA note
 
 Early in bring-up the ILA showed `trigger_core`'s `m_axis` TVALID toggling 1/0 on alternate cycles,

@@ -209,8 +209,10 @@ def _rebin_counts(counts: np.ndarray, display_channels: int) -> np.ndarray:
 def write_spe(path: Path, counts: np.ndarray, calibration: tuple[float, float, float],
               live_time_s: float, real_time_s: float) -> None:
     """Writes an ORTEC/Maestro-style ASCII SPE file: $SPEC_ID, $DATE_MEA, $MEAS_TIM, $DATA and
-    $MCA_CAL sections. live_time_s/real_time_s are equal here -- this instrument does not track
-    dead time separately from wall-clock time, so live_time is reported as an approximation of it
+    $MCA_CAL sections. live_time_s is the Spectrum tab's live time (running time since Clear, paused
+    spans excluded) and real_time_s the wall clock since the first event -- equal unless Stop was
+    used. Neither is dead-time corrected: this instrument does not track dead time, so live_time is
+    reported as an approximation of it
     rather than omitted. `calibration` must already be expressed against `counts`'s own channel
     index (see _rebin_calibration) -- the SPE convention applies $MCA_CAL directly to $DATA's row
     position, not to some other, coarser-or-finer channel numbering. Always the RAW linear counts,
@@ -258,6 +260,13 @@ class HistogramView(QWidget):
         """Raw shaper counts per channel -- the device's `peaking`. See DEFAULT_PEAK_FOLD."""
         self._total = 0
         self._start_time: float | None = None
+        self._live_accum_s = 0.0
+        self._live_since: float | None = None
+        """Live time = accumulating time since the last Clear, paused while stopped: _live_accum_s
+        holds closed intervals, _live_since (monotonic) the open one, or None while not counting.
+        An interval opens at the first event after Clear or Run -- not at the button press -- so
+        time spent running with no data arriving (no device, device not acquiring) is not counted;
+        it closes at Stop."""
         self._running = True
         """Independent of the device connection and of Live FCI/PSD's own Start/Stop: this just
         gates whether add_events() accumulates incoming batches into the histogram. Defaults to
@@ -377,6 +386,14 @@ class HistogramView(QWidget):
         self.lbl_status = QLabel("Total: 0 counts")
         ctrl_layout.addWidget(self.lbl_status)
         ctrl_layout.addWidget(QLabel("|"))
+        self.lbl_live_time = QLabel("Live time: 0:00:00")
+        self.lbl_live_time.setToolTip(
+            "Accumulating time since the last Clear, from the first event after Clear or Run; "
+            "paused while stopped. Host wall-clock time -- the device does not report its own dead "
+            "time, so this is not dead-time corrected. Used as the SPE export's live time and for "
+            "the average rate.")
+        ctrl_layout.addWidget(self.lbl_live_time)
+        ctrl_layout.addWidget(QLabel("|"))
         self.lbl_rate = QLabel("Rate: 0.0 cps")
         self.lbl_rate.setToolTip(f"Instantaneous rate -- a {RATE_WINDOW_S:.0f} s sliding window, "
                                   "not a lifetime average. Decays to 0 shortly after events stop "
@@ -384,8 +401,8 @@ class HistogramView(QWidget):
         ctrl_layout.addWidget(self.lbl_rate)
         ctrl_layout.addWidget(QLabel("|"))
         self.lbl_avg_rate = QLabel("Avg: 0.0 cps")
-        self.lbl_avg_rate.setToolTip("Cumulative rate: total counts / elapsed time since the "
-                                      "first event after the last Clear.")
+        self.lbl_avg_rate.setToolTip("Cumulative rate: total counts / live time (paused time "
+                                      "excluded).")
         ctrl_layout.addWidget(self.lbl_avg_rate)
 
         ctrl_layout.addStretch(1)
@@ -415,6 +432,15 @@ class HistogramView(QWidget):
         already collected should stay controllable and exportable after disconnecting -- so
         nothing here is gated by it. Present for symmetry with the other tabs'
         set_controls_enabled(), called from MainWindow.set_connected_controls_enabled()."""
+
+    def set_recording_lock(self, locked: bool, tooltip: str) -> None:
+        """While recording, the calibration coefficients are frozen: the list file's header states
+        one calibration and its energy_cal column is computed with it (csv_logger.py)."""
+        for spin in (self.spin_c0, self.spin_c1, self.spin_c2):
+            if locked and spin.property("unlocked_tooltip") is None:
+                spin.setProperty("unlocked_tooltip", spin.toolTip())
+            spin.setEnabled(not locked)
+            spin.setToolTip(tooltip if locked else (spin.property("unlocked_tooltip") or ""))
 
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
@@ -497,6 +523,9 @@ class HistogramView(QWidget):
         self.run_clicked.emit()
 
     def _on_stop(self) -> None:
+        if self._live_since is not None:
+            self._live_accum_s += time.monotonic() - self._live_since
+            self._live_since = None
         self._running = False
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -514,6 +543,8 @@ class HistogramView(QWidget):
             return
         if self._start_time is None:
             self._start_time = time.time()
+        if self._live_since is None:
+            self._live_since = time.monotonic()
         peaks = np.fromiter((e.peak for e in events), dtype=np.int64, count=len(events))
         # Fold the shaped plateau back to ADC-code scale FIRST, then clamp: dividing by `peaking`
         # is what makes a channel one ADC code (see DEFAULT_PEAK_FOLD), so the clamp afterwards is
@@ -541,6 +572,8 @@ class HistogramView(QWidget):
         self._total = 0
         self._max_channel = -1
         self._start_time = None
+        self._live_accum_s = 0.0
+        self._live_since = None
         self._rate_samples.clear()
         self._update_status_label()
         self._update_rate_labels()
@@ -561,13 +594,20 @@ class HistogramView(QWidget):
             return 0.0
         return sum(n for _, n in self._rate_samples) / dt
 
+    def _live_time_s(self) -> float:
+        if self._live_since is None:
+            return self._live_accum_s
+        return self._live_accum_s + (time.monotonic() - self._live_since)
+
     def _cumulative_rate_hz(self) -> float:
-        if self._start_time is None:
-            return 0.0
-        elapsed = time.time() - self._start_time
-        return (self._total / elapsed) if elapsed > 0 else 0.0
+        # Live time, not wall time since the first event: with Stop/Run in between, wall time
+        # would count the paused spans and understate the rate.
+        live = self._live_time_s()
+        return (self._total / live) if live > 0 else 0.0
 
     def _update_rate_labels(self) -> None:
+        t = int(self._live_time_s())
+        self.lbl_live_time.setText(f"Live time: {t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}")
         self.lbl_rate.setText(f"Rate: {self._instantaneous_rate_hz():.1f} cps")
         self.lbl_avg_rate.setText(f"Avg: {self._cumulative_rate_hz():.1f} cps")
 
@@ -665,8 +705,8 @@ class HistogramView(QWidget):
         # what pyqtgraph's "view all" / autoscale button fits to, and masking to nonzero bins would
         # make that button jump between isolated populated bins. A zero-height bar draws nothing.
         #
-        # (0, 200, 120) is the same green live_view.py's rate curve uses -- reused here rather than
-        # introducing a new shade, and picked over the blue this replaced because it reads clearly
+        # (0, 200, 120) is shared with the Trigger tab's trace (scope_view.py) -- one green for
+        # "the signal" across the GUI rather than a new shade per view, and picked over the blue this replaced because it reads clearly
         # against pyqtgraph's default grid/axis color, which the blue was too close to. pen matches
         # brush explicitly: BarGraphItem's default pen is a gray outline, which at thousands of
         # adjacent bins reads as a solid gray wash over the fill color rather than a border.
@@ -716,11 +756,13 @@ class HistogramView(QWidget):
         out_path = Path(path)
         if out_path.suffix.lower() != ".spe":
             out_path = out_path.with_name(out_path.name + ".spe")
-        elapsed = (time.time() - self._start_time) if self._start_time is not None else 0.0
+        # Real time = wall clock since the first event after Clear; live time = the same minus the
+        # paused spans. Neither is dead-time corrected (the device does not report dead time).
+        real = (time.time() - self._start_time) if self._start_time is not None else 0.0
         counts = _rebin_counts(self._counts, self._display_channels())
         try:
             write_spe(out_path, counts, self._display_calibration(),
-                      live_time_s=elapsed, real_time_s=elapsed)
+                      live_time_s=self._live_time_s(), real_time_s=real)
         except OSError as e:
             QMessageBox.warning(self, "Export Failed", str(e))
             return

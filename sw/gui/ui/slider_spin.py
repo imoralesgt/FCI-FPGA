@@ -131,3 +131,61 @@ class CycleTimeField(QWidget):
         super().setEnabled(enabled)
         self.slider.setEnabled(enabled)
         self.spin.setEnabled(enabled)
+
+
+class FractionField(QWidget):
+    """A slider + spin box for a value in [minimum, maximum] with a fixed number of decimals --
+    the float counterpart of SliderSpinField, for host-side parameters that are not device
+    registers (LiveView's class dividers). The slider moves in steps of one displayed decimal
+    (10**-decimals), so every position it can land on is exactly a value the spin box can show;
+    value()/setValue() speak the float itself.
+    """
+
+    valueChanged = Signal(float)
+
+    def __init__(self, minimum: float = 0.0, maximum: float = 1.0, decimals: int = 3,
+                 value: float = 0.5, parent=None):
+        super().__init__(parent)
+        self._scale = 10 ** decimals
+        self._syncing = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        self.slider = QSlider(Qt.Orientation.Horizontal)
+        self.slider.setRange(round(minimum * self._scale), round(maximum * self._scale))
+
+        self.spin = QDoubleSpinBox()
+        self.spin.setDecimals(decimals)
+        self.spin.setSingleStep(1.0 / self._scale)
+        self.spin.setRange(minimum, maximum)
+        self.spin.setMaximumWidth(80)
+
+        self.slider.valueChanged.connect(self._on_slider_changed)
+        self.spin.valueChanged.connect(self._on_spin_changed)
+
+        layout.addWidget(self.slider, stretch=1)
+        layout.addWidget(self.spin)
+        self.setValue(value)
+
+    def _on_slider_changed(self, steps: int) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self.spin.setValue(steps / self._scale)
+        self._syncing = False
+        self.valueChanged.emit(self.value())
+
+    def _on_spin_changed(self, v: float) -> None:
+        if self._syncing:
+            return
+        self._syncing = True
+        self.slider.setValue(round(v * self._scale))
+        self._syncing = False
+        self.valueChanged.emit(self.value())
+
+    def value(self) -> float:
+        return round(self.spin.value(), self.spin.decimals())
+
+    def setValue(self, value: float) -> None:
+        self.spin.setValue(value)  # drives the slider and valueChanged via _on_spin_changed
