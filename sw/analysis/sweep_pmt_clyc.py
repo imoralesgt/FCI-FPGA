@@ -49,7 +49,14 @@ What differs from the SiPM search, and why each difference is derived rather tha
   offline equals hardware exactly. So the PSD optimum's FoM is a prediction of the live value; the
   FCI optimum's FoM is not, and must be confirmed live.
 
-Run: sw/.venv/bin/python -m analysis.sweep_pmt_clyc <unique_traces.csv>   (from sw/)
+* OPERATING POINTS are profiles (PROFILES below), because every constant above that comes from a
+  recording -- deployed gates and windows, shaper replay and calibration, label thresholds, energy
+  range and slices -- belongs to one HV/VGA/shaper setting. "pmt1400" is the -1400 V run the
+  reasoning above was written for (the default, so its results reproduce unchanged); "dt1050" is the
+  DT-mode setting (-1050 V, VGA x4.5, shaper 1/1/1 us), whose slices reach 16.5 MeVee because a DT
+  campaign needs one straight line to hold across that whole range.
+
+Run: sw/.venv/bin/python -m analysis.sweep_pmt_clyc <unique_traces.csv> [profile]   (from sw/)
 """
 
 from __future__ import annotations
@@ -67,17 +74,57 @@ from analysis.sweep_cosmics_gates import (
 )
 
 PRE_TRIGGER = 64                     # locked to the trigger delay by the GUI
-DEPLOYED_PSD = dict(pre_gate=6, short_gate=2, long_gate=25)
-DEPLOYED_FCI = dict(lo=2, l_hi=60, w_hi=512)
-LLD_KEVEE, ULD_KEVEE = 475.0, 5800.0
-# Shaper replay of the settings the run was recorded with (peaking 50, flat-top 1, decay 10), onto
-# the list-mode channel scale (0.9915, the photopeak match of 10.5) and the Cs-137 self-calibration.
-SHAPER = (50, 1, 10)
-KEVEE_PER_SHAPER_COUNT = 0.9915 / 50.0 * 0.26347
+
+PROFILES = {
+    # -1400 V, VGA x4.0, shaper 50/1/10 (1.00/0.02/0.20 us). Shaper replay onto the list-mode channel
+    # scale (0.9915, the photopeak match of 10.5) and the Cs-137 self-calibration. Labels: FCI and
+    # PSD at these deployed settings agree on every 6Li-window event (10.11).
+    "pmt1400": dict(
+        deployed_psd=dict(pre_gate=6, short_gate=2, long_gate=25),
+        deployed_fci=dict(lo=2, l_hi=60, w_hi=512),
+        lld=475.0, uld=5800.0,
+        shaper=(50, 1, 10), kev_offset=0.0, kev_per_shaper_count=0.9915 / 50.0 * 0.26347,
+        label_fci=0.50, label_psd=0.88,
+        slices=((475, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 3300), (3300, 4200),
+                (4200, 5800)),
+        out_prefix="pmt_clyc"),
+    # DT mode: -1050 V, VGA x4.5, shaper 50/50/50 (1.00/1.00/1.00 us), fixed shaper core (per-frame
+    # tap masking), so the replay matches hardware. Calibration c0 -4.9018, c1 2.642 keVee/channel
+    # (22Na 511/1275; K-40 at 1,480 and 6Li at 3,328 keVee overnight). LLD 350 keVee is just above the
+    # 240-count trigger threshold; ULD 16.5 MeVee is where the live PSD gamma band starts to bend
+    # down (the operator's reading of the overnight run), below where the spikiest gammas clip. Labels:
+    # FCI 1/50/1/180 and PSD 7/7/34 lines from the first -1050 V neutrons (PSD 0.746 vs gamma max
+    # 0.667, FCI 0.670 vs 0.591). Slices extend to 16.5 MeVee: the line must hold where DT gammas and
+    # (n,p)/(n,alpha) products land, not just around the 6Li peak.
+    "dt1050": dict(
+        deployed_psd=dict(pre_gate=7, short_gate=7, long_gate=34),
+        deployed_fci=dict(lo=1, l_hi=50, w_hi=180),
+        lld=350.0, uld=16500.0,
+        shaper=(50, 50, 50), kev_offset=-4.9018, kev_per_shaper_count=2.642 / 50.0,
+        label_fci=0.63, label_psd=0.70,
+        slices=((350, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 5000), (5000, 10000),
+                (10000, 16500)),
+        out_prefix="pmt_clyc_dt1050"),
+}
+
+
+def configure(profile: str) -> None:
+    """Binds the module-level constants the functions below read to one PROFILES entry."""
+    global DEPLOYED_PSD, DEPLOYED_FCI, LLD_KEVEE, ULD_KEVEE, SHAPER, KEV_OFFSET
+    global KEVEE_PER_SHAPER_COUNT, LABEL_FCI, LABEL_PSD, ENERGY_SLICES, OUT_PREFIX
+    p = PROFILES[profile]
+    DEPLOYED_PSD, DEPLOYED_FCI = p["deployed_psd"], p["deployed_fci"]
+    LLD_KEVEE, ULD_KEVEE = p["lld"], p["uld"]
+    SHAPER, KEV_OFFSET, KEVEE_PER_SHAPER_COUNT = p["shaper"], p["kev_offset"], p["kev_per_shaper_count"]
+    LABEL_FCI, LABEL_PSD = p["label_fci"], p["label_psd"]
+    ENERGY_SLICES, OUT_PREFIX = p["slices"], p["out_prefix"]
+
+
+configure("pmt1400")
+
 MIN_GAP = 3                          # long_gate >= short_gate + MIN_GAP (same guard as the SiPM PSD sweep)
 FCI_MIN_GAP = 20                     # w_hi >= l_hi + FCI_MIN_GAP
 RAIL_COUNTS = 14500                  # ADC rail is 14,563 (14-bit full scale less the BLR baseline, 10.5)
-ENERGY_SLICES = ((475, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 3300), (3300, 4200), (4200, 5800))
 
 
 def shaper_energy(traces: np.ndarray) -> np.ndarray:
@@ -94,7 +141,7 @@ def shaper_energy(traces: np.ndarray) -> np.ndarray:
             o[:, s:] = m[:, :n - s]
             return o
         out.append(np.cumsum(tr - sh(tr, k) - sh(tr, k + ft) + sh(tr, 2 * k + ft), axis=1).max(axis=1))
-    return np.concatenate(out) * KEVEE_PER_SHAPER_COUNT
+    return KEV_OFFSET + np.concatenate(out) * KEVEE_PER_SHAPER_COUNT
 
 
 def labeled_fom(vals, neutron):
@@ -114,7 +161,9 @@ def worst_slice_fom(vals, neutron, kev):
     return min(out) if out else float("nan")
 
 
-def main(path):
+def main(path, profile="pmt1400"):
+    configure(profile)
+    print(f"profile {profile}")
     traces, _, _ = load_traces([path])
     kev = shaper_energy(traces)
     region = (kev >= LLD_KEVEE) & (kev <= ULD_KEVEE)
@@ -128,7 +177,7 @@ def main(path):
 
     fci0 = fci_from_asdm(mag, DEPLOYED_FCI["lo"], DEPLOYED_FCI["l_hi"], DEPLOYED_FCI["lo"], DEPLOYED_FCI["w_hi"])
     psd0 = psd_from_traces(cum, PRE_TRIGGER, DEPLOYED_PSD["pre_gate"], DEPLOYED_PSD["short_gate"], DEPLOYED_PSD["long_gate"])
-    neutron = (fci0 > 0.50) & (psd0 > 0.88)
+    neutron = (fci0 > LABEL_FCI) & (psd0 > LABEL_PSD)
     print(f"traces in [{LLD_KEVEE:.0f}, {ULD_KEVEE:.0f}] keVee: {len(traces)}  "
           f"neutrons {neutron.sum()}  gammas {(~neutron).sum()}")
 
@@ -156,7 +205,7 @@ def main(path):
                  f"PMT CLYC: PSD grid search at pre_gate={pg_best} (gate opens at sample "
                  f"{PRE_TRIGGER - pg_best}), pre_trigger={PRE_TRIGGER}\n"
                  f"FoM = worst energy slice ({LLD_KEVEE:.0f}-{ULD_KEVEE:.0f} keVee) and worst gate start +/-1 sample",
-                 "pmt_clyc_psd_gate_fom_surface.png")
+                 f"{OUT_PREFIX}_psd_gate_fom_surface.png")
 
     fig, ax = plt.subplots(figsize=(7, 4.2), dpi=140)
     pgs = sorted(per_pg)
@@ -170,7 +219,7 @@ def main(path):
     ax.set_ylabel("best FoM for that gate start")
     ax.set_title("PMT CLYC: best PSD FoM vs where the gates open")
     ax.legend(fontsize=8); ax.grid(alpha=0.3)
-    plt.tight_layout(); plt.savefig(OUT_DIR / "pmt_clyc_psd_fom_vs_gate_start.png"); plt.close(fig)
+    plt.tight_layout(); plt.savefig(OUT_DIR / f"{OUT_PREFIX}_psd_fom_vs_gate_start.png"); plt.close(fig)
 
     # ---------------------------------------------------------------- FCI
     def fci_fom(lo, lh, wh):
@@ -190,7 +239,7 @@ def main(path):
                  f"PMT CLYC: FCI grid search at low bin={lo_best} (shared by both windows)\n"
                  f"FoM = worst energy slice, {LLD_KEVEE:.0f}-{ULD_KEVEE:.0f} keVee\n"
                  f"offline float: ranks windows, absolute value does not transfer",
-                 "pmt_clyc_fci_window_fom_surface.png")
+                 f"{OUT_PREFIX}_fci_window_fom_surface.png")
 
     # ---------------------------------------------------------------- summary of the optima
     print("\nOPTIMA vs DEPLOYED, same events:")
@@ -202,7 +251,7 @@ def main(path):
     s_opt = psd_from_traces(cum, PRE_TRIGGER, pg_best, best[0], best[1])
     f_opt = fci_from_asdm(mag, lo_best, best_f[0], lo_best, best_f[1])
     for name, v0, v1 in (("PSD", psd0, s_opt), ("FCI", fci0, f_opt)):
-        for lld in (475.0, 1000.0, 2000.0):
+        for lld in (LLD_KEVEE, 1000.0, 2000.0):
             m = kev >= lld
             print(f"  {name} LLD {lld:5.0f}: deployed {labeled_fom(v0[m], neutron[m]):.3f}  "
                   f"optimum {labeled_fom(v1[m], neutron[m]):.3f}")
@@ -221,4 +270,4 @@ def main(path):
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(sys.argv[1], sys.argv[2] if len(sys.argv) > 2 else "pmt1400")
