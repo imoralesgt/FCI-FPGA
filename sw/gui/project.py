@@ -194,7 +194,8 @@ class Project:
     @property
     def live(self) -> dict[str, Any]:
         """Live FCI/PSD tab host state: `fci_divider`, `psd_divider` (the g/n class dividers, in
-        [0, 1]). Not device registers -- see LiveView.project_settings()."""
+        [0, 1]) and `fci_cut`, `psd_cut` (each LLD/ULD cut as {"enabled", "lld", "uld"}, bounds in
+        keVee). Not device registers -- see LiveView.project_settings()."""
         return self._section("live")
 
     @property

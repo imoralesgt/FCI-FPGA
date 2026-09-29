@@ -95,7 +95,7 @@ class Field:
     cycle_period_ns: float | None = None
     """Set on a field whose wire value is a clock cycle count but whose natural human unit is
     time (pulse_shaper_core's peaking/flat_top/decay, at 20 ns/cycle @ 50 Msps). When set, the
-    control is a CycleTimeField instead of a SliderSpinField: a microsecond-labelled spin box that
+    control is a CycleTimeField instead of a SliderSpinField: a microsecond-labeled spin box that
     only ever lands on exact multiples of this period, stepping by one cycle at a time. The
     dataclass value stays a plain integer cycle count either way -- this only changes what the
     control DISPLAYS, matching the module's config values keep the wire unit convention (see

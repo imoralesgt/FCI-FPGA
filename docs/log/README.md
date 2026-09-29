@@ -63,7 +63,7 @@ sections are the record of getting there.
    that is a physical limit rather than a defect: the event genuinely contains both.
 
    This is untested ground: the original paper REMOVES pile-up before analysis (its §4.2.3), so the
-   behaviour under pile-up is simply not characterised anywhere. It matters for a fielded monitor,
+   behavior under pile-up is simply not characterized anywhere. It matters for a fielded monitor,
    where rate is not a free parameter.
 
    *Status: preliminary and NOT yet conclusive. On the piled-up 6Li events in this dataset FCI
@@ -78,7 +78,7 @@ sections are the record of getting there.
 
 7. **Keep the instrument usable.** A host client and GUI that make the above reproducible by hand:
    live FCI/PSD, oscilloscope, energy spectrum with SPE export, and on-device parameter sweeps
-   (§8f, §8l, §8m). *Status: in use; it is what produced every dataset analysed here.*
+   (§8f, §8l, §8m). *Status: in use; it is what produced every dataset analyzed here.*
 
 ---
 
@@ -1303,7 +1303,7 @@ of magnitude and changes sign. Whatever is happening scales with pulse amplitude
 `blr_core` shuts its gate when the input deviates from the estimate by more than `gate_thr`, which
 firmware sets to **4σ** (`Blr_GateThresholdForSigma`, floored at 32, capped at 1024) — roughly
 **168–256 counts** on this detector. A pulse whose peak never reaches that threshold never closes the
-gate, so the BLR treats it as baseline drift and subtracts it: the pulse is partially cancelled and
+gate, so the BLR treats it as baseline drift and subtracts it: the pulse is partially canceled and
 its tail is driven **negative**. That produces exactly the observed signature — negative tail charge
 for small pulses, clean integration for large ones.
 
@@ -1975,10 +1975,10 @@ baseline from the trace's own pre-trigger samples, and the trace log is a subsam
 
 ![Offline FCI/PSD analysis: pulse shape, energy spectrum, PSD distribution, hardware vs float FCI](images/offline-fci-psd-analysis.png)
 
-**Window optimisation.** Sweeping `psa_l`/`psa_w` over the recorded pulses and scoring by agreement
+**Window optimization.** Sweeping `psa_l`/`psa_w` over the recorded pulses and scoring by agreement
 with PSD, the best is `psa_l` 1–18 / `psa_w` 1–150 at r = 0.637 — statistically indistinguishable
 from the paper's own 1–25 / 1–90 at r = 0.631. **The paper's windows are already near-optimal for
-this detector; the earlier belief that they were mismatched was an artefact of the broken core**
+this detector; the earlier belief that they were mismatched was an artifact of the broken core**
 (see [[measured-pulse-shape]], whose window-tuning advice is superseded).
 
 **Two caveats on the comparison.** The runs used different sources (cosmics vs DD generator), so
@@ -2015,7 +2015,7 @@ transferable — only frequencies are:
 `psa_*_hi` is hard-bounded at **1024**; above Nyquist a real signal's spectrum merely mirrors. Half
 the sample rate at the same transform length buys 2× finer resolution and 2× longer window at the
 cost of the 25–50 MHz band — a band this instrument has nothing in, since the front end is
-band-limited to ~0.47 MHz by the 740 ns rise. The trade is favourable on all three counts.
+band-limited to ~0.47 MHz by the 740 ns rise. The trade is favorable on all three counts.
 
 Same FFT length at half the rate means **the paper's bins double**:
 
@@ -2024,7 +2024,7 @@ Same FFT length at half the rate means **the paper's bins double**:
 | `psa_l` | 1–25 | 1.221 MHz | **1–50** |
 | `psa_w` | 1–90 | 4.395 MHz | **1–180** |
 
-Verified on the paper's own labelled Zenodo set (`data/fci_verification_set.csv`, 100 gamma +
+Verified on the paper's own labeled Zenodo set (`data/fci_verification_set.csv`, 100 gamma +
 100 neutron), scoring the real objective — FoM = |μ_n − μ_γ| / (FWHM_n + FWHM_γ):
 
 | windows (paper bins) | band | FoM |
@@ -2041,20 +2041,20 @@ so cover only half the intended band.
 a custom digitizer that **inverts the signal polarity**, so the Zenodo traces go DOWN from baseline
 while this one's go UP. That is why trigger polarity is RISING here. It has no effect on any result
 above: FCI and PSD are both invariant to a global sign flip — verified bit-for-bit across all 200
-labelled events, FoM identical to four decimals — because FCI sums |Re|+|Im| (negating the signal
+labeled events, FoM identical to four decimals — because FCI sums |Re|+|Im| (negating the signal
 negates the spectrum, leaving the magnitude sum unchanged) and PSD is a ratio of two integrals that
 both flip. It matters only for time-domain extraction: taking `max()` on the raw CAEN traces finds
 noise rather than the pulse, which produced one round of nonsense rise/decay figures here before
 being caught.
 
-**A correction, and the reason it matters methodologically.** An earlier pass optimised the windows
-by *correlation with PSD* on the unlabelled cosmics run, and concluded the opposite: that the
+**A correction, and the reason it matters methodologically.** An earlier pass optimized the windows
+by *correlation with PSD* on the unlabeled cosmics run, and concluded the opposite: that the
 optimum sat at ~0.5 MHz, below the paper's, supposedly because this detector's pulse was slower.
 Both halves were wrong. The pulse is not slower — measured identically, this detector gives
 τ 4.86 µs / rise 740 ns against the paper's τ 5.09 µs / 750 ns (gamma) and 4.82 µs / 800 ns
 (neutron); the τ ≈ 1.4 µs previously on record was simply a bad measurement. And agreement with PSD
-is a *proxy*, not the discrimination objective: maximising it does not maximise separation, and here
-it pointed the wrong way. Optimise on labelled data against FoM, or not at all.
+is a *proxy*, not the discrimination objective: maximizing it does not maximize separation, and here
+it pointed the wrong way. Optimize on labeled data against FoM, or not at all.
 
 ### FCI resolves more tightly than PSD, and the margin widens at low energy
 
@@ -2065,7 +2065,7 @@ samples): **120,000 events at 1005 events/s**, which also confirms the readout m
 **What a gamma-only source can and cannot show.** Co-60 emits no neutrons, so there is exactly one
 population and a gamma/neutron FoM cannot be measured. What it measures directly is FoM's
 *denominator* — how tightly each discriminant clusters for a single known population — as a
-function of energy. Combining that with the class separation Δμ taken from the paper's labelled set
+function of energy. Combining that with the class separation Δμ taken from the paper's labeled set
 gives a *predicted* FoM. That is an extrapolation, not a measurement.
 
 ![FCI vs PSD discriminant width and predicted FoM versus energy, Co-60](images/fci-vs-psd-resolution-co60.png)
@@ -2078,18 +2078,18 @@ gives a *predicted* FoM. That is an extrapolation, not a measurement.
 | 706k–885k | 0.0059 | 0.0077 | 2.333 / 1.651 | 1.41× |
 
 FCI is tighter than PSD in **every** energy bin, and the margin grows as energy falls — 1.4× at the
-top of the range, 2.2× at the bottom. That is the expected behaviour if FCI degrades more
+top of the range, 2.2× at the bottom. That is the expected behavior if FCI degrades more
 gracefully than gate integration when there is less charge to work with, and it is consistent with
 the low-energy PSD pathology already documented in §8d.
 
 A useful consistency check on the extrapolation: the live Co-60 gamma median lands at FCI 0.896
-against the labelled set's gamma mean of 0.876 (2% apart) and PSD 0.731 against 0.788 (7%), across
+against the labeled set's gamma mean of 0.876 (2% apart) and PSD 0.731 against 0.788 (7%), across
 two different digitizers and sample rates.
 
 **Four caveats, none of them small.** σ_n ≈ σ_g is assumed and unverified — no neutrons here. Δμ is
 imported from a different instrument. The energy axis is uncalibrated `energy_long`. And on the
-labelled set the two classes are nearly energy-disjoint (gamma median 14.7k, neutron median 133k),
-so its own overall FoM figures — FCI 1.051 vs PSD 0.778 with *both* discriminants fairly optimised
+labeled set the two classes are nearly energy-disjoint (gamma median 14.7k, neutron median 133k),
+so its own overall FoM figures — FCI 1.051 vs PSD 0.778 with *both* discriminants fairly optimized
 — partly measure energy separation rather than pulse shape. **None of this substitutes for a
 neutron-source measurement**, which remains the outstanding experiment. What it does establish is
 that FCI's resolution advantage is real, measured on this hardware, and largest exactly where the
@@ -2102,18 +2102,18 @@ claim said it would be.
 Measured 2026-09-01 after the UART FIFO fix below: **11,424 events/s sustained in the GUI**,
 556,133 captured, and **zero transport errors across a 4.5 minute session** (previously every frame
 failed). Headless, without rendering, the same path reaches **12,037 ev/s** over 2.9 M events with
-zero desyncs -- essentially the modelled 12,800 ev/s ceiling for 25 B/event at 4 Mbaud.
+zero desyncs -- essentially the modeled 12,800 ev/s ceiling for 25 B/event at 4 Mbaud.
 
-The rate-vs-time trace is now flat. It used to be a sawtooth, which was an artefact rather than a
+The rate-vs-time trace is now flat. It used to be a sawtooth, which was an artifact rather than a
 measurement: every event in a batch shares one host arrival timestamp, so at batch 1024 the 3 s
 rate window contained only a handful of distinct times.
 
 **The screenshot also shows the client features added this session**: per-subsystem Start/Stop/
 Reset with independent LLD/ULD gating, "Events captured" as a true cumulative tally (it previously
 reported the plot window's size and so froze at 20,000 mid-run), the rate-vs-time strip, heatmap
-toggle, FoM optimisation, and the Trigger / Configuration / File Management tabs.
+toggle, FoM optimization, and the Trigger / Configuration / File Management tabs.
 
-**The remaining `Dropped (fci) 5,339` is not a link loss.** It is `Acq_PopPaired` resynchronising:
+**The remaining `Dropped (fci) 5,339` is not a link loss.** It is `Acq_PopPaired` resynchronizing:
 when the FCI and PSD FIFOs slip -- one overflowed and lost an event the other kept -- the older
 side is discarded to restore pairing. 5,339 of 523,815 is **1.02%**, and `Overflow` reads 1, which
 under the corrected latching semantics means "at least one overflow episode", not one lost event.
@@ -2158,11 +2158,11 @@ with **36 dropped (0.011%)**. Started the day at 147 ev/s in the GUI. What each 
 **The latency timer could not be part of the answer.** Setting it to 1 ms doubled throughput, but
 the instrument has to run on an off-the-shelf host with no root and no udev rule. The property that
 saved it: the timer delays only the FINAL partial USB packet, so a large reply pays the 16 ms once
-rather than per packet, and batch size amortises it. At batch 1024 the default timer costs ~5%
+rather than per packet, and batch size amortizes it. At batch 1024 the default timer costs ~5%
 instead of ~50%. Asking for the maximum is free when little is pending, because the device stops
 early once the FIFO empties.
 
-Modelled ceilings, batch 1024, default 16 ms timer:
+Modeled ceilings, batch 1024, default 16 ms timer:
 
 | | 921600 | 4 Mbaud |
 |---|---|---|
@@ -2264,7 +2264,7 @@ a direct term in FCI's spread. `cfd_trigger.vhd` replaces `trigger.vhd` outright
 | CFD, fixed 1/2 fraction | 92 | 26 | 0 | 16 | 14 |
 
 About 4x the LUTs, ~0.44% of the device. Two measurement traps worth recording: `synth_design
--generic` **silently does nothing** for these entities -- every configuration synthesised
+-generic` **silently does nothing** for these entities -- every configuration synthesized
 identically until the configs were pinned with wrapper entities (`scripts/area_wrappers.vhd`) --
 and `PRIMITIVE_GROUP == DSP` matches nothing, because a DSP48E1 is group **MULT**, which made the
 variant that does infer a multiplier look like it had none.
@@ -2294,7 +2294,7 @@ a cross-level comparator on the same stimulus. The analytic result matches: for 
 The zero-crossing direction was **inverted** in the first version -- a positive pulse needs the
 RISING crossing of `cfd`, not the falling one -- and it never fired at all. Worse, the testbench
 reported a flattering "1 sample" walk from that completely broken run, because the min/max were
-computed from uninitialised `integer'high`/`integer'low` sentinels. Both are now guarded, and the
+computed from uninitialized `integer'high`/`integer'low` sentinels. Both are now guarded, and the
 walk is scored against a computed cross-level baseline so a CFD that degenerated into a level
 trigger would fail rather than pass on a lucky tolerance.
 
@@ -2331,7 +2331,7 @@ was quantity-dependent, not probabilistic.
 | + concurrent `$RT`/`$RC` from a second thread | 8522 frames, 46k records, 0 desyncs |
 | + event rate raised to 12.8 kcps | 751 frames, **769k records (19 MB)**, 0 desyncs |
 
-The rate was synthesised by lowering the trigger threshold from 400 to 200 so noise self-triggers —
+The rate was synthesized by lowering the trigger threshold from 400 to 200 so noise self-triggers —
 15 kcps with no source needed, and reversible.
 
 **The missing variable was the GUI holding the GIL.** Adding a pure-Python busy loop standing in for
@@ -2394,7 +2394,7 @@ run, which is exactly the contamination trap already documented once in §7 (the
 **Conclusion applied throughout: only the raw traces are trustworthy here, never the logged
 FCI/PSD columns from this dataset.** See "the lesson, applied" below for the fix going forward.
 
-### A dataset split nobody had labelled
+### A dataset split nobody had labeled
 
 The five `dd_*_scope_traces.csv` files turned out to hold **two different depths** — `dd_0001/2/3`
 at 2048 samples (or captured shorter and left recorded that way; only `dd_0001` is a genuine
@@ -2419,12 +2419,12 @@ capture peak, against a much sparser continuum below ~2000 keVee. That continuum
 population this run actually has to discriminate against — there is no separate gamma-only
 measurement in this dataset, so "gamma-like" here means "not the capture peak," which is a real
 limitation: high-energy Compton events reach into the capture window and contaminate the neutron
-label. The resulting FoM is therefore a **lower bound**, not the number a properly labelled
+label. The resulting FoM is therefore a **lower bound**, not the number a properly labeled
 gamma-only run would give.
 
 ### LLD, applied as requested
 
-An LLD was needed for a mechanical reason independent of the labelling: below ~500 keVee both
+An LLD was needed for a mechanical reason independent of the labeling: below ~500 keVee both
 discriminators degrade toward noise (a coarse sweep found FCI's unsupervised FoM oscillating
 0.16–0.70 and PSD's outright failing to fit at all for several LLD values below this point, purely
 from a handful of near-threshold events dominating a small histogram). **LLD = 500 keVee** is used
@@ -2438,7 +2438,7 @@ against energy-based labels — neutron-like = 2800–3500 keVee, gamma-like = 5
 robust to the tails a ratio-of-integrals discriminator always has). This is a **different** scoring
 path from the GUI's own unsupervised double-Gaussian fit (`fom_core.compute_fom`): that fit was
 tried first and found unusable here — with only ~110 gamma-like events, its FoM swung between 0.03
-and 0.82 across neighbouring LLD values, chasing which few points the auto-seeded peak-finder
+and 0.82 across neighboring LLD values, chasing which few points the auto-seeded peak-finder
 happened to grab. `sw/analysis/tune_fom.py` documents both paths and why the supervised one is
 what the grid search actually uses.
 
@@ -2474,11 +2474,11 @@ being a purely theoretical worry:
 ![PSD vs energy](images/dd20260828_psd_vs_energy.png)
 
 The scatter plots show *where* each population sits; the histograms below show what the FoM number
-in the table actually measures — the two labelled populations, projected onto each discriminator's
+in the table actually measures — the two labeled populations, projected onto each discriminator's
 axis, with the median/IQR-derived widths the supervised score is computed from:
 
-![FCI histogram, labelled populations](images/dd20260828_fci_histogram.png)
-![PSD histogram, labelled populations](images/dd20260828_psd_histogram.png)
+![FCI histogram, labeled populations](images/dd20260828_fci_histogram.png)
+![PSD histogram, labeled populations](images/dd20260828_psd_histogram.png)
 
 These are deliberately **not** the GUI's own unsupervised double-Gaussian fit
 (`fom_core.compute_fom`) run on the whole LLD-cut population — that fit was tried first and
@@ -2486,7 +2486,7 @@ produces a visibly wrong picture here: fed all 905 events with no energy label, 
 peak finder locks onto the capture line as one peak and a small shoulder beside it as the other
 (FCI: unsupervised FoM 0.72, fitting *within* the neutron cluster, not against the gamma one), and
 for PSD it degenerates entirely — the two "peaks" it fits sit on top of each other in a spike
-0.02 wide, no separation at all (unsupervised FoM 0.21). Both numbers are artifacts of an unlabelled
+0.02 wide, no separation at all (unsupervised FoM 0.21). Both numbers are artifacts of an unlabeled
 fit meeting a sample where the neutron population outnumbers the gamma one roughly 7:1
 (717 vs 109 events); they say nothing about how well either discriminator actually separates
 gamma from neutron, and are exactly the instability already noted above.
@@ -3176,7 +3176,7 @@ exactly what Co-60 shows despite having its own continuum, backscatter, and two 
 once. Physics gives no reason for a second population from this source, so the second band is not
 explained by "it's just the continuum" -- something else produced it (candidates not yet checked:
 pile-up, a room-background contamination, or something specific to how this one run was captured or
-labelled) and it should be treated as an open problem to diagnose, not a feature to note and move
+labeled) and it should be treated as an open problem to diagnose, not a feature to note and move
 past.
 
 ---
@@ -3757,7 +3757,7 @@ the paper's Fig. 7 view -- pooled experimental distribution and the fitted doubl
 separation line at the crossing of its two components. The components themselves are not drawn, and
 the x range is set from the fitted sigmas (5 sigma either side of the two centroids).
 
-One plotting bug worth recording, because it made a real result look wrong: the density colouring
+One plotting bug worth recording, because it made a real result look wrong: the density coloring
 binned its 2D histogram over the DATA range rather than the displayed range. PSD spans -0.24 to 1.90
 (near-zero long integrals at low energy) against FCI's 0.49 to 0.97, so 200 bins left only **37**
 inside the visible window for PSD against **167** for FCI -- the 6Li cluster came out visibly
@@ -3819,7 +3819,7 @@ more than they do at the paper's 100 Msps.
 | 700 | 8857 | 1101 | 0.701 | 1.465 |
 | 1000 | 8857 | 417 | 0.734 | 1.430 |
 
-The scan starts at 0, as it must to show behaviour at the lowest energies. (0 and 100 stay identical
+The scan starts at 0, as it must to show behavior at the lowest energies. (0 and 100 stay identical
 because the trigger threshold already sits near 110 keVee, so a 100 keVee cut removes nothing --
 physical, not a scan artifact. Two earlier versions of this scan DID have a real bug of that shape,
 from a gamma class pre-restricted to a fixed band, which made every cut below the band's floor a
@@ -4301,7 +4301,7 @@ does** (1.14 vs. 0.95), consistent with every other dataset this log has scored 
 cut *E*, the population is the **cumulative tail [E, ULD]** -- every event from *E* all the way up
 to the ULD, not a local window -- and iterated at *E* = 100, 250, 500, 1,000, 2,000, 4,000 keVee (a
 roughly-doubling sweep; 4,000 keVee is the last point before the cluster's own energy range is fully
-excluded from the tail). Since a cumulative tail carries no independent energy-band labelling, the
+excluded from the tail). Since a cumulative tail carries no independent energy-band labeling, the
 two classes are the same validated cluster/continuum cut used everywhere else in this subsection
 (FCI >= 0.894, PSD >= 0.787, the same-energy-window crossing point derived above), applied to
 whichever events happen to fall in that tail, with the same
@@ -6041,7 +6041,7 @@ recording.
 close to the detector, cosmics and NORM. Settings at the §10.15 optima and lines: FCI 2/44/2/293
 with the divider at **0.470**; PSD 64/7/6/38 with the divider at **0.750**. LLD/ULD enabled on both
 plots over the whole range shown. Recording (header: `RECORDING...` with the blinking dot); the
-recording lock is visible — Apply, the g/n dividers and the LLD/ULD checkboxes are greyed out.
+recording lock is visible — Apply, the g/n dividers and the LLD/ULD checkboxes are grayed out.
 
 ![Live FCI/PSD tab while recording, g/n dividers, ²²Na source, 10 min 53 s](images/pub_pmt_clyc_live_gui_na22_dividers.png)
 
@@ -6077,6 +6077,70 @@ acceptance margin (§10.15's scan: 0.7665 halves the low-energy leakage but sits
 neutron cluster). The neutron counts of both methods are for thermal captures (plus internal alphas,
 §10.14); low-energy fast-neutron acceptance is untested for either. Sixteen events is a small number:
 the claim is FCI ≈ expected captures (within ~2σ), PSD ≈ 240× that, not a precise FCI rate.
+
+### 10.17 AmBe operating mode (6 MeVee limit): setup in progress (2026-09-29)
+
+**Requirement (issue #26, last item).** Set up acquisition (BLR, shaper, trigger, …) and processing
+(PSD, FCI) for AmBe, with the same energy limit as the SiPM CLYC, and store it as a project. The
+SiPM limit (§8v): an analog saturation ceiling at a raw peak of ~12,500 ADC counts = **~6.0 MeVee**
+(pile-up band 5,950–6,100 keVee, 0.62% of events), analyzed with **ULD 5,800 keVee**. The PMT
+target chosen with the operator: linear response to ~6.6 MeVee (a 10% margin), ULD 6.0–6.2 MeVee.
+AmBe brings fast neutrons up to ~11 MeV (³⁵Cl(n,p) light mostly above 6 MeVee, cut off as with the
+SiPM), thermal captures (~3.3 MeVee), the 4.44 MeV ¹²C* gamma (a linearity point near the top of
+the range) and 59.5 keV from ²⁴¹Am (below threshold).
+
+**Finding the operating point** (VGA ×6.6, shaper 1/1/1 µs, CFD 0.5/4 throughout):
+
+| step | observation |
+|---|---|
+| −1200 V, threshold wizard | 6σ = **240 counts** (σ ≈ 40; the VGA noise model predicted ~50 — the wizard's σ estimate may differ from the trace-based one, to be checked on raw traces) |
+| −1200 V, live plots | PSD and FCI straight to **~8 MeVee** (provisional c1 = 0.94 scaled from DT; the ²²Na result below shows it was accurate, 0.95) — more headroom than wanted |
+| −1250 V, live plots | bending seen at "7 MeVee", read on the unchanged −1200 V calibration |
+| **−1280 V** | chosen operating point; ²²Na calibration below |
+
+**Pitfall recorded for operators: after any HV or VGA change the displayed energy is stale.** The
+calibration is not re-derived, so every event reads higher by the gain step; a bending seen at "7"
+after −1200 → −1250 V is really ~5.6 MeVee. Choose HV/VGA by calculation from a calibrated
+measurement, then recalibrate — not from the live plot.
+
+**²²Na calibration at −1280 V, VGA ×6.6** (`clyc-PMT-6MeVee/SPECTRA/Na22.spe`, 620 s, 194,774 counts;
+threshold 311 counts):
+
+| line | channel | FWHM |
+|---|---|---|
+| 511 keV | 807.5 ± 0.2 | **7.64%** |
+| 1275 keV | 2072.5 ± 1.3 | **4.49%** |
+
+- **Calibration c0 = 22.3538 keVee, c1 = 0.604948 keVee/ch, c2 = 0** (reproduces 510.8 and 1276.1 keV at the two centroids) (the operator's hand values 20 / 0.61
+  were within ~1%).
+- **Resolution:** electronic noise contributes 3.3% FWHM at 511 keV (11% in DT mode, §10.15),
+  photostatistics 6.9%; projected **~6.5% at 662 keV**, meeting the < 7% target set for the
+  low-energy mode. This is the higher-gain mode §10.15 anticipated.
+- **Threshold:** 311 counts ≈ **100 keVee** (DT: 330 keVee).
+- **PMT gain vs HV is steeper than measured before.** Total gain is 4.37× DT's (c1 2.642 → 0.6049);
+  with VGA 6.6/4.5, the PMT supplies 3.0× its −1050 V gain at −1280 V, i.e. gain ∝ **V^5.5** over
+  −1050…−1280 V, against V^4.8 from −1050…−1200 V (§10.15). Extrapolating one exponent was off by
+  ~15% here; use 5.5 above −1200 V.
+
+**Open: where the linearity limit sits at −1280 V.** Rescaling the live observations with the
+steeper gain (8 MeVee at −1200 V ÷ 1.57) suggests PMT saturation could now begin at **~5.1–5.6 MeVee**,
+below the 6.2 MeVee ULD in use — an extrapolation from readings on a stale scale, so it is being
+measured directly: a cosmics + NORM background run with the LLD/ULD cuts **off** (so events above
+6.2 MeVee are recorded), checking e_long/shaper, e_short/e_long and the PSD/FCI gamma bands against
+energy on the calibrated scale. If the onset is below ~6.6 MeVee, the HV is lowered by the V^5.5
+relation (resolution cost small: the noise term stays well under the statistical one).
+
+**Bookkeeping.** The list-file header does not record HV or VGA; the operator notes carry them, and
+the first ²²Na file's notes still said "HV: −1200 V" — corrected by the operator (−1280 V, ×6.6
+confirmed). The `clyc-PMT-6MeVee` project was created as a copy of the DT project and still held DT
+values until re-saved at this operating point. The "Calibrate Threshold" wizard now defaults to 6σ
+(was 8σ; the firmware's boot-time calibration still uses 8σ).
+
+**Still to do for this mode:** the linearity check above → final HV; ²²Na recalibration if the HV
+changes; an AmBe run (≥ 2 h, list + raw) → 4.44 MeV line against the calibration, PSD/FCI re-sweep
+with slices 100 keVee–6 MeVee, dividers, leakage per slice, and — for the first time in this
+project — low-energy fast-neutron acceptance for both methods; then save the project and log the
+settings table as §10.15 does for DT.
 
 ## Appendix: ILA note
 
@@ -6137,7 +6201,7 @@ activity comparison and the limits of shape-based α/n separation.
 - **Scionix V12.7B30/SIP-E3-CLYC-X data sheet** — manufacturer-supplied gamma decay time (**5 µs**,
   §8e), used to size `pulse_shaper_core`'s `K_MAX`/`M_MAX` (§8t) and cross-checked to 2% against the
   Zenodo recording below.
-- **The paper's labelled Zenodo dataset** [Morales et al. 2024's supplementary data] — 100 gamma +
+- **The paper's labeled Zenodo dataset** [Morales et al. 2024's supplementary data] — 100 gamma +
   neutron events at 100 Msps, used throughout §8j–§8s for offline validation against a reference
   implementation and (§8e) to independently measure the same detector's decay constant
   (**4.89 µs**, 2% from the data sheet's 5 µs). No formal DOI recorded in this project; cite via the

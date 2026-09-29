@@ -23,7 +23,7 @@ entity trigger_core_top is
     -- CFD delay range. "Short" only relative to the 256-tap pre-trigger line: a useful CFD delay
     -- is a fraction of the rise time (~37 samples at 50 Msps for this detector's 740 ns), so 32
     -- covers the whole useful range with margin. Making it smaller saves nothing measurable --
-    -- the delay line costs one SRL per BIT LANE regardless of depth, so 8 and 32 both synthesise
+    -- the delay line costs one SRL per BIT LANE regardless of depth, so 8 and 32 both synthesize
     -- to 16 SRLs and differ only as SRLC16E vs SRLC32E.
     CFD_DLY_MAX    : integer := 32;
     CFD_FRAC_BITS  : integer := 8;

@@ -90,8 +90,8 @@ def sweep_psd(cum, keep, pre_trigger, grid_pg, grid_sg, grid_lg):
 #
 # The unsupervised double-Gaussian fit is what the instrument computes, but on this dataset the
 # gamma population is only ~200 events against ~900 capture events, and the fit is correspondingly
-# unstable (its FoM jumped between 0.03 and 0.82 over neighbouring LLD values). So the SEARCH is
-# driven by a supervised score using an energy-based labelling that rests on known physics:
+# unstable (its FoM jumped between 0.03 and 0.82 over neighboring LLD values). So the SEARCH is
+# driven by a supervised score using an energy-based labeling that rests on known physics:
 #
 #   neutron-like : the 6Li(n,alpha)t capture peak, 2800-3500 keVee
 #   gamma-like   : continuum well below it, 500-2000 keVee

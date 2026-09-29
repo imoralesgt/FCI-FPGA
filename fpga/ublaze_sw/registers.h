@@ -204,7 +204,7 @@
  *
  * The FCI_SINK_* names are kept as-is rather than renamed: fci_sink.c's accessors work unchanged
  * against this map (same semantics, same bit layout), and renaming them would churn every call
- * site for no behavioural gain. Only the base address and two offsets actually moved.
+ * site for no behavioral gain. Only the base address and two offsets actually moved.
  * ------------------------------------------------------------------------------------------- */
 /* Resolved from whatever the block design actually called the cell, because that is not fixed: the
  * merged core was planned as `fci_core_rtl_0` but was instanced as `fci_core_0`, reusing the

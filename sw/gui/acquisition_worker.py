@@ -106,7 +106,7 @@ class RemoteFciClient:
     would against a real client.
 
     Every call blocks the calling thread until the child replies or _RPC_TIMEOUT_S elapses --
-    the same blocking behaviour a direct client call always had (it blocked on the serial round
+    the same blocking behavior a direct client call always had (it blocked on the serial round
     trip), just crossing a queue instead of a wire now. SubsystemPanel, the calibration wizard,
     and the FoM sweep worker all call synchronously and expect exactly this.
     """

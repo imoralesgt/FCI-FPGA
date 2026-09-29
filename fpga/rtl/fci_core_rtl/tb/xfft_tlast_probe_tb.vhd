@@ -1,7 +1,7 @@
 -- What does the Xilinx FFT actually do when TLAST arrives in the wrong place?
 --
 -- This exists because a claim was made ("an early TLAST halts the input channel") and asserted as
--- documented behaviour when it was really an inference from the presence of the event_* ports plus
+-- documented behavior when it was really an inference from the presence of the event_* ports plus
 -- a symptom match on hardware. Rather than argue from recollection, this drives the real IP
 -- simulation model with a malformed frame and records what the core does.
 --

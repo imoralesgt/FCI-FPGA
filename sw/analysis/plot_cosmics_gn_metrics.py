@@ -2,7 +2,7 @@
 started 2026-09-11, no dedicated source). See docs/log/README.md 8v.
 
 Unlike sw/analysis/plot_optimized_psd_fci.py's DD-generator dataset, this run has no independent
-energy-based gamma/neutron labelling: the only real second population is the narrow (n,alpha)t
+energy-based gamma/neutron labeling: the only real second population is the narrow (n,alpha)t
 6Li thermal-neutron capture cluster at ~3,160 keVee (Morales et al., docs/log/README.md
 References), a small (~0.2%) fraction of all events riding on a much larger ambient
 gamma/cosmic-muon continuum. Every FoM measurement below therefore has to define its own "cluster"
@@ -267,7 +267,7 @@ def plot_fom_vs_energy(fci, psd, keVee, sep_fci: float, sep_psd: float,
     """FoM vs Energy, as clarified: at each swept lower-energy cut E, the population is the
     CUMULATIVE tail [E, ULD] (not a local window) -- "integrating the events marked with the x-axis
     Energy value all the way up to the ULD". Since a cumulative tail has no independent energy-band
-    labelling, the two classes are the SAME validated cluster/continuum cut used everywhere else in
+    labeling, the two classes are the SAME validated cluster/continuum cut used everywhere else in
     this section (sep_fci/sep_psd from derive_separation_cuts), applied to whichever events fall in
     that tail.
 

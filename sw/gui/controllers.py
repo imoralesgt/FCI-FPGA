@@ -212,7 +212,7 @@ class AppController(QObject):
 
     def _offer_save_before_leaving(self, allow_cancel: bool = True) -> bool:
         """Asked when a project is about to stop being the open one (Close Project, application
-        exit). Returns False only if the user cancelled the whole action. Deliberately a question
+        exit). Returns False only if the user canceled the whole action. Deliberately a question
         rather than a silent write: settings.json is what documents an existing dataset, and a
         project opened only to look at it must not be rewritten just because it was opened.
 
@@ -591,9 +591,10 @@ class AppController(QObject):
 
         Symmetrically, re-checking it while live/scope acquisition is already running (Start was
         pressed before Record got toggled off) has no future Start press to hang a fresh
-        _ensure_recording_session() off of -- resume immediately instead. Skips the confirmation
+        _ensure_recording_session() off of -- resume immediately instead. Skips the Start
         dialog on purpose: that dialog guards *starting* acquisition with recording armed, not
-        re-arming a preference the user just disabled a moment ago on already-running acquisition."""
+        re-arming a preference the user just disabled a moment ago on already-running acquisition.
+        It asks only about the settings.json save a new session makes."""
         if not checked and self.csv_logger is not None:
             # Stopping a recording loses the rest of the run's data if it was a slip of the mouse
             # (a restart opens a NEW file), so it is confirmed; arming/disarming while nothing is
@@ -617,8 +618,19 @@ class AppController(QObject):
             self.view.set_recording_active(False)
             self._update_filename_preview()
         elif checked and self.csv_logger is None and (self._live_acq_running or self._scope_running):
-            if not self._ensure_recording_session():
-                self.view.chk_record.setChecked(False)  # user declined the overwrite warning
+            # No Start dialog on this path, but starting a session still rewrites settings.json
+            # (see _ensure_recording_session()), so that alone is confirmed here.
+            reply = QMessageBox.question(
+                self.view, "Resume Recording",
+                "Acquisition is running -- recording starts now.\n\n"
+                + self._settings_save_warning() + "\n\nContinue?",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Ok,
+            )
+            if reply != QMessageBox.StandardButton.Ok or not self._ensure_recording_session():
+                self.view.chk_record.blockSignals(True)
+                self.view.chk_record.setChecked(False)
+                self.view.chk_record.blockSignals(False)
 
     def _confirm_and_maybe_record(self) -> bool:
         """Consulted by LiveView/ScopeView before their Start button does anything. Returns
@@ -632,13 +644,34 @@ class AppController(QObject):
             self.view,
             "Start Acquisition",
             "Recording is enabled -- starting will begin writing data to CSV in project "
-            f"'{self.project.name}' ({self.project.list_dir}).\n\nContinue?",
+            f"'{self.project.name}' ({self.project.list_dir}).\n\n"
+            + self._settings_save_warning() + "\n\nContinue?",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Ok,
         )
         if reply != QMessageBox.StandardButton.Ok:
             return False
         return self._ensure_recording_session()
+
+    def _settings_save_warning(self) -> str:
+        return (f"The current settings will be saved to project '{self.project.name}' "
+                "(settings.json), replacing the ones stored there.")
+
+    def _save_project_for_recording(self) -> None:
+        """Writes the on-screen settings into the project as a recording session starts, so
+        settings.json always describes the newest data in the project instead of whatever was
+        last saved by hand. The warning is shown by the dialog that led here (Start, or
+        re-checking Record mid-run). A failed save does not block the recording: every CSV
+        header carries the device settings, so the data stays documented either way."""
+        self._capture_ui_into_project(self.project)
+        try:
+            self.project.save()
+        except ProjectError as e:
+            QMessageBox.warning(self.view, "Could Not Save Project",
+                                f"{e}\n\nRecording continues; the settings are still written "
+                                "into the CSV headers.")
+            return
+        logger.info(f"Saved project settings before recording: {self.project.path}")
 
     # ---- filename prefix / index (File Management tab) ----
 
@@ -811,6 +844,7 @@ class AppController(QObject):
                 if reply != QMessageBox.StandardButton.Ok:
                     return False
 
+        self._save_project_for_recording()
         settings_lines = self._device_settings_lines()
         # Same calibration/fold the header's `energy:` line reports, so the file's energy_cal
         # column and its own header can never describe different mappings.

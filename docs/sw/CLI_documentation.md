@@ -59,7 +59,7 @@ Two conventions apply throughout:
 
 | code | meaning |
 |---|---|
-| 0 | command code not recognised |
+| 0 | command code not recognized |
 | 1 | wrong number of parameters, or a value out of range |
 
 Values outside the documented range are rejected, not clamped.

@@ -36,10 +36,10 @@ class FciCommandError(FciError):
 
 
 class FciUnknownCommandError(FciCommandError):
-    """`!XX 0` -- the command code was not recognised."""
+    """`!XX 0` -- the command code was not recognized."""
 
     def _reason(self) -> str:
-        return "command code not recognised (!XX 0)"
+        return "command code not recognized (!XX 0)"
 
 
 class FciParamError(FciCommandError):

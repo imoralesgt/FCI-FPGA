@@ -40,6 +40,7 @@ known-invalid PSD result as data. The exclusion is counted and shown, not hidden
 from __future__ import annotations
 
 import logging
+import math
 import time
 from collections import deque
 
@@ -48,6 +49,7 @@ import pyqtgraph as pg
 from PySide6.QtCore import QRectF, Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDoubleSpinBox,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -124,13 +126,22 @@ class _ControlsPanel(QGroupBox):
     independent; the cut, unlike those, is NOT mirrored -- FCI and PSD gate independently.
 
     The cut's actual range lives on the plot itself (LiveView's fci_energy_region/
-    psd_energy_region, a pg.LinearRegionItem dragged directly on the energy axis), not here --
-    this checkbox only turns that gate on/off. See LiveView._mask_for()."""
+    psd_energy_region, a pg.LinearRegionItem dragged directly on the energy axis). The two spin
+    boxes beside the checkbox show the same LLD/ULD as numbers and edit it both ways: typing moves
+    the region (bounds_edited), dragging the region updates the boxes (set_bounds()). They are
+    editable only while the cut is enabled and nothing is being recorded. See
+    LiveView._mask_for()."""
 
     start_clicked = Signal()
     stop_clicked = Signal()
     reset_clicked = Signal()
     cut_toggled = Signal(bool)
+    bounds_edited = Signal(float, float)
+    """(lld, uld) typed into the spin boxes, in keVee."""
+
+    BOUND_RANGE_KEVEE = (-10_000.0, 1_000_000.0)
+    """Wide enough never to clip a region dragged anywhere on a calibrated axis; the region, not
+    the box, is what bounds the cut."""
 
     def __init__(self, title: str, config_panel: SubsystemPanel):
         super().__init__(title)
@@ -153,15 +164,60 @@ class _ControlsPanel(QGroupBox):
 
         layout.addWidget(config_panel)
 
-        self.chk_cut_enabled = QCheckBox("Enable LLD/ULD")
+        self.chk_cut_enabled = QCheckBox("LLD/ULD")
         self.chk_cut_enabled.setToolTip(
             "Gates this plot, its stats, and recording by an energy (keVee) range -- drag the "
             "shaded region's edges on the plot to set it."
         )
         self.chk_cut_enabled.toggled.connect(self.cut_toggled.emit)
-        layout.addWidget(self.chk_cut_enabled)
+        self.chk_cut_enabled.toggled.connect(self._update_bounds_enabled)
+
+        self._cut_locked = False
+        self.spin_lld = self._bound_spin("LLD (keVee)")
+        self.spin_uld = self._bound_spin("ULD (keVee)")
+        cut_row = QHBoxLayout()
+        cut_row.addWidget(self.chk_cut_enabled)
+        cut_row.addWidget(self.spin_lld, 1)
+        cut_row.addWidget(self.spin_uld, 1)
+        layout.addLayout(cut_row)
+        self._update_bounds_enabled()
 
         layout.addStretch(1)
+
+    def _bound_spin(self, tooltip: str) -> QDoubleSpinBox:
+        spin = QDoubleSpinBox()
+        spin.setDecimals(1)
+        spin.setRange(*self.BOUND_RANGE_KEVEE)
+        spin.setSingleStep(10.0)
+        # Commit on Enter / focus-out, not per keystroke: typing "6000" must not move the region
+        # through 6, 60 and 600 on the way, each of which would be a cut change of its own.
+        spin.setKeyboardTracking(False)
+        spin.setToolTip(tooltip)
+        spin.valueChanged.connect(
+            lambda _: self.bounds_edited.emit(self.spin_lld.value(), self.spin_uld.value()))
+        return spin
+
+    def set_bounds(self, lld: float, uld: float) -> None:
+        """Shows the region's current bounds, without echoing them back as an edit."""
+        for spin, v in ((self.spin_lld, lld), (self.spin_uld, uld)):
+            spin.blockSignals(True)
+            spin.setValue(v)
+            spin.blockSignals(False)
+
+    def set_cut_locked(self, locked: bool, tooltip: str) -> None:
+        """Recording lock for the checkbox and both bounds (see LiveView.set_recording_lock())."""
+        self._cut_locked = locked
+        for w in (self.chk_cut_enabled, self.spin_lld, self.spin_uld):
+            if locked and w.property("unlocked_tooltip") is None:
+                w.setProperty("unlocked_tooltip", w.toolTip())
+            w.setToolTip(tooltip if locked else (w.property("unlocked_tooltip") or ""))
+        self.chk_cut_enabled.setEnabled(not locked)
+        self._update_bounds_enabled()
+
+    def _update_bounds_enabled(self) -> None:
+        editable = self.chk_cut_enabled.isChecked() and not self._cut_locked
+        self.spin_lld.setEnabled(editable)
+        self.spin_uld.setEnabled(editable)
 
     def set_running(self, running: bool) -> None:
         self.btn_start.setEnabled(not running)
@@ -507,6 +563,7 @@ class LiveView(QWidget):
             lambda checked: self._on_cut_enabled_toggled(self.fci_energy_region, checked)
         )
         self.fci_energy_region.sigRegionChangeFinished.connect(self._on_cut_changed)
+        self._link_cut_bounds(self.fci_controls, self.fci_energy_region)
         self.fci_divider_line = self._divider_line(self.fci_divider.value())
         self.plot_fci.addItem(self.fci_divider_line)
         self.fci_divider.valueChanged.connect(
@@ -542,6 +599,7 @@ class LiveView(QWidget):
             lambda checked: self._on_cut_enabled_toggled(self.psd_energy_region, checked)
         )
         self.psd_energy_region.sigRegionChangeFinished.connect(self._on_cut_changed)
+        self._link_cut_bounds(self.psd_controls, self.psd_energy_region)
         self.psd_divider_line = self._divider_line(self.psd_divider.value())
         self.plot_psd.addItem(self.psd_divider_line)
         self.psd_divider.valueChanged.connect(
@@ -594,11 +652,7 @@ class LiveView(QWidget):
             div.setToolTip(tooltip if locked else (div.property("unlocked_tooltip") or ""))
         for controls, region in ((self.fci_controls, self.fci_energy_region),
                                  (self.psd_controls, self.psd_energy_region)):
-            chk = controls.chk_cut_enabled
-            if locked and chk.property("unlocked_tooltip") is None:
-                chk.setProperty("unlocked_tooltip", chk.toolTip())
-            chk.setEnabled(not locked)
-            chk.setToolTip(tooltip if locked else (chk.property("unlocked_tooltip") or ""))
+            controls.set_cut_locked(locked, tooltip)
             region.setMovable(not locked)
 
     def dividers(self) -> tuple[float, float]:
@@ -613,17 +667,40 @@ class LiveView(QWidget):
                 "[class_x = 1 if x > divider else 0; 1 = above the line (neutron-like), "
                 "0 = at or below (gamma-like)]")
 
+    def _cut_widgets(self):
+        return (("fci_cut", self.fci_controls, self.fci_energy_region),
+                ("psd_cut", self.psd_controls, self.psd_energy_region))
+
     def project_settings(self) -> dict:
-        """Live-view host state a project keeps: the two dividers (not device registers, so not in
-        the SubsystemPanels' own get_values())."""
+        """Live-view host state a project keeps: the two dividers and both LLD/ULD cuts (not device
+        registers, so not in the SubsystemPanels' own get_values()). Each cut is stored as
+        {"enabled", "lld", "uld"}, bounds in keVee on the calibration in force when saved; the
+        bounds are kept even when the cut is disabled."""
         f, p = self.dividers()
-        return {"fci_divider": f, "psd_divider": p}
+        out: dict = {"fci_divider": f, "psd_divider": p}
+        for key, controls, region in self._cut_widgets():
+            lo, hi = region.getRegion()
+            out[key] = {"enabled": controls.chk_cut_enabled.isChecked(),
+                        "lld": round(float(lo), 3), "uld": round(float(hi), 3)}
+        return out
 
     def apply_project_settings(self, settings: dict) -> None:
         for key, field in (("fci_divider", self.fci_divider), ("psd_divider", self.psd_divider)):
             v = settings.get(key)
             if isinstance(v, (int, float)) and 0.0 <= float(v) <= 1.0:
                 field.setValue(float(v))
+        for key, controls, region in self._cut_widgets():
+            cut = settings.get(key)
+            if not isinstance(cut, dict):
+                continue  # a project saved before cuts were stored: leave the cut as it is
+            lo, hi = cut.get("lld"), cut.get("uld")
+            bounds_ok = (isinstance(lo, (int, float)) and isinstance(hi, (int, float))
+                         and math.isfinite(lo) and math.isfinite(hi) and lo < hi)
+            # Checkbox first: enabling it resets the region to the data span
+            # (_on_cut_enabled_toggled()), so the stored bounds have to be applied after it.
+            controls.chk_cut_enabled.setChecked(bool(cut.get("enabled", False)))
+            if bounds_ok:
+                region.setRegion((float(lo), float(hi)))
 
     HEATMAP_XBINS = 512
     HEATMAP_YBINS = 512
@@ -651,6 +728,18 @@ class LiveView(QWidget):
         # refresh it now, on the switch, rather than leaving it stale until the next batch happens
         # to arrive.
         self._refresh_plots()
+
+    @staticmethod
+    def _link_cut_bounds(controls: _ControlsPanel, region: pg.LinearRegionItem) -> None:
+        """Keeps a panel's LLD/ULD boxes and its plot region in step. Region -> boxes follows the
+        drag live (sigRegionChanged); boxes -> region goes through setRegion(), which emits the
+        region's own change-finished signal, so a typed bound takes the same _on_cut_changed()
+        path as a drag. setRegion() sorts nothing, so an LLD typed above the ULD is ordered here;
+        the boxes then show the ordered pair."""
+        region.sigRegionChanged.connect(lambda r: controls.set_bounds(*r.getRegion()))
+        controls.bounds_edited.connect(
+            lambda lo, hi: region.setRegion((min(lo, hi), max(lo, hi))))
+        controls.set_bounds(*region.getRegion())
 
     def _on_cut_enabled_toggled(self, region: pg.LinearRegionItem, checked: bool) -> None:
         region.setVisible(checked)
@@ -1037,7 +1126,7 @@ class LiveView(QWidget):
         overflow_fci = s.overflow_fci if s else 0
         overflow_psd = s.overflow_psd if s else 0
         # "Events captured" is the cumulative tally kept by add_events(); it is deliberately NOT
-        # recomputed from self._energy here. Doing that was the old behaviour and it capped at
+        # recomputed from self._energy here. Doing that was the old behavior and it capped at
         # MAX_POINTS, so the figure froze at 20,000 while acquisition carried on. Both it and the
         # rate still honour each discriminator's OWN LLD/ULD cut rather than a shared total, so
         # each panel reflects that plot's slice of the recorded stream.

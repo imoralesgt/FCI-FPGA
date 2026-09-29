@@ -109,7 +109,7 @@ static void test_trigger_core(void) {
  * Deriving it is necessary but was not sufficient: this originally keyed on XPAR_FCI_SINK_0_BASEADDR
  * alone, and when fci_sink was merged INTO the FCI core that symbol vanished, silently selecting
  * the axi_dma_0 path against a BD that no longer has an axi_dma_0 -- a build error rather than
- * silent wrong behaviour only because the globals it wanted had also been compiled out. The lesson
+ * silent wrong behavior only because the globals it wanted had also been compiled out. The lesson
  * is that a derived switch must key on what the new hardware HAS, not on what the old hardware was
  * called, which is what FCI_CORE_HAS_RESULT_FIFO does (see registers.h). */
 /* FCI_RESULT_VIA_FCI_SINK now comes from registers.h -- see the comment there for why it is
@@ -540,7 +540,7 @@ static int fsl1_get_timeout(u32 *out_word) {
 /**
  * @brief Streams `depth` samples out of the raw-trace BRAM at buf_addr into g_trace.
  *
- * Kept separate from printing so calibrate_threshold() can analyse a trace without dumping it
+ * Kept separate from printing so calibrate_threshold() can analyze a trace without dumping it
  * over the UART.
  *
  * @param buf_addr Raw-trace BRAM buffer address (RAW_TRACE_BUF_A or _B).
@@ -852,15 +852,15 @@ static int calibrate_threshold(void) {
     g_fail_count++;
     return 0;
   }
-  /* Band centre is the baseline, to within the scan step -- a useful cross-check against the mean
+  /* Band center is the baseline, to within the scan step -- a useful cross-check against the mean
    * computed from the trace below, since the two are measured completely differently. */
   u32 band_mid = (band_lo + band_hi) / 2;
-  xil_printf("  [INFO] noise band spans thresholds %d..%d (centre %d)\r\n", band_lo, band_hi,
+  xil_printf("  [INFO] noise band spans thresholds %d..%d (center %d)\r\n", band_lo, band_hi,
              band_mid);
 
-  /* Park at the CENTRE of the band, not its top edge. The edges are by definition where crossings
+  /* Park at the CENTER of the band, not its top edge. The edges are by definition where crossings
    * are rarest, so parking there can find the band and then wait out the timeout without a single
-   * capture; the centre crosses at kHz and returns immediately. */
+   * capture; the center crosses at kHz and returns immediately. */
   u32 count_before = g_raw_event_count;
   set_trigger_threshold(band_mid);
   u32 waited;

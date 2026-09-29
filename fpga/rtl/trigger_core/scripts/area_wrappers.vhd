@@ -1,6 +1,6 @@
 -- Wrappers used only by compare_trigger_area.tcl, to pin cfd_trigger's generics for the area
 -- comparison. They exist because `synth_design -generic` silently does nothing for this entity --
--- DLY_MAX=8 still synthesised 16 SRLs, identical to the default 32 -- so every configuration came
+-- DLY_MAX=8 still synthesized 16 SRLs, identical to the default 32 -- so every configuration came
 -- out the same and the comparison was meaningless. An explicit generic map cannot be ignored.
 library ieee;
 use ieee.std_logic_1164.all;

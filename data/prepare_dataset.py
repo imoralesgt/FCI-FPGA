@@ -7,8 +7,8 @@ Two sources are supported.
                     published FCI, so it is what the testbench's figure of merit is computed
                     against.
   root              CoMPASS ROOT output from a CAEN digitizer, i.e. traces measured on this
-                    setup. These are UNLABELLED and carry no reference FCI, so they cannot drive
-                    the figure of merit -- they are for characterising the real detector against
+                    setup. These are UNLABELED and carry no reference FCI, so they cannot drive
+                    the figure of merit -- they are for characterizing the real detector against
                     the same datapath. The label column records the class if you know it (a
                     tagged source run) and "measured" otherwise.
 
@@ -111,7 +111,7 @@ def _duplication_factor(waves: list[np.ndarray]) -> int:
     second probe set to "None" it does not (log section 8e). Reporting which mode a file came from
     is still worth it: a duplicated file holds only half the bandwidth.
 
-    Adjacent-pair equality alone would not prove it -- a slow or flat signal makes neighbours equal
+    Adjacent-pair equality alone would not prove it -- a slow or flat signal makes neighbors equal
     anyway. The offset grid (1,2)(3,4)... is the control: genuine duplication is ~100% on the
     aligned grid and much lower on the offset one. This requires the aligned grid to be exact, so
     a merely slow signal cannot trigger it.
@@ -132,7 +132,7 @@ def _cut_window(wave: np.ndarray, n: int, pulse_pos: int) -> np.ndarray | None:
     CoMPASS records are far longer than the FFT window and put the pulse wherever the trigger
     happened to fall, so they cannot simply be truncated the way the pre-aligned reference set can.
     Returns None if the pulse sits too close to either end for a full window, rather than padding:
-    a padded trace would contribute a spectrum that is partly an artefact of the padding.
+    a padded trace would contribute a spectrum that is partly an artifact of the padding.
     """
     peak = int(np.argmin(wave))  # negative-going pulses, matching both sources
     start = peak - pulse_pos
@@ -233,7 +233,7 @@ def main() -> None:
             raise SystemExit(f"no .root files found under {args.root}")
         combined = load_root_events(paths, args.label, args.events)
         if args.out == OUT_PATH:
-            # The committed set is the testbench's verification reference and is labelled and
+            # The committed set is the testbench's verification reference and is labeled and
             # FCI-tagged; measured data is neither, so overwriting it would quietly disable the
             # figure of merit rather than fail.
             raise SystemExit(
