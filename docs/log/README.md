@@ -1539,7 +1539,67 @@ testbench's existing ÷2 takes both to the board's 50 Msps. One judgment call go
 **10.6% of trace power sits above 50 MHz and is flat with frequency** — broadband noise, not
 signal. Plain subsampling folds all of it into the FCI band, biasing precisely the band-energy
 ratio the FCI is built from, so each group of 5 samples should be averaged rather than picked.
-**Not yet applied** (§9).
+**Applied 2026-09-29, as ÷10 averaging of record slots** (next subsection explains why ÷10 of the
+raw slots is right for both acquisition modes).
+
+### Resolved (2026-09-29): dual-trace mode halves the rate; one analog trace records at 1 GS/s
+
+**CAEN's answer** (CAEN Support, 2026-09-22): disable the second analog trace in CoMPASS Plot —
+first field "Input", second field "None" — which turns off the Dual Traces configuration.
+
+**The first attempt did not take effect, and the settings file shows why.** Runs
+`run_root_noDualTrace_2` and `_3` (2026-09-29 13:48) were meant to apply it, yet were identical to
+the original `run_root`: 100% aligned pairs, 0 odd run lengths of ~2.2 M, fall time ~2,000
+distinct samples. CoMPASS does not store the plot probes among the `SRV_PARAM_*` parameters, but
+`settings.xml` does keep them as `<trace>` blocks, and the second analog trace (`traceCode 1`,
+available probes 0 / 5 / 7) read **`probeCode 5`** in every run — `run_root`, the old pulser run,
+both "noDualTrace" runs and the project's own `.compass/settings.xml`. Code 0 is "None". The change
+had not been saved/applied before acquisition. **Operating rule: after changing plot probes, save
+and restart acquisition, and confirm `traceCode 1 → <probeCode>0</probeCode>` in the run's
+`settings.xml`.**
+
+**With the second trace at None (`run_root_noDualTrace_4`, 13:57) the duplication is gone:**
+
+| test | dual trace (`noDualTrace_3`, probe 5) | single trace (`noDualTrace_4`, probe 0) |
+|---|---|---|
+| aligned pairs s[2k] = s[2k+1] | 100% of events | **0% of events** (30.1% of pairs = offset control 30.1%) |
+| odd run lengths | 0.0% of 967,238 | **81.6% of 3,019,727** |
+| baseline noise power above 250 MHz (at 1 ns/slot) | 3.4% | **18.8%** |
+| noise power at 450–500 MHz | 0.03% | **5.6%** |
+| mean-pulse fall, max → 1/e | 4,264 slots = 2,132 distinct (4.26 µs at 2 ns) | **3,717 samples = 3.72 µs at 1 ns** |
+
+Writing each sample twice acts as a zero-order hold that empties the top octave; the single-trace
+record has genuine noise power up to Nyquist. The fall time fits the detector's ~4.9 µs only at
+1 ns per sample (0.5 ns → 1.86 µs, 2 ns → 7.4 µs); 3.72 µs sits in the same 15–25% low range as
+every earlier DT5751 figure for these 6–19-code pulses.
+
+**Pulser, single trace (`run_root_noDualTrace_pulser100kHz_2`, 10,980 records, 50% duty):**
+
+| measurement | result | implies |
+|---|---|---|
+| period, 50% crossings, 65,880 periods | **10,000.484 ± 0.001 samples** (sd 0.27) | 0.99995 ns/sample at 100 kHz |
+| board `Timestamp` between records | ~50,002,375 ps = 5 periods → **10.000475 µs** | pulser at 99.995 kHz |
+| both combined | 10,000,475 ps / 10,000.484 samples | **0.99999 ns per sample** |
+| HIGH / LOW | 5,003.5 / 4,997.0 samples | 50.0% / 50.0% (generator set to 50%) |
+| aligned pairs / offset / odd runs | 35.2% / 35.2% / 85.5% of 285 M | no duplication |
+| record | 39,996 samples × 1 ns | = `RECLEN` 39,996 ns exactly |
+
+Against the dual-trace pulser run (5,000.249 distinct samples per period at 2.000 ns), every number
+doubled. Two independent clocks — sample counting and the board timestamp — agree to 1 part in 10⁵.
+
+**Conclusion.** In dual-trace mode the x751 DPP-PSD firmware interleaves two probes in the waveform
+memory, each at half the ADC rate (500 MS/s), and CoMPASS writes each input sample twice to fill the
+nominal 1 ns record. With a single analog trace the input is recorded at the full **1 GS/s**. This
+explains every observation above — both families (the DT5725SB at 125 of 250 MS/s very likely the
+same mechanism, not re-tested), all three formats, both operating systems. It answers CAEN questions
+1–3; question 4 (whether the DPP-PSD gates and the timestamp depend on dual-trace mode) is open.
+
+**`prepare_dataset.py` updated.** Every record slot is 1 ns in both modes (a duplicated 2 ns sample
+fills two slots), so averaging each group of **10 slots** gives 10 ns = 100 Msps for old and new
+files alike, with no mode detection needed (`ROOT_SLOTS_PER_SAMPLE`; the duplication check now only
+reports the mode). Checked on all events: after averaging, the mean-pulse fall time is **4.64 µs**
+(`run_root`, dual trace) and **4.60 µs** (`noDualTrace_4`) at 10 ns per sample — the same time base,
+within 5% of the detector's 4.89 µs.
 
 ---
 
@@ -4894,10 +4954,9 @@ batch had to be reverted):
   `axis_broadcaster_0/M02_AXIS`), regenerate the BSP so `XPAR_FCI_CORE_RTL_0_BASEADDR` exists,
   synthesize (**check utilization — already ~81.6% LUT / 81% BRAM and a 2048-point FFT costs more
   than a 1024-point one; this is a genuine fit risk**), then reflash and re-measure the §8g table.
-- **`prepare_dataset.py`: apply the ÷5 to the ROOT path** so measured data lands at 100 Msps
-  (§8e), averaging each group of 5 samples rather than subsampling. Until then, measured ROOT
-  events are 5× too fast to compare against the reference set — and nothing about the output looks
-  wrong.
+- ~~**`prepare_dataset.py`: apply the ÷5 to the ROOT path**~~ **Done 2026-09-29** as ÷10 averaging of
+  record slots, correct for both dual-trace (500 MS/s, duplicated) and single-trace (1 GS/s) files
+  (§8e).
 - Firmware timing constants are still calibrated in loop iterations at 50 MHz; at the actual
   **150 MHz** (§8b) every dwell runs **3× shorter** than intended, not the 1.5× this item was
   originally written against back when the domain was 75 MHz. Deriving them from a single
