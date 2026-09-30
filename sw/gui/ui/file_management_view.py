@@ -15,7 +15,7 @@ AppController owns all the naming/overwrite logic and tells this widget where th
 directories are; this widget is just the controls and the read-only display of that answer.
 
 Operator notes: free text written into BOTH files' headers when a recording starts (csv_logger.py,
-"# Notes:") and kept in the project, for what no register records -- the detector HV, the source
+one "# Notes:" line, multi-line notes joined by " | ") and kept in the project, for what no register records -- the detector HV, the source
 and its position, shielding, anything a later reader of the data needs. Locked while a recording is
 being written: a file's header states the notes as they were when it started.
 """

@@ -69,12 +69,12 @@ def _write_header_prelude(f, title: str, settings_lines: list[str] | None,
             f.write(f"#   {line}\n")
     else:
         f.write("# Settings: not available (not connected, or a read failed at recording start)\n")
-    # Operator notes (File Management tab): what no register records, e.g. the detector HV. Each
-    # line prefixed like the rest of the header, so readers that skip '#' lines are unaffected.
-    if notes:
-        f.write("# Notes:\n")
-        for line in notes.splitlines():
-            f.write(f"#   {line}\n")
+    # Operator notes (File Management tab): what no register records, e.g. the detector HV. Always
+    # exactly ONE line, written even when empty, with multi-line notes joined by " | ": the notes are
+    # the one free-text part of the header, and letting them span a variable number of lines would
+    # make the row the column names sit on depend on what the operator typed.
+    joined = " | ".join(line.strip() for line in notes.splitlines() if line.strip())
+    f.write(f"# Notes: {joined}\n" if joined else "# Notes:\n")
 
 
 class CsvLogger:
