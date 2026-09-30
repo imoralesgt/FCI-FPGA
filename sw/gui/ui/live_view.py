@@ -321,7 +321,6 @@ class _StatsPanel(QGroupBox):
         plot.showAxis("bottom", False)
         plot.setLabel("left", "Hz")
         plot.getPlotItem().setMenuEnabled(False)
-        plot.getPlotItem().hideButtons()
         plot.getViewBox().setLimits(yMin=0)  # a rate is never negative; keeps an idle plot at 0
         curve = plot.plot(pen=pg.mkPen(color, width=1.5))
         layout.addWidget(plot)

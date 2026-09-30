@@ -54,7 +54,9 @@ What differs from the SiPM search, and why each difference is derived rather tha
   range and slices -- belongs to one HV/VGA/shaper setting. "pmt1400" is the -1400 V run the
   reasoning above was written for (the default, so its results reproduce unchanged); "dt1050" is the
   DT-mode setting (-1050 V, VGA x4.5, shaper 1/1/1 us), whose slices reach 16.5 MeVee because a DT
-  campaign needs one straight line to hold across that whole range.
+  campaign needs one straight line to hold across that whole range. "ambe1280" is the AmBe-mode
+  setting (-1280 V, VGA x6.6, shaper 1/1/1 us), whose slices stop at 5.9 MeVee, the ADC
+  clipping onset, so no compressed pulse enters.
 
 Run: sw/.venv/bin/python -m analysis.sweep_pmt_clyc <unique_traces.csv> [profile]   (from sw/)
 """
@@ -82,7 +84,7 @@ PROFILES = {
     "pmt1400": dict(
         deployed_psd=dict(pre_gate=6, short_gate=2, long_gate=25),
         deployed_fci=dict(lo=2, l_hi=60, w_hi=512),
-        lld=475.0, uld=5800.0,
+        lld=475.0, uld=5900.0,
         shaper=(50, 1, 10), kev_offset=0.0, kev_per_shaper_count=0.9915 / 50.0 * 0.26347,
         label_fci=0.50, label_psd=0.88,
         slices=((475, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 3300), (3300, 4200),
@@ -105,6 +107,22 @@ PROFILES = {
         slices=((350, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 5000), (5000, 10000),
                 (10000, 16500)),
         out_prefix="pmt_clyc_dt1050"),
+    # AmBe mode: -1280 V, VGA x6.6, shaper 50/50/50, calibration c0 22.3538, c1 0.604948 keVee/channel
+    # (22Na 511/1275; 6Li at 3,425 keVee overnight). LLD 475 keVee is the NET paper's neutron-detection
+    # limit (below it no neutron events are expected); ULD 5.9 MeVee is the ADC clipping onset
+    # (overnight cosmics run, log 10.18; settings table 10.16), so no compressed pulse enters; RAIL_COUNTS drops any
+    # clipped trace below it as well. Labels: the
+    # DT optima as deployed, at the GUI's lines (FCI 0.5, PSD 0.75), which agree on every 6Li-window
+    # event of the overnight run. Slices end at 5.9 MeVee: the line must hold where AmBe gammas (up to
+    # the 4.44 MeV 12C* line) and the thermal captures land.
+    "ambe1280": dict(
+        deployed_psd=dict(pre_gate=7, short_gate=6, long_gate=38),
+        deployed_fci=dict(lo=2, l_hi=44, w_hi=293),
+        lld=475.0, uld=5900.0,
+        shaper=(50, 50, 50), kev_offset=22.3538, kev_per_shaper_count=0.604948 / 50.0,
+        label_fci=0.50, label_psd=0.75,
+        slices=((475, 700), (700, 1000), (1000, 1500), (1500, 2500), (2500, 4000), (4000, 5900)),
+        out_prefix="pmt_clyc_ambe1280"),
 }
 
 
