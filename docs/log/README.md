@@ -16,7 +16,44 @@ Real-time FPGA implementation of the **FCI (Frequency Classification Index)** al
 
 ---
 
-## Goals
+## Timeline
+
+Each section heading carries the date its work entered this log: the first commit that contains it,
+or a range where the work ran over several days or the section kept growing. Dates of individual
+measurements (when a dataset was recorded) are given in the text. Sections 1–7 are the bring-up
+notes logged on 2026-08-18; the repository starts on 2026-08-13.
+
+| date | section | milestone |
+|---|---|---|
+| 2026-08-18 | §1–§7 | Bring-up: `trigger_core` + HLS `fci_core` on the Cmod A7; the 2's-complement ADC fold found and fixed; first measured pulse characteristics |
+| 2026-08-19 | §7a | Issue #10: `trigger_core` output rate halved, fixed |
+| 2026-08-20 | §7b, §7c | Raw-trace backpressure (DMA burst size); a rollback |
+| 2026-08-20 | §8 | Resource budget and headroom |
+| 2026-08-21 | §8a | Spectroscopy chain: `blr_core` and `psd_core` |
+| 2026-08-26 | §8b–§8e | Two clock domains and the CDC; double-buffered capture (issue #13); first FCI vs PSD on hardware; the CAEN reference digitizer found sampling at 500 MS/s |
+| 2026-08-27 | §8f | `sw/` client and three real hangs |
+| 2026-08-28 – 09-01 | §8g | FCI had no discrimination power: HLS fixed-point floor; replaced by hand-written VHDL at 2048 points, confirmed in silicon |
+| 2026-09-02 | §0, §0a | Scope (one datapath, two scintillator families); cost of a runtime FFT length |
+| 2026-09-02 | §8h, §8i | CFD trigger replaces the cross-level trigger; `$RQ` desync traced to GIL starvation |
+| 2026-09-03 | §8j–§8l | Offline g/n on the DD dataset; analog calibration (µV/LSB, mV/keV); FPGA peak amplitude + list mode |
+| 2026-09-04 | §8m–§8o | Spectrum tab; end-to-end validation with DD, Cs-137 and Co-60; live FCI FoM sweep |
+| 2026-09-07 | §8p–§8s | Offline validation on raw traces; PSD preprocessing; FCI pile-up immunity; PSD anchored to the live window |
+| 2026-09-11 | §8t, §8u | Pulse shaper core (issue #23); LUT budget and `FIFO_DEPTH=512` |
+| 2026-09-21 | §8v | First large background run (SiPM CLYC, 52.7 h): thermal-neutron cluster, saturation ceiling, live grid-search optimum |
+| 2026-09-22 – 09-24 | §8w | Neutrons resolved with a Cs-137 source on the detector |
+| 2026-08-18 – 09-29 | §9 | Current state (kept up to date) |
+| 2026-09-25 | §10.1–§10.4, §10.6–§10.10 | Issue #26 opened: PMT CLYC publication notes, detectors, datasets, rates, hardware vs float FCI, PSD on FCI labels, the Nakhostin collapse |
+| 2026-09-25 – 09-27 | §10.11 | 43.7 h PMT CLYC run: FCI advantages with a straight-line label |
+| 2026-09-28 | §10.5, §10.12, §10.13 | PMT energy non-linearity; mean pulse shapes and matrices; FoM and PSD/FCI re-optimized |
+| 2026-09-28 – 09-30 | §10.15 | **DT operating mode** (−1050 V, ×4.5, to 16.5 MeVee): settings table and sweep; archive inventory |
+| 2026-09-29 | §10.14 | Internal ²³⁸U/²³²Th alpha contamination (²¹⁴Po line) at −1050 V |
+| 2026-09-29 | §10.17 | Live g/n classification in the GUI with a ²²Na source |
+| 2026-09-29 – 10-01 | §10.18 | AmBe mode: ADC ceiling, overnight stability, low-energy FCI windows (PSA_w), ¹⁵²Eu + ²²Na calibration, 22.75 h reference run, DC-bin study |
+| 2026-09-30 – 10-01 | §10.16 | **AmBe operating mode** (−1280 V, ×5.9, to 5.7 MeVee): settings table |
+
+---
+
+## Goals (2026-09-07)
 
 **The objective this all serves: a follow-up publication.** Morales et al. (2024) proposes the FCI
 method and, in its §8, declares the hardware validation as future work — "a hardware design to
@@ -82,7 +119,7 @@ sections are the record of getting there.
 
 ---
 
-## Optimized PSD and FCI parameters — quick reference
+## Optimized PSD and FCI parameters — quick reference (2026-09-22 – 09-23)
 
 The discrimination parameters currently established as best, kept here at the top because they are
 looked up far more often than anything else in this log. Derived by the offline grid search of §8v
@@ -173,7 +210,7 @@ any `pre_gate`).
 
 ---
 
-## 0. Scope: one datapath, two scintillator families
+## 0. Scope: one datapath, two scintillator families (2026-09-02)
 
 Two published results define what this instrument is for. Neither is a hardware implementation;
 this project is the hardware implementation, and the goal is to show that **a single fixed-function
@@ -277,7 +314,7 @@ Three things are reasoned, not measured, and should be read as the open question
 
 Everything below is the record of building the CLYC half of that and getting it to work in silicon.
 
-## 0a. Runtime-configurable FFT length: what it would cost
+## 0a. Runtime-configurable FFT length: what it would cost (2026-09-02)
 
 Not enabled, and **not the first thing to try** — reducing `depth` (above) buys the SNR benefit for
 free. Recorded here because the question will come back the moment event rate becomes the binding
@@ -304,7 +341,7 @@ a throughput change, not a resolution change.
 
 ---
 
-## 1. What was built
+## 1. What was built (2026-08-18)
 
 ### `fci_core` — Vitis HLS
 
@@ -357,7 +394,7 @@ Firmware layout: `main.c` is a bare entry point; all bring-up and acquisition li
 
 ---
 
-## 2. The bring-up problem
+## 2. The bring-up problem (2026-08-18)
 
 Captured ADC traces showed a repeatable artifact on **large** pulses while **small** ones passed
 through intact: a fast overshoot spike, a flat plateau lasting the pulse duration, an undershoot,
@@ -382,7 +419,7 @@ fast fall and a few-µs exponential recovery. This is the shape the digitized tr
 
 ---
 
-## 3. Root cause: the 2's-complement fold
+## 3. Root cause: the 2's-complement fold (2026-08-18)
 
 **The LTC2248's `MODE` pin is strapped to 2/3 VDD, which selects 2's-complement output. The design
 was consuming that word as offset binary.**
@@ -443,7 +480,7 @@ Current state, same ILA, radix signed — clean rise and exponential decay:
 
 ---
 
-## 4. Other real bugs found along the way
+## 4. Other real bugs found along the way (2026-08-18)
 
 Each of these was genuine and independently verified, even though none of them caused the artifact.
 
@@ -532,7 +569,7 @@ nothing can fire until the whole pipeline is up.
 
 ---
 
-## 5. Hypotheses that were wrong
+## 5. Hypotheses that were wrong (2026-08-18)
 
 Both were pursued hard, and both are disproven by measurement. **Do not revive them.**
 
@@ -577,7 +614,7 @@ questions its probe should be moved to `adc_data_q` (post capture register).
 
 ---
 
-## 6. Process mistakes worth recording
+## 6. Process mistakes worth recording (2026-08-18)
 
 - **A stale ELF was debugged for two full sessions.** The Vitis app's `src/` had been overwritten
   with the sibling project's firmware, *with original timestamps preserved*, so `make` saw sources
@@ -617,7 +654,7 @@ dragged on were the ones argued from plausibility instead.
 
 ---
 
-## 7. Measured characteristics
+## 7. Measured characteristics (2026-08-18)
 
 At the normal operating point (fine gain 1.0 → code 819, coarse 6.0 → code 765), background only
 (NORM + cosmics, ~30 cps):
@@ -666,7 +703,7 @@ sensitivity to decay-constant differences, and it is an AXI4-Lite parameter chan
 
 ---
 
-## 7a. Issue #10 — trigger_core output rate halved (fixed)
+## 7a. Issue #10 — trigger_core output rate halved (fixed) (2026-08-19)
 
 `trigger_core`'s AXI4-Stream output ran at 25 Msps against a 50 Msps capture: TVALID toggled
 1/0/1/0 continuously instead of staying high.
@@ -706,7 +743,7 @@ fix reverted:      FAIL: 4095 idle cycle(s) mid-stream with tready held high
 
 All 8 scenarios pass, and the IP was repackaged and byte-compared against the RTL.
 
-## 7b. Raw-trace backpressure — the DMA burst size
+## 7b. Raw-trace backpressure — the DMA burst size (2026-08-20)
 
 Fixing §7a moved the bottleneck rather than removing it. With `capture_engine` finally offering one
 beat per cycle, `trigger_core` presents a sustained 50 Msps stream, and the ILA then showed genuine
@@ -753,7 +790,7 @@ buffers. See §8 for why that matters for what comes next.
 
 ---
 
-## 7c. A rollback, and why
+## 7c. A rollback, and why (2026-08-20)
 
 Between §7a and §7b there is a detour worth recording, because the mistake in it is a process
 mistake rather than a technical one.
@@ -797,7 +834,7 @@ the open items in §9.
 
 ---
 
-## 8. Resource budget and headroom
+## 8. Resource budget and headroom (2026-08-20)
 
 Measured from the routed checkpoint of the current build (`report_utilization -hierarchical`),
 not estimated:
@@ -904,7 +941,7 @@ slave-port count, and it currently carries four (MM2S and S2MM for both DMA chan
 
 ---
 
-## 8a. Spectroscopy chain: blr_core and psd_core
+## 8a. Spectroscopy chain: blr_core and psd_core (2026-08-21)
 
 Two new hand-written VHDL cores, built to the requirement in issue #12 (configurable BLR feeding a
 configurable CAEN-style PSD).
@@ -1091,7 +1128,7 @@ wrap handling.
 
 ---
 
-## 8b. The chain on hardware: two clock domains and the CDC
+## 8b. The chain on hardware: two clock domains and the CDC (2026-08-26)
 
 The spectroscopy chain of §8a is now wired in the block design, synthesized, and running on the
 board. The stream path is:
@@ -1199,7 +1236,7 @@ in later sections (§8l onward) possible in the first place.
 
 ---
 
-## 8c. Double-buffered capture (issue #13)
+## 8c. Double-buffered capture (issue #13) (2026-08-26)
 
 `trigger_core` was deliberately **single**-buffered, and §"Architecture" of the original plan
 argued that at some length: `fci_core`'s interval equals its latency (3249 cycles, no overlap), so
@@ -1240,7 +1277,7 @@ at 4096, so this saving has not been taken yet (§9).
 
 ---
 
-## 8d. First on-hardware comparison: FCI vs PSD
+## 8d. First on-hardware comparison: FCI vs PSD (2026-08-26)
 
 Both discriminators now run on the same events, paired by the in-band timestamp of §8a, with
 firmware printing `El,FCI,PSD` as CSV so a run drops straight into a spreadsheet.
@@ -1383,7 +1420,7 @@ fractional-only PSD value. Now handled by taking the magnitude and emitting the 
 
 ---
 
-## 8e. The reference dataset, and what the digitizer was actually sampling at
+## 8e. The reference dataset, and what the digitizer was actually sampling at (2026-08-26)
 
 `data/prepare_dataset.py` builds the committable verification set for the HLS testbench. It now
 handles **two sources in one identical schema**: the labeled Zenodo set published with the paper
@@ -1603,7 +1640,7 @@ within 5% of the detector's 4.89 µs.
 
 ---
 
-## 8f. The `sw/` client, and three real hangs found by driving the device for real
+## 8f. The `sw/` client, and three real hangs found by driving the device for real (2026-08-27)
 
 Everything before this section was driven by one-off diagnostic scripts. `sw/` adds the real
 client: `fci_api` (pure Python, no Qt — a synchronous, thread-safe `transact()` primitive plus a
@@ -1703,7 +1740,7 @@ calibration, just computed over the CLI instead of raw MMIO.
 
 ---
 
-## 8g. FCI had no discrimination power at all — a fixed-point precision floor in the HLS core
+## 8g. FCI had no discrimination power at all — a fixed-point precision floor in the HLS core (2026-08-28 – 09-01)
 
 With a DD neutron generator running (plenty of thermal neutrons, the ideal condition for measuring
 real separation), FCI produced **no gamma/neutron separation whatsoever**, at any window setting:
@@ -2248,7 +2285,7 @@ now **latched 0/1** — "overflowed at least once this run", which is all the ha
 
 ---
 
-## 8h. Replacing the cross-level trigger with a CFD
+## 8h. Replacing the cross-level trigger with a CFD (2026-09-02)
 
 A level trigger fires at a time that depends on pulse AMPLITUDE -- a tall pulse reaches a fixed
 level earlier on its rising edge than a short one. The capture window is anchored to the trigger,
@@ -2309,7 +2346,7 @@ energy should narrow.
 
 ---
 
-## 8i. The `$RQ` desync is GIL starvation, not the link
+## 8i. The `$RQ` desync is GIL starvation, not the link (2026-09-02)
 
 447 `$RQ` frame desyncs across the 2026-09-01/02 sessions, every one reporting **tag 0x00**. The
 obvious reading — line noise at 4 Mbaud — was wrong, and so was the first hypothesis here (that the
@@ -2368,7 +2405,7 @@ rejection all did their jobs — the desyncs were detected, never silently accep
 
 ---
 
-## 8j. Offline G/N discrimination on the DD dataset, before spending more DD time
+## 8j. Offline G/N discrimination on the DD dataset, before spending more DD time (2026-09-03)
 
 Before scheduling another (expensive) DD generator session, the raw traces already recorded on
 2026-08-28 (`~/datasets/clyc-FCI-test-20260828-DD`) were run back through a Python model of the
@@ -2529,7 +2566,7 @@ read the same way this section had to: don't trust its FCI/PSD columns, go back 
 
 ---
 
-## 8k. Analog calibration: µV/LSB and mV/keV, and an unresolved noise regression
+## 8k. Analog calibration: µV/LSB and mV/keV, and an unresolved noise regression (2026-09-03)
 
 Measured on 2026-09-03, cross-referencing an oscilloscope reading at the detector output against
 the digitized baseline and a Cs-137 photopeak, to put the ADC-count-domain numbers used throughout
@@ -2886,7 +2923,7 @@ the region of steeply-diminishing SNR returns.
 
 ---
 
-## 8l. FPGA peak amplitude + list mode, ahead of the live energy-spectrum GUI tab
+## 8l. FPGA peak amplitude + list mode, ahead of the live energy-spectrum GUI tab (2026-09-03)
 
 The GUI request that started this ("a histogram tab, SPE export, up to 3 calibration
 coefficients") was redirected mid-design: rather than histogramming `energy_long` (a PSD charge
@@ -2980,7 +3017,7 @@ removed a debugging capability that has no other route, but a future ILA session
 
 ---
 
-## 8m. Spectrum tab iteration: a decoupled readout path, shared calibration, two real display bugs
+## 8m. Spectrum tab iteration: a decoupled readout path, shared calibration, two real display bugs (2026-09-04)
 
 After §8l's bitstream rebuild succeeded and firmware confirmed booting on hardware, the Spectrum
 tab went through a fast hands-on iteration cycle. Everything below is software/firmware only -- no
@@ -3099,7 +3136,7 @@ Spectrum tab end to end, not just that the reader process picks the right comman
 
 ---
 
-## 8n. End-to-end validation: DD generator, Cs-137, and Co-60
+## 8n. End-to-end validation: DD generator, Cs-137, and Co-60 (2026-09-04)
 
 The confirmation that §8l/§8m's Spectrum and Live FCI/PSD tabs work as a real instrument, not just
 in isolated tests: three source runs, each captured live against hardware with Record on.
@@ -3181,7 +3218,7 @@ past.
 
 ---
 
-## 8o. FCI FoM live sweep: a result, and a parameter-coupling gap in the sweep itself
+## 8o. FCI FoM live sweep: a result, and a parameter-coupling gap in the sweep itself (2026-09-04)
 
 A live Optimize-tab run against the DD generator, sweeping FCI's four PSA window bounds one at a
 time (`fom_sweep_worker.py`'s coordinate-wise scan, §8n's fix applying peak-amplitude LLD/ULD):
@@ -3258,7 +3295,7 @@ analyzed later.
 
 ---
 
-## 8p. Offline validation on raw traces: FCI clearly separates, PSD weakly does, Cs-137's "second
+## 8p. Offline validation on raw traces: FCI clearly separates, PSD weakly does, Cs-137's "second (2026-09-07)
      band" resolved -- and three distinct ways an automatic FoM sweep lies
 
 The §8o follow-up, done: `sw/analysis/validate_dd_cs137_co60.py` (new script, reuses `fpga_model.py`
@@ -3400,7 +3437,7 @@ offline.
 
 ---
 
-## 8q. PSD vs FCI, first attempt -- SUPERSEDED BY 8r, its headline conclusion was wrong
+## 8q. PSD vs FCI, first attempt -- SUPERSEDED BY 8r, its headline conclusion was wrong (2026-09-07)
 
 > **Retraction.** This section concluded that PSD "does not separate on this system". That was an
 > artifact of missing preprocessing, not a property of the detector: this analysis fed raw captured
@@ -3552,7 +3589,7 @@ a settled conclusion.
 
 ---
 
-## 8r. The missing preprocessing: PSD does work, and FCI's pile-up immunity is measurable
+## 8r. The missing preprocessing: PSD does work, and FCI's pile-up immunity is measurable (2026-09-07)
 
 8q was wrong, and the reason is a single omission. The paper preprocesses before computing the
 charge-comparison PSD -- §4.2.3 removes pile-up and saturated traces, §4.3 removes the baseline and
@@ -3668,7 +3705,7 @@ but is not established. `sw/analysis/plot_optimized_psd_fci.py` regenerates ever
 
 ---
 
-## 8s. Anchoring PSD to the live hand-tuned window, and fixing the separation line
+## 8s. Anchoring PSD to the live hand-tuned window, and fixing the separation line (2026-09-07)
 
 Two corrections to 8r, both from the same root cause: automatic optimization over too wide a space
 kept finding windows that score well and mean nothing. The fix in both cases was to anchor on
@@ -3838,7 +3875,7 @@ whether a fixed threshold survives gain and baseline drift between runs.
 
 ---
 
-## 8t. Pulse shaper core (issue #23): closing timing, and the total-datapath stall it exposed
+## 8t. Pulse shaper core (issue #23): closing timing, and the total-datapath stall it exposed (2026-09-11)
 
 The trapezoidal filter §8's own sizing table could only bound by shaping time, not measure, now
 exists: `pulse_shaper_core` implements the Jordanov-Knoll recursive trapezoidal filter
@@ -3976,7 +4013,7 @@ paid for the same depth and used only 250 of it.
 
 ---
 
-## 8u. LUT budget: the async-read result FIFO, and settling on `FIFO_DEPTH=512` across three cores
+## 8u. LUT budget: the async-read result FIFO, and settling on `FIFO_DEPTH=512` across three cores (2026-09-11)
 
 Raising `pulse_shaper_core_0`'s `FIFO_DEPTH` from 32 to 1024 -- matching `psd_core_0`/`fci_core_0`'s
 own override, on the (at-the-time-correct) reasoning that `Acq_PopPaired()` would deadlock on any
@@ -4052,7 +4089,7 @@ as one build.
 
 ---
 
-## 8v. First large ambient-background dataset: a 52.7-hour cosmic-ray run resolves a clear thermal-neutron cluster
+## 8v. First large ambient-background dataset: a 52.7-hour cosmic-ray run resolves a clear thermal-neutron cluster (2026-09-21)
 
 The first multi-hour unattended acquisition on this instrument, recorded on the DAQ machine
 (`nsil-red`) rather than a dedicated source run: `LIST/cosmics_0001_fci_live.csv`
@@ -4696,7 +4733,7 @@ than either result alone.
 
 ---
 
-## 8w. Neutrons resolved *with a gamma source on the detector* — two overnight runs
+## 8w. Neutrons resolved *with a gamma source on the detector* — two overnight runs (2026-09-22 – 09-24)
 
 Two consecutive overnight runs with a **Cs-137 source sitting close to the crystal**, both at the
 validated PSD triple (`pre_gate=25, short_gate=5, long_gate=47`) and the optimal FCI windows
@@ -4813,7 +4850,7 @@ it without needing the run repeated.
 
 ---
 
-## 9. Current state
+## 9. Current state (2026-08-18 – 09-29)
 
 - `trigger_core` built, verified, packaged; testbench **8/8**
 - **`fci_core` replaced by hand-written VHDL at 2048 points** (§8g), absorbing `fci_sink`: the HLS
@@ -5012,7 +5049,7 @@ Both live in `bringup.c` behind compile-time flags, default **off**:
 
 ---
 
-## 10. Publication notes: PMT-coupled CLYC and the follow-up to [Morales et al. 2024] (issue #26)
+## 10. Publication notes: PMT-coupled CLYC and the follow-up to [Morales et al. 2024] (issue #26) (2026-09-25 – 10-01)
 
 This section collects, for the forthcoming follow-up paper, what the PMT-coupled CLYC work has
 **established**, what is **conditional**, and what was **claimed and then refuted** during the
@@ -5021,7 +5058,7 @@ measurement it rests on, so that nothing reaches the manuscript on the strength 
 first phrased. Seven claims made along the way turned out to be wrong (§10.9); they are recorded so
 they are not revived.
 
-### 10.1 Why this is the announced follow-up, not a new direction
+### 10.1 Why this is the announced follow-up, not a new direction (2026-09-25)
 
 The NET paper's own §8 (Future work) names the target: *"a hardware design to validate the proposed
 method using an embedded application is under development, targeting an AMD Artix-7 XC7A35T FPGA …
@@ -5038,7 +5075,7 @@ LUTs). Differences from the announced prototype, each one measured:
 The 81.37% is the honest number for anyone reproducing this: the paper's < 17% covered the
 classification core alone.
 
-### 10.2 The two CLYC detectors (measured pulse shapes)
+### 10.2 The two CLYC detectors (measured pulse shapes) (2026-09-25)
 
 | | SiPM CLYC (the paper's detector) | PMT CLYC |
 |---|---|---|
@@ -5054,7 +5091,7 @@ same crystal material without it shows three decades of pulse structure. This di
 every register in the instrument, which is why each detector needs its own set
 (see the `detector-inventory` note and §10.7–10.8).
 
-### 10.3 Datasets
+### 10.3 Datasets (2026-09-25)
 
 | dataset | conditions | events / duration | 6Li captures |
 |---|---|---|---|
@@ -5074,7 +5111,7 @@ overnight run's 931 captures yield only ~10 neutron traces — too few for any F
 Raising the threshold to 3500 (below the lowest observed capture peak amplitude, 4,336 counts)
 drops the rate below the poll rate so essentially every event gets a trace.
 
-### 10.4 Thermal-neutron rates are consistent across detectors — and show both crystals are enriched
+### 10.4 Thermal-neutron rates are consistent across detectors — and show both crystals are enriched (2026-09-25)
 
 Both crystals are black to thermal neutrons (6Li-enriched CLYC: Σ ≈ 3.1 cm⁻¹, mean free path
 3.2 mm against a 12.7 mm minimum dimension), so the capture rate scales with effective area S/4,
@@ -5094,7 +5131,7 @@ same pulse shape — an estimated 5–10% of the counts at the surface. The rati
 does not depend on this at that level, but absolute neutron rates from either crystal need an
 alpha-only measurement (boron cover) subtracted before they are quoted.
 
-### 10.5 Energy scale: the response is non-linear, and the 6Li peak sits at ~3.1 MeVee
+### 10.5 Energy scale: the response is non-linear, and the 6Li peak sits at ~3.1 MeVee (2026-09-28)
 
 **Revised 2026-09-28.** An earlier version of this section concluded that the 6Li peak sits at
 ~3.56 MeVee and that this crystal's 6Li light output is genuinely that high. That conclusion rested
@@ -5160,7 +5197,7 @@ pulse) — that is why the 6Li peak is ~15% FWHM, not a property of a 1" crystal
 this detector is `peaking=200 / flat_top=20 / decay=150` (4.00 / 0.40 / 3.00 µs), where
 `decay=150` is the plateau-slope crossover of the multi-exponential decay (slope −0.8%).
 
-### 10.6 FCI in hardware is not float FCI — measured on identical events; cause still open
+### 10.6 FCI in hardware is not float FCI — measured on identical events; cause still open (2026-09-25)
 
 **Method.** List mode and raw traces from the high-threshold run can be matched *one-to-one*: the
 list's integer `energy_short`/`energy_long` equal the trace's gate sums exactly for **2,483 of 2,484**
@@ -5192,7 +5229,7 @@ as a checksum on the trace tail; (2) simulate the real xfft IP on these traces i
 this is resolved; offline **PSD transfers to hardware exactly** and needs no such caveat. This also
 answers issue #26 requirement 3 in advance for FCI.
 
-### 10.7 PSD optimized on FCI-labeled raw traces
+### 10.7 PSD optimized on FCI-labeled raw traces (2026-09-25)
 
 **Labels.** FCI computed offline on the pooled traces (2,484 high-threshold + 221 overnight above
 ~1.3 MeVee). In 2–5.5 MeVee the FCI valley is empty from 0.44 to 0.56 (2 of 824 events), so the cut
@@ -5228,7 +5265,7 @@ sits in the frame.
 band (2.67 offline, ~2.26 live). The FCI windows (2–60 / 2–512) have not been swept yet, so no
 FCI-vs-PSD conclusion can be drawn at the 6Li energy.
 
-### 10.8 Low energy: the Nakhostin collapse reproduced — and its mechanism is trigger timing
+### 10.8 Low energy: the Nakhostin collapse reproduced — and its mechanism is trigger timing (2026-09-25)
 
 ![Live FCI and PSD versus energy, PMT CLYC, cosmics and NORM only, optimized PSD gates (pre-gate 26, short 2, long 25), FCI windows 2-60/2-512](images/pub_pmt_clyc_live_fci_psd_vs_energy.png)
 
@@ -5315,7 +5352,7 @@ photoelectron statistics — real gamma bands are wider by 1.6–1.9× (PSD) and
 affects both methods. Confirming FCI below the 6Li energy requires real low-energy neutrons, i.e.
 a fast-neutron source (DD, DT or AmBe), as in the NET paper's datasets.
 
-### 10.9 Claims made during the analysis and refuted — do not reuse
+### 10.9 Claims made during the analysis and refuted — do not reuse (2026-09-25)
 
 1. **"FCI improves (1.86 → 2.61) and PSD degrades (1.01 → 0.61) when the preamplifier is removed."**
    Both arms used unoptimized settings and different energy windows and neutron populations. With
@@ -5336,7 +5373,7 @@ a fast-neutron source (DD, DT or AmBe), as in the NET paper's datasets.
 7. **"This crystal's 6Li light output is genuinely ~3.5 MeVee."** Rested on one weak K-40 line;
    three NORM lines show a non-linear scale instead (§10.5).
 
-### 10.10 Candidate contributions and what each still needs
+### 10.10 Candidate contributions and what each still needs (2026-09-25)
 
 | contribution | status | still needed |
 |---|---|---|
@@ -5355,7 +5392,7 @@ Two confounds to state in any readout comparison: the crystals differ in size (1
 and the SiPM results come from DD/DT/cosmics datasets while the PMT results so far are cosmic
 thermal captures only.
 
-### 10.11 Observed advantages of FCI on the PMT CLYC, with a straight-line hardware label
+### 10.11 Observed advantages of FCI on the PMT CLYC, with a straight-line hardware label (2026-09-25 – 09-27)
 
 **Constraint.** The goal is to compute the g/n label in hardware, in real time. That rules out a
 curved or energy-detrended classification line: the label must be a straight line. A horizontal
@@ -5488,7 +5525,7 @@ remove the one operator step the working methodology still needs.
   the distinct low-FCI population (FCI ≈ 0.11, far from every observed neutron at 0.51–0.61; §10.12),
   so they are not fast neutrons FCI misses; 50 sit at FCI 0.16–0.30 and 55 in the main gamma band.
 
-### 10.12 Mean pulse shapes and the FCI/PSD-vs-energy matrices (43.7 h)
+### 10.12 Mean pulse shapes and the FCI/PSD-vs-energy matrices (43.7 h) (2026-09-28)
 
 Same run as §10.11. Raw-trace file: 617,623 traces, **526,869 unique** (15% duplicates at 7.5
 evt/s — the `$RT` re-read artifact of §10.3, milder at this rate); 26,122 lie above ~1 MeVee.
@@ -5562,7 +5599,7 @@ stays near 0.83 but widens *across* its cut below ~300 keVee, with a broad colum
   population — pile-up or otherwise distorted pulses are the obvious candidates — that PSD places on
   its neutron side and FCI places far from it. Not yet identified; needs traces of these events.
 
-### 10.13 Double-Gaussian FoM, and PSD/FCI re-optimized for the PMT CLYC (43.7 h)
+### 10.13 Double-Gaussian FoM, and PSD/FCI re-optimized for the PMT CLYC (43.7 h) (2026-09-28)
 
 **FoM by the established double-Gaussian method.** Same run, scored with the exact procedure of §8v
 for the SiPM detector: ONE six-parameter double-Gaussian
@@ -5682,7 +5719,7 @@ Two objectives were tried and rejected before this one, and are recorded so they
 should reproduce the PSD predictions closely (offline PSD equals hardware exactly) and give a
 different absolute FCI value (the open §10.6 gap) — which is issue #26 requirement 3.
 
-### 10.14 Internal alpha contamination of the PMT crystal (²³⁸U/²³²Th chains), found at −1050 V
+### 10.14 Internal alpha contamination of the PMT crystal (²³⁸U/²³²Th chains), found at −1050 V (2026-09-29)
 
 **Dataset.** `CLYC-PMT-NORMs+Cosmics-HV-1050_DTsettings_0001` (2026-09-28 17:57 → 09-29 09:22,
 15.4 h): DT-mode settings (−1050 V, VGA ×4.5, shaper 1.00/1.00/1.00 µs, CFD 0.5/4, PSD 64/7/7/34,
@@ -5774,7 +5811,7 @@ the shoulders, the lines under the core and ²¹⁴Po stay at the same rates, wi
 subtract — the same method as [Plaza et al. 2023]'s polyethylene-shielded run — and the run adds
 ²¹⁴Po delays for the half-life check.
 
-### 10.15 DT operating mode: settings to use, and the sweep behind them
+### 10.15 DT operating mode: settings to use, and the sweep behind them (2026-09-28 – 09-30)
 
 **Settings for DT recordings (PMT CLYC, 1"×1").** Enter exactly these; the calibration holds only
 for this HV + VGA + shaper combination, and any change to one of them needs a new ²²Na fit.
@@ -6053,7 +6090,7 @@ every register at its reset value (zeros, VGA 1/1); it is not a usable configura
 run). The archive also holds a stray LibreOffice lock file (`LIST/.~lock.…_optimizedOffline_0001_fci_live.csv#`,
 94 bytes) with no data.
 
-### 10.16 AmBe operating mode: settings to use (PMT CLYC, 1"×1", up to 5.7 MeVee)
+### 10.16 AmBe operating mode: settings to use (PMT CLYC, 1"×1", up to 5.7 MeVee) (2026-09-30 – 10-01)
 
 **Settings for AmBe recordings.** The counterpart of §10.15's DT table. Reference dataset:
 `clyc-PMT-6MeVee/…/CLYC-PMT-Cosmics+NORM_1280V_x5p9_0003` (2026-09-30 16:21 → 10-01 15:06, 22.75 h,
@@ -6650,7 +6687,7 @@ ULD), PSD/FCI re-check with fast neutrons in the 475–5,700 keVee slices, divid
 and — for the first time in this project — low-energy fast-neutron acceptance for both methods; then
 replace the provisional ULD in the §10.16 table.
 
-## Appendix: ILA note
+## Appendix: ILA note (2026-08-18)
 
 Early in bring-up the ILA showed `trigger_core`'s `m_axis` TVALID toggling 1/0 on alternate cycles,
 delivering an effective half data rate — repo issue #10, diagnosed and fixed in §7a:
