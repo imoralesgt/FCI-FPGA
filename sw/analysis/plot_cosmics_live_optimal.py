@@ -156,7 +156,7 @@ def plot_histograms(fci, psd, keVee, psd_range, fci_range):
 def plot_fom_at_lld(values, keVee, cut, name, out_name, color,
                      lld: float, uld: float = ULD_KEVEE):
     """Same procedure as sw/analysis/plot_cosmics_optimal_psd_fci.py's plot_fom_at_lld: ONE pooled
-    double-Gaussian fit (fit_double_gaussian) to [LLD, ULD], `cut` only seeding/labelling, and the
+    double-Gaussian fit (fit_double_gaussian) to [LLD, ULD], `cut` only seeding/labeling, and the
     separation line pinned to the same crossing-point cut used throughout this section rather than
     to whatever this individual fit's own crossing point comes out to."""
     m = (keVee >= lld) & (keVee <= uld)

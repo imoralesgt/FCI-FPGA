@@ -355,7 +355,7 @@ if __name__ == "__main__":
 
     # ---- log-energy view with the cumulative LLD shading, the sibling project's
     # 13_psd_fci_matrices_cumulative_shaded.png layout. Kept as its own figure because the log axis
-    # is what makes the low-energy decades legible, and the low-energy behaviour is the hypothesis
+    # is what makes the low-energy decades legible, and the low-energy behavior is the hypothesis
     # under test -- the linear panels above compress everything below ~1000 keVee into one edge.
     fig3, axes3 = plt.subplots(2, 1, figsize=(9, 10))
     scatter_panel(axes3[0], all_E, all_psd, "PSD = (long-short)/long",

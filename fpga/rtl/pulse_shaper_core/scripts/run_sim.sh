@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Compiles and runs pulse_shaper_core_tb via xvhdl/xelab/xsim (pure VHDL).
+# Compiles and runs pulse_shaper_core_tb and trapezoidal_filter_frame_tb via xvhdl/xelab/xsim
+# (pure VHDL).
 # Usage: source /tools/Xilinx/Vivado/2022.2/settings64.sh && ./run_sim.sh
 set -euo pipefail
 
@@ -20,10 +21,16 @@ xvhdl --93_mode \
   "$SRC_DIR/result_fifo.vhd" \
   "$SRC_DIR/pulse_shaper_axi4lite_regs.vhd" \
   "$SRC_DIR/pulse_shaper_core_top.vhd" \
-  "$TB_DIR/pulse_shaper_core_tb.vhd"
+  "$TB_DIR/pulse_shaper_core_tb.vhd" \
+  "$TB_DIR/trapezoidal_filter_frame_tb.vhd"
 
 xelab --93_mode --debug typical pulse_shaper_core_tb -s pulse_shaper_core_tb_sim
 
 # xsim -runall drops to an interactive TCL prompt after the testbench finishes rather than
 # exiting; piping an explicit quit closes it instead of leaving it resident.
 printf 'run -all\nquit\n' | xsim pulse_shaper_core_tb_sim -nolog
+
+# Frame-independence regression: a frame's amplitude must not depend on the frame before it (see
+# the testbench's own header).
+xelab --93_mode --debug typical trapezoidal_filter_frame_tb -s trapezoidal_filter_frame_tb_sim
+printf 'run -all\nquit\n' | xsim trapezoidal_filter_frame_tb_sim -nolog

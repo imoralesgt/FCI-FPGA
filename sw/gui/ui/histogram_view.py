@@ -26,8 +26,9 @@ away from "one ADC code", which is the unit every calibration coefficient here h
 defined against. The visible symptom: exported $MCA_CAL no longer matched the typed c0/c1/c2 even
 at the slider's finest position, because that position stopped meaning factor=1 (no decimation) the
 moment HIST_CHANNELS grew past DISPLAY_CHANNEL_CHOICES' own top entry -- see _rebin_calibration.
-HIST_CHANNELS below is back to 16384 (one ADC code per channel, matching calibration's own unit and
-restoring "finest slider position = identity, typed == exported"); add_events() instead folds the
+HIST_CHANNELS was then put back to 16384 (one ADC code per channel, matching calibration's own unit and
+restoring "finest slider position = identity, typed == exported"), and later widened to 65536 without
+changing that unit -- see HIST_CHANNELS for why the ADC's span is not the ceiling; add_events() folds the
 shaper's wider raw range down into that same 16384-channel accumulation BEFORE binning, dividing
 by the device's own `peaking` -- see DEFAULT_PEAK_FOLD below for why that divisor and not a fixed
 one, which was itself a third iteration on this.
@@ -60,21 +61,30 @@ from PySide6.QtWidgets import (
 
 from fci_api import AcqEvent
 
-HIST_CHANNELS = 16384
-"""One bin per raw ADC code, 1:1, spanning the full 0..16383 theoretical range: 2^14, the ADC's
-native resolution (see the ADC_WIDTH note in docs/log/README.md). This is the unit every
-calibration coefficient in this tab is defined against -- c0/c1/c2 mean "keVee per ADC code", not
-"keVee per whatever the accumulation array happens to be sized to" -- and DISPLAY_CHANNEL_CHOICES,
-_rebin_counts and _rebin_calibration all key off it too, so changing it changes what a typed
-calibration value MEANS, not just how big an array gets (see this module's own docstring for why
-that distinction matters and tripped up a previous fix here).
+HIST_CHANNELS = 65536
+"""Accumulation channels, 0..65535. A channel is `peak / peak_fold` (see DEFAULT_PEAK_FOLD) -- that
+division, not this array's size, is what fixes the unit every calibration coefficient here is
+defined against, so c0/c1/c2 keep their meaning whatever this constant is. The finest display
+position (the last DISPLAY_CHANNEL_CHOICES entry) must equal it, so that position stays the
+identity rebin and a typed calibration still equals the exported one (see _rebin_calibration).
 
-Real events cluster in the lower part of that 16384 span -- the upper channels legitimately read
-zero -- but the axis itself covers the whole theoretical ceiling, which is the normal convention
-for this class of instrument rather than an axis auto-scaled to whatever was captured so far. This
-is the accumulation resolution ONLY: DISPLAY_CHANNEL_CHOICES below lets the user view/export at a
-coarser rebin without losing the underlying full-resolution counts (Clear is the only thing that
-discards them)."""
+Why 4x the ADC's 2^14 codes, not 2^14: `peak` is the shaper's output, not a sample, and it is not
+bounded by the ADC's span. With `decay` shorter than the pulse's real tail, the pole-zero stage
+integrates, and the output follows the pulse's charge rather than its height -- measured on the PMT
+CLYC at `50/1/10`, channel/peak-amplitude was 1.39 for gammas and 2.75 for 6Li neutrons, and
+rail-clipped cosmic muons reached channel 33,094 (project log section 10). A 16384-channel array
+piled every such event, and everything above ~11 MeVee under a DT-capable gain, into its top bin.
+2^16 holds the largest shaper output observed with 2x margin.
+
+This is range, not linearity: pulses whose samples clipped at the ADC rail are still binned, at
+the channel their clipped shape produces, and read low. Where the rail sits in keVee depends on
+pulse shape -- slow (neutron-like) pulses reach it at higher energy than CVL-spiked gammas.
+
+Real events cluster in the lower part of the span -- the upper channels legitimately read zero --
+but the axis covers the whole range, which is the normal convention for this class of instrument
+rather than an axis auto-scaled to whatever was captured so far. This is the accumulation
+resolution ONLY: DISPLAY_CHANNEL_CHOICES below lets the user view/export at a coarser rebin without
+losing the underlying full-resolution counts (Clear is the only thing that discards them)."""
 
 DEFAULT_PEAK_FOLD = 50
 """Raw shaper counts per accumulation channel, until the device reports its real `peaking`
@@ -90,19 +100,36 @@ never clip. It cannot -- but at the peaking actually in use (50) it left only A0
 a channel per ADC code, so just 1,600 of 16,384 channels were reachable and the full-span axis
 (_reset_view_to_full_span) advertised 36,534 keVee against a detector that saturates near 3,568 --
 a 10x overshoot, most of the axis unreachable by construction. Dividing by the real `peaking`
-instead maps A0 onto channels 1:1 at ANY peaking, so the ceiling is the ADC's own span, the clip
-guard in add_events() holds for every peaking rather than only the worst case, and a calibration
+instead maps A0 onto channels ~1:1 at ANY peaking (only with a `decay` matched to the pulse; a
+short `decay` makes the output charge-like and larger -- see HIST_CHANNELS), the clip guard in
+add_events() holds for every peaking rather than only the worst case, and a calibration
 survives a peaking change instead of silently rescaling by the ratio of the two.
 
 50 as the pre-connect default is the firmware's own boot value (PULSE_SHAPER_PEAKING_DEFAULT in
 acquisition.c), so an unconnected session shows the same scale it will show once connected."""
 
-DISPLAY_CHANNEL_CHOICES = [256, 512, 1024, 2048, 4096, 8192, 16384]
+DISPLAY_CHANNEL_CHOICES = [256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536]
 """Selectable spectrum spans, via the slider. This detector's own energy resolution is ~6% at
 Cs-137 (~40 keV FWHM at 662 keV) -- far coarser than one ADC code -- so 16384 raw channels is more
 resolution than the physics can use and just makes every bin wait longer for the same statistical
-significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (64x range end to end), so
-rebinning is always an exact integer grouping with no remainder."""
+significance. Each step is a clean power-of-2 divisor of HIST_CHANNELS (256x range end to end), so
+rebinning is always an exact integer grouping with no remainder. Every choice spans the same energy
+range; a coarser one only groups more channels per bin."""
+
+SPAN_MARGIN = 1.10
+"""The energy axis ends this factor above the highest channel holding counts (see
+_span_end_channel()). A span computed from the settings instead -- the shaper's worst-case output
+through the calibration -- cannot be both honest and useful: the only exact bound is
+16383*(1 + (peaking+flat_top)/decay) channels, which a rail-clipped muon can approach but no
+unclipped event does, and with a short `decay` it put the axis end at 100-300 MeVee on the PMT CLYC
+while real events stopped near 20. The realistic bound, where the ADC rail is reached, depends on
+the pulse SHAPE (channel/peak-amplitude ratio 0.31 for gammas at 1/1/1 us, 1.4 at 1.00/0.02/0.20
+us), which the settings do not determine. The recorded data does."""
+
+MIN_SPAN_KEVEE = 4000.0
+"""The axis never ends below this energy, so an empty or low-energy spectrum still shows the
+range where the 6Li thermal-capture peak (~3.1-3.5 MeVee in CLYC) lands. Applies from startup,
+before any data, onward."""
 
 RATE_WINDOW_S = 3.0
 """Instantaneous-rate sliding window -- same value and reasoning as live_view.py's own
@@ -182,8 +209,10 @@ def _rebin_counts(counts: np.ndarray, display_channels: int) -> np.ndarray:
 def write_spe(path: Path, counts: np.ndarray, calibration: tuple[float, float, float],
               live_time_s: float, real_time_s: float) -> None:
     """Writes an ORTEC/Maestro-style ASCII SPE file: $SPEC_ID, $DATE_MEA, $MEAS_TIM, $DATA and
-    $MCA_CAL sections. live_time_s/real_time_s are equal here -- this instrument does not track
-    dead time separately from wall-clock time, so live_time is reported as an approximation of it
+    $MCA_CAL sections. live_time_s is the Spectrum tab's live time (running time since Clear, paused
+    spans excluded) and real_time_s the wall clock since the first event -- equal unless Stop was
+    used. Neither is dead-time corrected: this instrument does not track dead time, so live_time is
+    reported as an approximation of it
     rather than omitted. `calibration` must already be expressed against `counts`'s own channel
     index (see _rebin_calibration) -- the SPE convention applies $MCA_CAL directly to $DATA's row
     position, not to some other, coarser-or-finer channel numbering. Always the RAW linear counts,
@@ -231,16 +260,33 @@ class HistogramView(QWidget):
         """Raw shaper counts per channel -- the device's `peaking`. See DEFAULT_PEAK_FOLD."""
         self._total = 0
         self._start_time: float | None = None
+        self._live_accum_s = 0.0
+        self._live_since: float | None = None
+        """Live time = accumulating time since the last Clear, paused while stopped: _live_accum_s
+        holds closed intervals, _live_since (monotonic) the open one, or None while not counting.
+        An interval opens at the first event after Clear or Run -- not at the button press -- so
+        time spent running with no data arriving (no device, device not acquiring) is not counted;
+        it closes at Stop."""
         self._running = True
         """Independent of the device connection and of Live FCI/PSD's own Start/Stop: this just
         gates whether add_events() accumulates incoming batches into the histogram. Defaults to
         running so behavior is unchanged for anyone not using the button."""
         self.bars: pg.BarGraphItem | None = None
+        self._max_channel = -1
+        """Highest accumulation channel that has received a count since the last Clear; drives the
+        axis span (see SPAN_MARGIN)."""
+        self._view_end_channel = 0
+        """The accumulation channel the automatic x-span currently ends at -- the span is only
+        widened when data passes it, not on every event."""
+        self._user_view = False
+        """Set once the user zooms or pans the x-axis by hand; automatic span growth then leaves
+        the view alone until the next Clear, calibration or rebin change."""
         self._export_dir: Path | None = None
         """Set to the open project's SPECTRA/ by the controller -- see set_export_directory()."""
         self._init_ui()
+        self.plot_widget.getViewBox().sigRangeChangedManually.connect(self._on_view_changed_manually)
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -259,7 +305,7 @@ class HistogramView(QWidget):
         controls_layout.addWidget(QLabel("Coarser"))
         self.slider_channels = QSlider(Qt.Orientation.Horizontal)
         self.slider_channels.setRange(0, len(DISPLAY_CHANNEL_CHOICES) - 1)
-        self.slider_channels.setValue(len(DISPLAY_CHANNEL_CHOICES) - 1)  # 16384, no decimation
+        self.slider_channels.setValue(len(DISPLAY_CHANNEL_CHOICES) - 1)  # HIST_CHANNELS, no decimation
         self.slider_channels.setTickPosition(QSlider.TickPosition.TicksBelow)
         self.slider_channels.setTickInterval(1)
         self.slider_channels.setSingleStep(1)
@@ -340,6 +386,14 @@ class HistogramView(QWidget):
         self.lbl_status = QLabel("Total: 0 counts")
         ctrl_layout.addWidget(self.lbl_status)
         ctrl_layout.addWidget(QLabel("|"))
+        self.lbl_live_time = QLabel("Live time: 0:00:00")
+        self.lbl_live_time.setToolTip(
+            "Accumulating time since the last Clear, from the first event after Clear or Run; "
+            "paused while stopped. Host wall-clock time -- the device does not report its own dead "
+            "time, so this is not dead-time corrected. Used as the SPE export's live time and for "
+            "the average rate.")
+        ctrl_layout.addWidget(self.lbl_live_time)
+        ctrl_layout.addWidget(QLabel("|"))
         self.lbl_rate = QLabel("Rate: 0.0 cps")
         self.lbl_rate.setToolTip(f"Instantaneous rate -- a {RATE_WINDOW_S:.0f} s sliding window, "
                                   "not a lifetime average. Decays to 0 shortly after events stop "
@@ -347,8 +401,8 @@ class HistogramView(QWidget):
         ctrl_layout.addWidget(self.lbl_rate)
         ctrl_layout.addWidget(QLabel("|"))
         self.lbl_avg_rate = QLabel("Avg: 0.0 cps")
-        self.lbl_avg_rate.setToolTip("Cumulative rate: total counts / elapsed time since the "
-                                      "first event after the last Clear.")
+        self.lbl_avg_rate.setToolTip("Cumulative rate: total counts / live time (paused time "
+                                      "excluded).")
         ctrl_layout.addWidget(self.lbl_avg_rate)
 
         ctrl_layout.addStretch(1)
@@ -379,6 +433,15 @@ class HistogramView(QWidget):
         nothing here is gated by it. Present for symmetry with the other tabs'
         set_controls_enabled(), called from MainWindow.set_connected_controls_enabled()."""
 
+    def set_recording_lock(self, locked: bool, tooltip: str) -> None:
+        """While recording, the calibration coefficients are frozen: the list file's header states
+        one calibration and its energy_cal column is computed with it (csv_logger.py)."""
+        for spin in (self.spin_c0, self.spin_c1, self.spin_c2):
+            if locked and spin.property("unlocked_tooltip") is None:
+                spin.setProperty("unlocked_tooltip", spin.toolTip())
+            spin.setEnabled(not locked)
+            spin.setToolTip(tooltip if locked else (spin.property("unlocked_tooltip") or ""))
+
     def calibration(self) -> tuple[float, float, float]:
         return (self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value())
 
@@ -406,7 +469,7 @@ class HistogramView(QWidget):
             return
         self._peak_fold = peaking
         self.peak_fold_changed.emit(peaking)
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     # ------------------------------------------------------------------- project save/restore
 
@@ -460,6 +523,9 @@ class HistogramView(QWidget):
         self.run_clicked.emit()
 
     def _on_stop(self) -> None:
+        if self._live_since is not None:
+            self._live_accum_s += time.monotonic() - self._live_since
+            self._live_since = None
         self._running = False
         self.btn_run.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -477,6 +543,8 @@ class HistogramView(QWidget):
             return
         if self._start_time is None:
             self._start_time = time.time()
+        if self._live_since is None:
+            self._live_since = time.monotonic()
         peaks = np.fromiter((e.peak for e in events), dtype=np.int64, count=len(events))
         # Fold the shaped plateau back to ADC-code scale FIRST, then clamp: dividing by `peaking`
         # is what makes a channel one ADC code (see DEFAULT_PEAK_FOLD), so the clamp afterwards is
@@ -490,20 +558,27 @@ class HistogramView(QWidget):
         # np.add.at, not np.bincount: bincount would allocate a full HIST_CHANNELS-length array on
         # every call just to add a handful of counts into it. np.add.at scatter-adds in place.
         np.add.at(self._counts, peaks, 1)
+        self._max_channel = max(self._max_channel, int(peaks.max()))
         self._total += len(events)
         self._rate_samples.append((time.monotonic(), len(events)))
         self._update_status_label()
         self._update_rate_labels()
         self._redraw()
+        if not self._user_view and self._span_end_channel() > self._view_end_channel:
+            self._reset_view_to_data_span()
 
     def clear(self) -> None:
         self._counts[:] = 0
         self._total = 0
+        self._max_channel = -1
         self._start_time = None
+        self._live_accum_s = 0.0
+        self._live_since = None
         self._rate_samples.clear()
         self._update_status_label()
         self._update_rate_labels()
         self._redraw()
+        self._reset_view_to_data_span()
 
     # ------------------------------------------------------------------------------------- rate
 
@@ -519,13 +594,20 @@ class HistogramView(QWidget):
             return 0.0
         return sum(n for _, n in self._rate_samples) / dt
 
+    def _live_time_s(self) -> float:
+        if self._live_since is None:
+            return self._live_accum_s
+        return self._live_accum_s + (time.monotonic() - self._live_since)
+
     def _cumulative_rate_hz(self) -> float:
-        if self._start_time is None:
-            return 0.0
-        elapsed = time.time() - self._start_time
-        return (self._total / elapsed) if elapsed > 0 else 0.0
+        # Live time, not wall time since the first event: with Stop/Run in between, wall time
+        # would count the paused spans and understate the rate.
+        live = self._live_time_s()
+        return (self._total / live) if live > 0 else 0.0
 
     def _update_rate_labels(self) -> None:
+        t = int(self._live_time_s())
+        self.lbl_live_time.setText(f"Live time: {t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}")
         self.lbl_rate.setText(f"Rate: {self._instantaneous_rate_hz():.1f} cps")
         self.lbl_avg_rate.setText(f"Avg: {self._cumulative_rate_hz():.1f} cps")
 
@@ -542,11 +624,11 @@ class HistogramView(QWidget):
     def _on_span_changed(self) -> None:
         self._update_channels_label()
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
 
     def _on_calibration_changed(self) -> None:
         self._redraw()
-        self._reset_view_to_full_span()
+        self._reset_view_to_data_span()
         self.calibration_changed.emit(*self.calibration())
 
     # ------------------------------------------------------------------------------------- plot
@@ -556,12 +638,35 @@ class HistogramView(QWidget):
         return _rebin_calibration(self.spin_c0.value(), self.spin_c1.value(),
                                    self.spin_c2.value(), factor)
 
+    def _span_end_channel(self) -> int:
+        """Accumulation channel the energy axis ends at: SPAN_MARGIN above the highest channel
+        holding counts, but never below the channel where the calibration reaches MIN_SPAN_KEVEE
+        (the whole array, if it never does). See SPAN_MARGIN for why this is taken from the data
+        rather than computed from the shaper settings."""
+        c0, c1, c2 = self.spin_c0.value(), self.spin_c1.value(), self.spin_c2.value()
+        ch = np.arange(HIST_CHANNELS, dtype=np.float64)
+        reached = np.nonzero(c0 + c1 * ch + c2 * ch * ch >= MIN_SPAN_KEVEE)[0]
+        floor_ch = int(reached[0]) if reached.size else HIST_CHANNELS - 1
+        data_ch = int(np.ceil((self._max_channel + 1) * SPAN_MARGIN)) if self._max_channel >= 0 else 0
+        return min(HIST_CHANNELS - 1, max(floor_ch, data_ch))
+
+    def _span_display_bins(self) -> int:
+        """Number of display bins (at the current rebin) needed to reach _span_end_channel()."""
+        factor = HIST_CHANNELS // self._display_channels()
+        return min(self._display_channels(), self._span_end_channel() // factor + 1)
+
+    def _on_view_changed_manually(self, *_args) -> None:
+        self._user_view = True
+
     def _redraw(self) -> None:
         if self.bars is not None:
             self.plot_widget.removeItem(self.bars)
             self.bars = None
-        n = self._display_channels()
-        counts = _rebin_counts(self._counts, n)
+        # Only the bins up to the span end are drawn -- everything above is empty by construction
+        # (see _span_end_channel()), and leaving them out is also what makes pyqtgraph's "view all"
+        # button fit the recorded range rather than the whole 65536-channel array.
+        n = self._span_display_bins()
+        counts = _rebin_counts(self._counts, self._display_channels())[:n]
         c0, c1, c2 = self._display_calibration()
         idx = np.arange(n, dtype=np.float64)
         x = c0 + c1 * idx + c2 * idx * idx
@@ -596,14 +701,12 @@ class HistogramView(QWidget):
         axis_left.setRange(0.0, max(top, 1.0))
         axis_left.setLogMode(log_y)
         self.plot_widget.setLabel("left", "Counts")
-        # ALL bins, not just nonzero ones: BarGraphItem's own bounding box is what pyqtgraph's
-        # "view all" / autoscale button fits to, and masking to nonzero bins would make that button
-        # (and the initial view) fit to whatever happened to be populated instead of the full
-        # theoretical span -- exactly the jumpy behavior _reset_view_to_full_span() exists to avoid.
-        # A zero-height bar draws nothing visible, so this costs nothing but a wider bounding box.
+        # Every bin up to the span end, not just nonzero ones: BarGraphItem's own bounding box is
+        # what pyqtgraph's "view all" / autoscale button fits to, and masking to nonzero bins would
+        # make that button jump between isolated populated bins. A zero-height bar draws nothing.
         #
-        # (0, 200, 120) is the same green live_view.py's rate curve uses -- reused here rather than
-        # introducing a new shade, and picked over the blue this replaced because it reads clearly
+        # (0, 200, 120) is shared with the Trigger tab's trace (scope_view.py) -- one green for
+        # "the signal" across the GUI rather than a new shade per view, and picked over the blue this replaced because it reads clearly
         # against pyqtgraph's default grid/axis color, which the blue was too close to. pen matches
         # brush explicitly: BarGraphItem's default pen is a gray outline, which at thousands of
         # adjacent bins reads as a solid gray wash over the fill color rather than a border.
@@ -612,20 +715,22 @@ class HistogramView(QWidget):
                                      pen=pg.mkPen(0, 200, 120, 150))
         self.plot_widget.addItem(self.bars)
 
-    def _reset_view_to_full_span(self) -> None:
-        """Sets the x-view to the full theoretical span once (also switching that axis out of
-        continuous autorange, the same side effect scope_view.py's fixed Y-range relies on), rather
-        than on every redraw -- ordinary data arrival must not fight a zoom/pan the user is actively
-        doing. Called when the axis's own definition changes (span slider, calibration) and once at
-        startup; never from add_events()'s redraw path. pyqtgraph's own "view all" button (present
-        by default on every PlotWidget) remains available to return here manually at any time, and
-        because _redraw() always includes the full bin range in the BarGraphItem's bounds (see
-        there), that button fits to the same full span this sets initially."""
-        n = self._display_channels()
+    def _reset_view_to_data_span(self) -> None:
+        """Sets the x-view to 0 .. _span_end_channel() in energy (also switching that axis out of
+        continuous autorange, the same side effect scope_view.py's fixed Y-range relies on) and
+        hands the view back to automatic growth. Called at startup, on Clear, when the axis's own
+        definition changes (rebin, calibration, fold), and from add_events() when data passes the
+        current end -- the last only while the user has not zoomed or panned by hand, so arriving
+        data never fights a view the user chose. pyqtgraph's "view all" button returns here too,
+        since _redraw() draws exactly this range of bins."""
+        self._view_end_channel = self._span_end_channel()
+        self._user_view = False
         c0, c1, c2 = self._display_calibration()
-        x0 = c0
-        x1 = c0 + c1 * (n - 1) + c2 * (n - 1) * (n - 1)
-        lo, hi = (x0, x1) if x1 >= x0 else (x1, x0)
+        idx = np.arange(self._span_display_bins(), dtype=np.float64)
+        x = c0 + c1 * idx + c2 * idx * idx
+        # min/max over every bin, not the two ends: with c2 < 0 the calibration turns over at
+        # c1/(2|c2|) and can fold back inside the span.
+        lo, hi = float(x.min()), float(x.max())
         if hi <= lo:
             hi = lo + 1.0
         self.plot_widget.setXRange(lo, hi, padding=0)
@@ -651,11 +756,13 @@ class HistogramView(QWidget):
         out_path = Path(path)
         if out_path.suffix.lower() != ".spe":
             out_path = out_path.with_name(out_path.name + ".spe")
-        elapsed = (time.time() - self._start_time) if self._start_time is not None else 0.0
+        # Real time = wall clock since the first event after Clear; live time = the same minus the
+        # paused spans. Neither is dead-time corrected (the device does not report dead time).
+        real = (time.time() - self._start_time) if self._start_time is not None else 0.0
         counts = _rebin_counts(self._counts, self._display_channels())
         try:
             write_spe(out_path, counts, self._display_calibration(),
-                      live_time_s=elapsed, real_time_s=elapsed)
+                      live_time_s=self._live_time_s(), real_time_s=real)
         except OSError as e:
             QMessageBox.warning(self, "Export Failed", str(e))
             return

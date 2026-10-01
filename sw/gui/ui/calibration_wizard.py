@@ -14,7 +14,7 @@ configurable), but this wizard temporarily widens the pre-trigger window to the 
 maximum (delay=256, requiring depth>=512 -- see CALIBRATION_DEPTH/DELAY) for a much bigger
 per-capture sample, pooled across multiple captures for better statistics with fewer of them, per
 the user's own request. depth/delay are ALWAYS restored to whatever they were before running,
-whether calibration succeeds, fails, or is cancelled -- only the proposed threshold/rising are a
+whether calibration succeeds, fails, or is canceled -- only the proposed threshold/rising are a
 lasting change, and only once the user explicitly applies them.
 
 A pre-trigger sample is not automatically a pre-PULSE sample, and the two used to be the same thing
@@ -148,7 +148,7 @@ def _safe_baseline_window(delay: int, cfd_delay: int | None, cfd_fraction: int |
     by this formula), the rising edge was found to start at sample ~224 of a 256-sample delay
     window -- matching the formula to within a couple of samples, not just in principle.
 
-    Returns `delay` unchanged (the old behaviour) if cfd_delay/cfd_fraction are None -- firmware
+    Returns `delay` unchanged (the old behavior) if cfd_delay/cfd_fraction are None -- firmware
     predating the CFD, where trigger.vhd's zero-lag crossing is exactly what this always assumed.
     """
     if cfd_delay is None or cfd_fraction is None:
@@ -183,7 +183,9 @@ class CalibrationWizard(QDialog):
         self.spin_sigma = QDoubleSpinBox()
         self.spin_sigma.setRange(1.0, 20.0)
         self.spin_sigma.setSingleStep(0.5)
-        self.spin_sigma.setValue(8.0)  # matches THRESHOLD_SIGMA_MULT in bringup.c
+        # 6 sigma: the operating value used on the PMT CLYC (project log section 10.15). The
+        # firmware's own boot-time calibration (bringup.c THRESHOLD_SIGMA_MULT) still uses 8.
+        self.spin_sigma.setValue(6.0)
         self.spin_sigma.setToolTip("Threshold is set this many standard deviations away from the "
                                     "measured baseline mean.")
         form.addRow("Standard deviations from baseline:", self.spin_sigma)

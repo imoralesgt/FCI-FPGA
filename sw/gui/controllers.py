@@ -84,6 +84,8 @@ class AppController(QObject):
         self.view.scope_view.single_clicked.connect(self.scope_single)
         self.view.scope_view.calibrate_clicked.connect(self.open_calibration_wizard)
         self.view.live_view.fom_wizard_clicked.connect(self.open_fom_wizard)
+        self.view.live_view.cuts_changed.connect(self._on_cuts_changed)
+        self.view.live_view.dividers_changed.connect(self._on_dividers_changed)
         self.view.histogram_view.run_clicked.connect(self._on_spectrum_run)
         self.view.histogram_view.stop_clicked.connect(self._on_spectrum_stop)
         self.view.act_new_project.triggered.connect(self.new_project)
@@ -109,6 +111,10 @@ class AppController(QObject):
             write_last_project(config.APP_STATE_PATH, None)
             return
         self._set_project(project)
+        # Load it into the forms now, not only on connect: until then they would show widget
+        # minimums, and closing before connecting (with "Save" answered on the way out) wrote
+        # those minimums over the project -- which then went to the board on the next connect.
+        self._load_project_into_ui(project)
 
     def new_project(self) -> None:
         if not self._can_switch_project():
@@ -206,7 +212,7 @@ class AppController(QObject):
 
     def _offer_save_before_leaving(self, allow_cancel: bool = True) -> bool:
         """Asked when a project is about to stop being the open one (Close Project, application
-        exit). Returns False only if the user cancelled the whole action. Deliberately a question
+        exit). Returns False only if the user canceled the whole action. Deliberately a question
         rather than a silent write: settings.json is what documents an existing dataset, and a
         project opened only to look at it must not be rewritten just because it was opened.
 
@@ -273,12 +279,16 @@ class AppController(QObject):
                 continue
             panel.set_values(values)
         self.view.histogram_view.apply_project_settings(project.spectrum)
+        self.view.live_view.apply_project_settings(project.live)
         prefix = project.acquisition.get("file_prefix")
         if prefix:
             self.view.txt_file_prefix.setText(str(prefix))
         autoincrement = project.acquisition.get("autoincrement")
         if isinstance(autoincrement, bool):
             self.view.chk_autoincrement.setChecked(autoincrement)
+        notes = project.acquisition.get("notes")
+        if isinstance(notes, str):
+            self.view.file_view.set_notes(notes)
         self._update_filename_preview()
 
     def _capture_ui_into_project(self, project: Project) -> None:
@@ -289,10 +299,36 @@ class AppController(QObject):
             if values:
                 device[key] = values
         project.spectrum.update(self.view.histogram_view.project_settings())
+        project.live.update(self.view.live_view.project_settings())
         project.acquisition.update({
             "file_prefix": self.view.txt_file_prefix.text(),
             "autoincrement": self.view.chk_autoincrement.isChecked(),
+            "notes": self.view.file_view.notes(),
         })
+
+    def _trigger_differences(self) -> tuple[list[str], list[str]]:
+        """(differences, missing): trigger fields where the connected device's value (the trigger
+        panel's last read, which _load_project_into_ui() does not overwrite) differs from the
+        project's, formatted "name: device X, project Y"; and fields the device reports but the
+        project does not store. Checked on connect because the trigger is where a silent mismatch
+        costs data: a reflash or power cycle returns the CFD to the firmware's boot values
+        (fraction 64/256, delay 24), and with them the timing walk that hid the neutrons in the
+        PMT CLYC runs (project log section 10.15) -- without anything on screen saying so."""
+        panel = self.view.subsystem_panels().get("trigger")
+        device = getattr(panel, "_last", None) if panel is not None else None
+        stored = (self.project.device.get("trigger") or {}) if self.project is not None else {}
+        if device is None:
+            return [], []
+        diffs, missing = [], []
+        for name in ("threshold", "rising", "delay", "depth", "cfd_fraction", "cfd_delay"):
+            dev = getattr(device, name, None)
+            if dev is None:
+                continue  # not in this bitstream
+            if name not in stored:
+                missing.append(name)
+            elif stored[name] != dev:
+                diffs.append(f"{name}: device {dev}, project {stored[name]}")
+        return diffs, missing
 
     def _offer_apply_to_device(self) -> None:
         """Asks once, then writes every subsystem the project carries. The confirmation is not
@@ -304,15 +340,35 @@ class AppController(QObject):
             return
         if not self.project.device:
             return
-        reply = QMessageBox.question(
-            self.view, "Apply Project Settings",
+        diffs, missing = self._trigger_differences()
+        trigger_note = ""
+        if diffs:
+            trigger_note += ("\n\nWARNING -- the device's trigger differs from the project:\n  "
+                             + "\n  ".join(diffs))
+        if missing:
+            trigger_note += ("\n\nThe project stores no value for: " + ", ".join(missing)
+                             + " (saved before these were recorded). Applying leaves the device's "
+                             "current values; set them on the Trigger tab and save the project.")
+        box = QMessageBox(self.view)
+        box.setIcon(QMessageBox.Icon.Warning if diffs else QMessageBox.Icon.Question)
+        box.setWindowTitle("Apply Project Settings")
+        box.setText(
             f"Write project '{self.project.name}' settings to the connected device?\n\n"
             "This changes trigger, PSD, FCI, baseline restorer and VGA gain registers immediately. "
-            "Declining leaves the values loaded in the configuration forms, unapplied.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
+            "Declining leaves the values loaded in the configuration forms, unapplied."
+            + trigger_note)
+        box.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        box.setDefaultButton(QMessageBox.StandardButton.Yes)
+        reply = box.exec()
+        if diffs:
+            logger.warning("Device trigger differs from project on connect: " + "; ".join(diffs))
         if reply != QMessageBox.StandardButton.Yes:
+            if diffs:
+                # Keep the mismatch visible after the dialog is gone: the trigger panel's own
+                # status line, cleared by that panel's next successful Refresh/Apply.
+                panel = self.view.subsystem_panels().get("trigger")
+                if panel is not None:
+                    panel.lbl_status.setText("Device differs from project: " + "; ".join(diffs))
             return
         panels = self.view.subsystem_panels()
         for key in self.project.device:
@@ -444,7 +500,7 @@ class AppController(QObject):
             self.view.scope_view.set_client(None)
             self.view.scope_view.set_trigger_level(None)
             # Closes out any in-progress recording session directly, without touching the Record
-            # checkbox itself -- it's a lasting preference (armed by default), not something a
+            # checkbox itself -- it's a lasting preference (off at startup), not something a
             # disconnect should reset, so it stays exactly as the user left it for next time.
             if self.csv_logger is not None:
                 logger.info(f"Recording stopped by disconnect ({self.csv_logger.event_count} "
@@ -527,7 +583,7 @@ class AppController(QObject):
     # ---------------------------------------------------------------------------------- recording
 
     def on_record_toggled(self, checked: bool) -> None:
-        """The Record checkbox is a standing preference (armed by default), not itself the
+        """The Record checkbox is a standing preference (off at startup), not itself the
         trigger for writing files -- that happens in _ensure_recording_session(), gated behind
         the confirmation shown when Start is actually pressed. Unchecking it, though, closes any
         session already in progress immediately: turning Record off must always mean "stop
@@ -535,18 +591,46 @@ class AppController(QObject):
 
         Symmetrically, re-checking it while live/scope acquisition is already running (Start was
         pressed before Record got toggled off) has no future Start press to hang a fresh
-        _ensure_recording_session() off of -- resume immediately instead. Skips the confirmation
+        _ensure_recording_session() off of -- resume immediately instead. Skips the Start
         dialog on purpose: that dialog guards *starting* acquisition with recording armed, not
-        re-arming a preference the user just disabled a moment ago on already-running acquisition."""
+        re-arming a preference the user just disabled a moment ago on already-running acquisition.
+        It asks only about the settings.json save a new session makes."""
         if not checked and self.csv_logger is not None:
+            # Stopping a recording loses the rest of the run's data if it was a slip of the mouse
+            # (a restart opens a NEW file), so it is confirmed; arming/disarming while nothing is
+            # being written is not.
+            reply = QMessageBox.warning(
+                self.view, "Stop Recording",
+                f"Stop recording now?\n\n{self.csv_logger.path.name} has "
+                f"{self.csv_logger.event_count} events. Acquisition keeps running, but nothing "
+                "more is written to this file; re-checking Record starts a new file.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.view.chk_record.blockSignals(True)
+                self.view.chk_record.setChecked(True)
+                self.view.chk_record.blockSignals(False)
+                return
             logger.info(f"Recording stopped ({self.csv_logger.event_count} events logged).")
             self.csv_logger = None
             self.scope_csv_logger = None
             self.view.set_recording_active(False)
             self._update_filename_preview()
         elif checked and self.csv_logger is None and (self._live_acq_running or self._scope_running):
-            if not self._ensure_recording_session():
-                self.view.chk_record.setChecked(False)  # user declined the overwrite warning
+            # No Start dialog on this path, but starting a session still rewrites settings.json
+            # (see _ensure_recording_session()), so that alone is confirmed here.
+            reply = QMessageBox.question(
+                self.view, "Resume Recording",
+                "Acquisition is running -- recording starts now.\n\n"
+                + self._settings_save_warning() + "\n\nContinue?",
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Ok,
+            )
+            if reply != QMessageBox.StandardButton.Ok or not self._ensure_recording_session():
+                self.view.chk_record.blockSignals(True)
+                self.view.chk_record.setChecked(False)
+                self.view.chk_record.blockSignals(False)
 
     def _confirm_and_maybe_record(self) -> bool:
         """Consulted by LiveView/ScopeView before their Start button does anything. Returns
@@ -560,13 +644,34 @@ class AppController(QObject):
             self.view,
             "Start Acquisition",
             "Recording is enabled -- starting will begin writing data to CSV in project "
-            f"'{self.project.name}' ({self.project.list_dir}).\n\nContinue?",
+            f"'{self.project.name}' ({self.project.list_dir}).\n\n"
+            + self._settings_save_warning() + "\n\nContinue?",
             QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             QMessageBox.StandardButton.Ok,
         )
         if reply != QMessageBox.StandardButton.Ok:
             return False
         return self._ensure_recording_session()
+
+    def _settings_save_warning(self) -> str:
+        return (f"The current settings will be saved to project '{self.project.name}' "
+                "(settings.json), replacing the ones stored there.")
+
+    def _save_project_for_recording(self) -> None:
+        """Writes the on-screen settings into the project as a recording session starts, so
+        settings.json always describes the newest data in the project instead of whatever was
+        last saved by hand. The warning is shown by the dialog that led here (Start, or
+        re-checking Record mid-run). A failed save does not block the recording: every CSV
+        header carries the device settings, so the data stays documented either way."""
+        self._capture_ui_into_project(self.project)
+        try:
+            self.project.save()
+        except ProjectError as e:
+            QMessageBox.warning(self.view, "Could Not Save Project",
+                                f"{e}\n\nRecording continues; the settings are still written "
+                                "into the CSV headers.")
+            return
+        logger.info(f"Saved project settings before recording: {self.project.path}")
 
     # ---- filename prefix / index (File Management tab) ----
 
@@ -682,7 +787,26 @@ class AppController(QObject):
         fold = self.view.histogram_view.peak_fold()
         lines.append(f"energy: c0={c0}, c1={c1}, c2={c2}, peak_fold={fold}"
                      f"  [E_keVee = c0 + c1*ch + c2*ch^2, ch = peak/peak_fold]")
+        # LLD/ULD cuts, also host state: they decide which events reach the list file at all
+        # (LiveView.filter_for_recording()). Changes during recording are appended as notes --
+        # see _on_cuts_changed().
+        lines.append(self.view.live_view.cut_settings_line())
+        # g/n dividers, host state as well: they decide the class_fci/class_psd columns.
+        lines.append(self.view.live_view.divider_settings_line())
         return lines
+
+    def _on_dividers_changed(self) -> None:
+        """A divider settled on a new value while recording: rows from here on are classified
+        against it, so note it in the file at this point (CsvLogger.set_dividers())."""
+        if self.csv_logger is not None:
+            self.csv_logger.set_dividers(*self.view.live_view.dividers(),
+                                         note_line=self.view.live_view.divider_settings_line())
+
+    def _on_cuts_changed(self) -> None:
+        """A cut changed while recording: the rows from here on are filtered differently from the
+        header's `cuts:` line, so say so in the file, at the point it happened."""
+        if self.csv_logger is not None:
+            self.csv_logger.note(self.view.live_view.cut_settings_line())
 
     def _ensure_recording_session(self) -> bool:
         """Returns whether a session is (now) active. False only means the user declined an
@@ -720,13 +844,17 @@ class AppController(QObject):
                 if reply != QMessageBox.StandardButton.Ok:
                     return False
 
+        self._save_project_for_recording()
         settings_lines = self._device_settings_lines()
         # Same calibration/fold the header's `energy:` line reports, so the file's energy_cal
         # column and its own header can never describe different mappings.
         self.csv_logger = CsvLogger(list_dir, prefix, index, settings_lines,
                                      calibration=self.view.histogram_view.calibration(),
-                                     peak_fold=self.view.histogram_view.peak_fold())
-        self.scope_csv_logger = TraceCsvLogger(raw_dir, prefix, index, settings_lines)
+                                     peak_fold=self.view.histogram_view.peak_fold(),
+                                     notes=self.view.file_view.notes())
+        self.csv_logger.set_dividers(*self.view.live_view.dividers())  # header already states them
+        self.scope_csv_logger = TraceCsvLogger(raw_dir, prefix, index, settings_lines,
+                                               notes=self.view.file_view.notes())
         self.view.set_recording_active(True)
         logger.info(f"Recording started: {self.csv_logger.path}, {self.scope_csv_logger.path}")
         self._update_filename_preview()
@@ -764,7 +892,9 @@ class AppController(QObject):
 
     def open_fom_wizard(self) -> None:
         dlg = FomWizard(self.config_client, self.worker, self.view.live_view.get_accumulated_events,
-                         self.view.histogram_view.calibration(), self.view)
+                         self.view.histogram_view.calibration(), self.view,
+                         dividers=self.view.live_view.dividers(),
+                         peak_fold=self.view.histogram_view.peak_fold())
         dlg.exec()
 
     # -------------------------------------------------------------------------------------- misc

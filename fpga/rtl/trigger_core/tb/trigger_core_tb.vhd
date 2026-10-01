@@ -420,7 +420,7 @@ begin
     -- draining must be ACCEPTED, not dropped. Single-buffered, armed_o was high only in IDLE, so
     -- every event during a stream was lost -- half the live time at full rate.
     --
-    -- armed_o is internal to trigger_core_top, so this is checked behaviourally: hold tready low
+    -- armed_o is internal to trigger_core_top, so this is checked behaviorally: hold tready low
     -- so nothing drains, fire two triggers, then release tready and require TWO complete traces
     -- (2 x depth beats, exactly 2 TLASTs). A single-buffered core yields one.
     report "=== Test: second trigger during stream is captured (double buffering) ===";

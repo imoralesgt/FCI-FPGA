@@ -9,6 +9,9 @@
   Compute FoM (fixed dataset): a single, instant double-Gaussian fit (fom_core.compute_fom) over
     either this session's already-accumulated live events or an external CSV file. No device
     access, no sweeping -- for checking separation in data you already have, not for improving it.
+    Uses each discriminator's g/n divider (prefilled from the Live FCI/PSD panes, editable here):
+    it seeds the fit, is drawn on the histogram, and the result reports the class counts and each
+    fitted population's fraction on the wrong side of it.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from pathlib import Path
 
 import numpy as np
 import pyqtgraph as pg
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -114,6 +118,11 @@ class _ResultPanel(QWidget):
         self.plot.setLabel("left", "Counts")
         self.bars: pg.BarGraphItem | None = None
         self.curve = self.plot.plot(pen=pg.mkPen(color, width=2))
+        self.divider_line = pg.InfiniteLine(
+            angle=90, movable=False,
+            pen=pg.mkPen((235, 104, 52), width=2, style=Qt.PenStyle.DashLine))
+        self.divider_line.setVisible(False)
+        self.plot.addItem(self.divider_line)
         layout.addWidget(self.plot)
         self.lbl_result = QLabel("")
         self.lbl_result.setWordWrap(True)
@@ -128,18 +137,28 @@ class _ResultPanel(QWidget):
                                      brush=pg.mkBrush(*self._color, 120))
         self.plot.addItem(self.bars)
         self.curve.setData(r.bin_centers, r.fit_curve)
-        self.lbl_result.setText(
-            f"n = {r.n_events} events   FoM = {r.fom:.3f}\n"
-            f"peak 1: centroid={r.mu1:.4g}  FWHM={r.fwhm1:.4g}\n"
-            f"peak 2: centroid={r.mu2:.4g}  FWHM={r.fwhm2:.4g}\n"
-            f"separation S = {r.separation:.4g}"
-        )
+        text = (f"n = {r.n_events} events   FoM = {r.fom:.3f}\n"
+                f"peak 1: centroid={r.mu1:.4g}  FWHM={r.fwhm1:.4g}\n"
+                f"peak 2: centroid={r.mu2:.4g}  FWHM={r.fwhm2:.4g}\n"
+                f"separation S = {r.separation:.4g}")
+        if r.divider is not None:
+            self.divider_line.setValue(r.divider)
+            self.divider_line.setVisible(True)
+            text += (f"\ndivider {r.divider:.3f}: class 0 (≤) {r.n_below}, class 1 (>) {r.n_above}"
+                     f"\nfitted peak 1 above the line {100 * r.lower_above_frac:.3g}%, "
+                     f"peak 2 at/below it {100 * r.upper_below_frac:.3g}%")
+            if not (r.mu1 < r.divider < r.mu2):
+                text += "\n⚠ the divider is not between the two fitted centroids"
+        else:
+            self.divider_line.setVisible(False)
+        self.lbl_result.setText(text)
 
     def show_error(self, message: str) -> None:
         if self.bars is not None:
             self.plot.removeItem(self.bars)
             self.bars = None
         self.curve.setData([], [])
+        self.divider_line.setVisible(False)
         self.lbl_result.setText(f"Could not compute FoM: {message}")
 
 
@@ -270,20 +289,46 @@ class _OptimizeDiscriminatorPanel(QGroupBox):
 
 
 class _ComputeDiscriminatorPanel(QGroupBox):
-    def __init__(self, title: str):
+    def __init__(self, title: str, divider: float):
         super().__init__(title)
         self.chk_enabled = QCheckBox(f"Compute {title}")
         self.chk_enabled.setChecked(True)
         self.energy_cut = _EnergyCutFields()
+        div_row = QHBoxLayout()
+        self.chk_divider = QCheckBox("g/n divider:")
+        self.chk_divider.setChecked(True)
+        self.chk_divider.setToolTip(
+            f"Seeds the two-Gaussian fit from the events either side of this {title} value (class "
+            "0 = at or below, class 1 = above) and reports how it classifies the data. Prefilled "
+            f"from the Live FCI/PSD tab's {title} divider; changing it here does not change that "
+            "one. Unchecked: automatic seeding, as before.")
+        self.spin_divider = QDoubleSpinBox()
+        self.spin_divider.setRange(0.0, 1.0)
+        self.spin_divider.setDecimals(3)
+        self.spin_divider.setSingleStep(0.001)
+        self.spin_divider.setValue(divider)
+        self.chk_divider.toggled.connect(self.spin_divider.setEnabled)
+        div_row.addWidget(self.chk_divider)
+        div_row.addWidget(self.spin_divider)
+        div_row.addStretch(1)
         layout = QVBoxLayout(self)
         layout.addWidget(self.chk_enabled)
         layout.addWidget(self.energy_cut)
+        layout.addLayout(div_row)
         self.chk_enabled.toggled.connect(self.energy_cut.setEnabled)
+        self.chk_enabled.toggled.connect(self.chk_divider.setEnabled)
+        self.chk_enabled.toggled.connect(
+            lambda on: self.spin_divider.setEnabled(on and self.chk_divider.isChecked()))
+
+    def divider(self) -> float | None:
+        return self.spin_divider.value() if self.chk_divider.isChecked() else None
 
 
 def _load_csv(path: Path) -> tuple[list[float], list[float], list[float]]:
-    """Reads peak/fci/psd columns from a CSV matching CsvLogger's schema -- `#`-prefixed comment
-    lines (its header block) are skipped, same convention used throughout this project.
+    """Reads energy/fci/psd columns from a CSV matching CsvLogger's schema -- `#`-prefixed comment
+    lines (its header block, and mid-run cut/divider notes) are skipped, same convention used
+    throughout this project. The raw shaper value is the `energy` column in current files and
+    `peak` in files recorded before that rename; either is accepted.
 
     `peak` (the FPGA's whole-pulse amplitude, raw ADC-code units), not `energy_long`: this is the
     same energy channel the Optimize tab's live sweep and live_view's FCI/PSD-vs-Energy plots use
@@ -293,14 +338,16 @@ def _load_csv(path: Path) -> tuple[list[float], list[float], list[float]]:
     with open(path, newline="", encoding="utf-8") as f:
         rows = (line for line in f if not line.startswith("#"))
         reader = csv.DictReader(rows)
-        if reader.fieldnames is None or not {"peak", "fci", "psd"} <= set(reader.fieldnames):
+        names = set(reader.fieldnames or ())
+        raw = "energy" if "energy" in names else "peak"
+        if not {raw, "fci", "psd"} <= names:
             raise ValueError(
-                "CSV must have 'peak', 'fci', and 'psd' columns (the GUI's own live-log "
-                "schema, or a file converted to match it)."
+                "CSV must have 'energy' (or older 'peak'), 'fci', and 'psd' columns (the GUI's own "
+                "live-log schema, or a file converted to match it)."
             )
         for row in reader:
             try:
-                energy.append(float(row["peak"]))
+                energy.append(float(row[raw]))
                 fci.append(float(row["fci"]))
                 psd.append(float(row["psd"]))
             except ValueError:
@@ -315,7 +362,8 @@ def _load_csv(path: Path) -> tuple[list[float], list[float], list[float]]:
 
 class FomWizard(QDialog):
     def __init__(self, client: FciClient | None, acquisition_worker, get_live_events,
-                 calibration: tuple[float, float, float] = (0.0, 1.0, 0.0), parent=None):
+                 calibration: tuple[float, float, float] = (0.0, 1.0, 0.0), parent=None,
+                 dividers: tuple[float, float] = (0.5, 0.5), peak_fold: int = 1):
         """`client`/`acquisition_worker` are None when not connected -- the Optimize tab disables
         itself in that case, but Compute FoM still works (it can analyze a file, or whatever this
         session already accumulated before disconnecting). `get_live_events` is a zero-arg
@@ -327,12 +375,18 @@ class FomWizard(QDialog):
         touched while it's open) so it cannot go stale mid-session. Applied to raw `peak` for the
         Optimize tab's live sweep (SweepPlan.calibration) and for a loaded CSV's `peak` column here;
         the live-events source (get_live_events) already returns calibrated energy on its own, since
-        live_view applies the same coefficients internally."""
+        live_view applies the same coefficients internally.
+
+        `dividers` is LiveView's (fci, psd) g/n dividers when this dialog opened -- the Compute tab's
+        per-discriminator defaults. `peak_fold` is HistogramView's fold (the shaper's `peaking`): the
+        calibration applies to peak / fold, so a loaded CSV's raw column is divided by it first."""
         super().__init__(parent)
         self._client = client
         self._acq_worker = acquisition_worker
         self._get_live_events = get_live_events
         self._calibration = calibration
+        self._dividers = dividers
+        self._peak_fold = peak_fold if peak_fold > 0 else 1
         self._sweep_worker: FomSweepWorker | None = None
 
         self._energy: np.ndarray | None = None
@@ -504,8 +558,8 @@ class FomWizard(QDialog):
         self.radio_file.toggled.connect(self.btn_browse.setEnabled)
 
         panels_layout = QHBoxLayout()
-        self.psd_panel = _ComputeDiscriminatorPanel("PSD")
-        self.fci_panel = _ComputeDiscriminatorPanel("FCI")
+        self.psd_panel = _ComputeDiscriminatorPanel("PSD", self._dividers[1])
+        self.fci_panel = _ComputeDiscriminatorPanel("FCI", self._dividers[0])
         panels_layout.addWidget(self.psd_panel)
         panels_layout.addWidget(self.fci_panel)
         layout.addLayout(panels_layout)
@@ -543,9 +597,11 @@ class FomWizard(QDialog):
         # _load_csv returns raw peak (its own CSV column); calibrated here to the same (c0, c1, c2)
         # the live-events source already applies internally, so LLD/ULD mean the same energy region
         # regardless of which source is active -- see FomWizard.__init__'s calibration docstring.
-        peak_arr = np.asarray(peak, dtype=np.float64)
+        # Calibration applies to the folded channel (peak / peaking), exactly as in live_view's
+        # _energy_from_peak() -- applying it to the raw column put energies off by the fold.
+        ch = np.asarray(peak, dtype=np.float64) / self._peak_fold
         c0, c1, c2 = self._calibration
-        self._energy = c0 + c1 * peak_arr + c2 * peak_arr * peak_arr
+        self._energy = c0 + c1 * ch + c2 * ch * ch
         self._fci = np.asarray(fci, dtype=np.float64)
         self._psd = np.asarray(psd, dtype=np.float64)
         self.lbl_source_status.setText(f"{Path(path).name}: {len(peak)} events loaded")
@@ -592,7 +648,7 @@ class FomWizard(QDialog):
             mask &= self._energy <= uld
         filtered = values[mask]
         try:
-            r = compute_fom(filtered)
+            r = compute_fom(filtered, divider=panel.divider())
         except FomFitError as e:
             logger.warning(f"FoM fit failed: {e}")
             result.show_error(str(e))

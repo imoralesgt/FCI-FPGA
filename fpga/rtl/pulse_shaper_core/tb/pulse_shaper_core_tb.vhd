@@ -112,9 +112,13 @@ architecture sim of pulse_shaper_core_tb is
   -- Watches tready for the whole run: this core must never stall the lockstep broadcaster.
   signal tready_ever_low : boolean := false;
 
+  -- Stops the clock once stim has reported, so `run -all` (run_sim.sh) returns: with a
+  -- free-running clock the simulator never runs out of events and never exits.
+  signal sim_done : boolean := false;
+
 begin
 
-  clk_i <= not clk_i after CLK_PERIOD / 2;
+  clk_i <= not clk_i after CLK_PERIOD / 2 when not sim_done else '0';
 
   monitor_tready : process (clk_i)
   begin
@@ -507,6 +511,7 @@ begin
     else
       report "TEST FAILED" severity error;
     end if;
+    sim_done <= true;
     wait;
   end process stim;
 

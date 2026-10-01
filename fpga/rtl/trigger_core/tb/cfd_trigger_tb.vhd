@@ -166,7 +166,7 @@ begin
            & " samples";
     report "  cross-level walk, same stimulus     : " & integer'image(lvl_max - lvl_min)
            & " samples";
-    -- Guarded: if nothing fired, idx_min/idx_max still hold their sentinel initialisers and the
+    -- Guarded: if nothing fired, idx_min/idx_max still hold their sentinel initializers and the
     -- difference is meaningless -- an earlier run reported a flattering "1 sample" walk from
     -- integer'high minus integer'low while every pulse had actually failed to trigger.
     check("all amplitudes fired, so the walk figure is meaningful",

@@ -7,10 +7,13 @@ sum of two Gaussians; FoM = S / (FWHM_1 + FWHM_2), where S is the distance betwe
 centroids. Which events go in is the caller's job (an LLD/ULD energy cut, typically) -- this module
 only fits whatever array it's handed.
 
-Peak seeding is fully automatic (scipy.signal.find_peaks on a lightly smoothed histogram, falling
-back to a median split if it can't find two distinct peaks) rather than needing a user-supplied
-division value: the "Optimize" grid search evaluates this at every point of a sweep, so it cannot
-depend on the user manually re-seeding it each time.
+Peak seeding is automatic by default (scipy.signal.find_peaks on a lightly smoothed histogram,
+falling back to a median split if it can't find two distinct peaks): the "Optimize" grid search
+evaluates this at every point of a sweep, so it cannot depend on the user re-seeding it each time.
+The single-shot "Compute FoM" tab passes the operator's g/n divider instead (compute_fom's
+`divider`): each population is seeded from its own side of the line, and the result also reports
+how the line classifies the data (class counts) and how much of each fitted Gaussian lies on the
+wrong side of it -- the fitted counterpart of the leakage the hardware's straight line produces.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from scipy.optimize import curve_fit
+from scipy.special import erfc
 from scipy.signal import find_peaks
 
 HIST_BINS = 100
@@ -68,6 +72,17 @@ class FomResult:
     fwhm2: float
     separation: float
     fom: float
+    divider: float | None = None
+    """The g/n divider the fit was seeded from, if one was given."""
+    n_below: int = 0
+    """Events at or below the divider (class 0) -- 0 when no divider was given."""
+    n_above: int = 0
+    """Events above the divider (class 1)."""
+    lower_above_frac: float = 0.0
+    """Fraction of the lower fitted Gaussian (peak 1) lying above the divider: the fit's estimate
+    of the class-0 population a line at the divider would put in class 1."""
+    upper_below_frac: float = 0.0
+    """Fraction of the upper fitted Gaussian (peak 2) lying at or below the divider."""
 
 
 class FomFitError(Exception):
@@ -106,8 +121,31 @@ def _auto_seed(values: np.ndarray, counts: np.ndarray,
             float(np.mean(high)), max(float(np.std(high)), 1e-6))
 
 
-def compute_fom(values: np.ndarray) -> FomResult:
-    """Fits a sum of two Gaussians to `values`' histogram and returns the FoM. Raises FomFitError
+def _divider_seed(values: np.ndarray, divider: float) -> tuple[float, float, float, float]:
+    """(mu1, sigma1, mu2, sigma2) seeds from each side of the divider: class 0 (<= divider) and
+    class 1 (> divider), each from its own median and IQR-based width -- robust to the long tails
+    either side of a real g/n line."""
+    low, high = values[values <= divider], values[values > divider]
+    if len(low) < 5 or len(high) < 5:
+        raise FomFitError(
+            f"the divider at {divider:.3f} leaves {len(low)} event(s) below and {len(high)} above "
+            "-- move it between the two populations"
+        )
+
+    def med_sigma(v: np.ndarray) -> tuple[float, float]:
+        q1, q3 = np.percentile(v, [25, 75])
+        return float(np.median(v)), max(float(q3 - q1) / 1.349, 1e-6)
+
+    m1, s1 = med_sigma(low)
+    m2, s2 = med_sigma(high)
+    return m1, s1, m2, s2
+
+
+def compute_fom(values: np.ndarray, divider: float | None = None) -> FomResult:
+    """Fits a sum of two Gaussians to `values`' histogram and returns the FoM. With `divider`, the
+    two Gaussians are seeded from the events either side of it (class 0 = at or below, class 1 =
+    above) and the result carries the class counts and each fitted Gaussian's fraction on the wrong
+    side of the line; without it, seeding is automatic (see module docstring). Raises FomFitError
     if there isn't enough data, no two-peak structure can be found, or the fit doesn't converge."""
     if len(values) < 20:
         raise FomFitError(f"only {len(values)} events -- too few to fit")
@@ -115,7 +153,10 @@ def compute_fom(values: np.ndarray) -> FomResult:
     counts, edges = np.histogram(values, bins=HIST_BINS)
     centers = 0.5 * (edges[:-1] + edges[1:])
 
-    mu1_g, sigma1_g, mu2_g, sigma2_g = _auto_seed(values, counts, centers)
+    if divider is not None:
+        mu1_g, sigma1_g, mu2_g, sigma2_g = _divider_seed(values, divider)
+    else:
+        mu1_g, sigma1_g, mu2_g, sigma2_g = _auto_seed(values, counts, centers)
     p0 = [counts.max(), mu1_g, sigma1_g, counts.max(), mu2_g, sigma2_g]
     span = float(values.max() - values.min()) or 1.0
     bounds_lo = [0, values.min(), 1e-9, 0, values.min(), 1e-9]
@@ -140,9 +181,19 @@ def compute_fom(values: np.ndarray) -> FomResult:
     if denom <= 0:
         raise FomFitError("fitted peaks have zero width -- cannot compute a FoM")
 
+    extra = {}
+    if divider is not None:
+        s1, s2 = abs(sigma1), abs(sigma2)
+        extra = dict(
+            divider=float(divider),
+            n_below=int(np.count_nonzero(values <= divider)),
+            n_above=int(np.count_nonzero(values > divider)),
+            lower_above_frac=float(0.5 * erfc((divider - mu1) / (np.sqrt(2.0) * s1))),
+            upper_below_frac=float(0.5 * erfc((mu2 - divider) / (np.sqrt(2.0) * s2))),
+        )
     return FomResult(
         n_events=len(values), bin_centers=centers, counts=counts,
         fit_curve=_double_gaussian(centers, *popt),
         mu1=mu1, fwhm1=fwhm1, mu2=mu2, fwhm2=fwhm2,
-        separation=separation, fom=separation / denom,
+        separation=separation, fom=separation / denom, **extra,
     )

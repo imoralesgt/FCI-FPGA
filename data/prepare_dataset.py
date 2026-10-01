@@ -7,8 +7,8 @@ Two sources are supported.
                     published FCI, so it is what the testbench's figure of merit is computed
                     against.
   root              CoMPASS ROOT output from a CAEN digitizer, i.e. traces measured on this
-                    setup. These are UNLABELLED and carry no reference FCI, so they cannot drive
-                    the figure of merit -- they are for characterising the real detector against
+                    setup. These are UNLABELED and carry no reference FCI, so they cannot drive
+                    the figure of merit -- they are for characterizing the real detector against
                     the same datapath. The label column records the class if you know it (a
                     tagged source run) and "measured" otherwise.
 
@@ -55,6 +55,17 @@ PULSE_POS = 275
 
 ROOT_TREE = "Data_R"
 
+# CoMPASS record slots per output sample on the ROOT path. The DT5751 declares <sampleTime> 1000 ps
+# and every record slot is 1 ns in BOTH of the modes it has been run in (log section 8e):
+#   * dual trace (a second analog probe selected in CoMPASS Plot): the firmware samples each probe
+#     at 500 MS/s and CoMPASS writes every input sample twice -- 1 ns slots, 2 ns real samples;
+#   * one analog trace (second probe "None"): the input is sampled at the full 1 GS/s -- 1 ns slots,
+#     1 ns real samples (pulser-verified: 10,000.48 slots per 10 us period).
+# Averaging each group of 10 slots therefore lands both at 10 ns = 100 Msps, the Zenodo reference
+# rate, without needing to know which mode a file came from. Averaged, not picked: ~10% of trace
+# power is broadband noise above 50 MHz, which plain subsampling would fold into the FCI band.
+ROOT_SLOTS_PER_SAMPLE = 10
+
 
 def download(name: str, url: str) -> pathlib.Path:
     dest = RAW_DIR / name
@@ -91,24 +102,27 @@ def pick_energy_spread_subset(csv_path: pathlib.Path, label: str, n: int) -> pd.
 
 
 def _duplication_factor(waves: list[np.ndarray]) -> int:
-    """Returns 2 if every sample is repeated twice, else 1.
+    """Returns 2 if every sample is repeated twice, else 1. Informational only since the ROOT path
+    averages by ROOT_SLOTS_PER_SAMPLE, which is correct in either case.
 
-    Both CAEN digitizers used on this project write each sample twice, in every output format
-    (CSV, .BIN and ROOT alike), so the record contains half the distinct samples its length
-    implies. Detecting it matters because a trace read at face value has its time axis stretched
-    by 2 and its spectrum shifted by an octave.
+    CoMPASS writes each sample twice when dual-trace mode is on (a second analog probe selected in
+    CoMPASS Plot) -- in every output format (CSV, .BIN and ROOT alike) and on both CAEN families
+    used here -- so the record contains half the distinct samples its length implies. With the
+    second probe set to "None" it does not (log section 8e). Reporting which mode a file came from
+    is still worth it: a duplicated file holds only half the bandwidth.
 
-    Adjacent-pair equality alone would not prove it -- a slow or flat signal makes neighbours equal
+    Adjacent-pair equality alone would not prove it -- a slow or flat signal makes neighbors equal
     anyway. The offset grid (1,2)(3,4)... is the control: genuine duplication is ~100% on the
     aligned grid and much lower on the offset one. This requires the aligned grid to be exact, so
     a merely slow signal cannot trigger it.
     """
     aligned = all(np.array_equal(w[0::2], w[1::2]) for w in waves)
     if not aligned:
+        print("root: no sample duplication (single analog trace, 1 GS/s)")
         return 1
     offset = np.mean([np.mean(w[1:-1:2] == w[2::2]) for w in waves])
     print(f"root: samples are duplicated x2 (aligned 100%, offset {100 * offset:.0f}%) "
-          f"-> decimating to the distinct samples")
+          f"-> recorded in dual-trace mode, 500 MS/s of real samples")
     return 2
 
 
@@ -118,7 +132,7 @@ def _cut_window(wave: np.ndarray, n: int, pulse_pos: int) -> np.ndarray | None:
     CoMPASS records are far longer than the FFT window and put the pulse wherever the trigger
     happened to fall, so they cannot simply be truncated the way the pre-aligned reference set can.
     Returns None if the pulse sits too close to either end for a full window, rather than padding:
-    a padded trace would contribute a spectrum that is partly an artefact of the padding.
+    a padded trace would contribute a spectrum that is partly an artifact of the padding.
     """
     peak = int(np.argmin(wave))  # negative-going pulses, matching both sources
     start = peak - pulse_pos
@@ -150,8 +164,10 @@ def load_root_events(paths: list[pathlib.Path], label: str, n: int) -> pd.DataFr
         raise SystemExit("root: no events found")
 
     energy = np.concatenate(energies)
-    step = _duplication_factor(waves)
-    waves = [w[::step] for w in waves]
+    _duplication_factor(waves)
+    k = ROOT_SLOTS_PER_SAMPLE
+    waves = [w[: len(w) // k * k].reshape(-1, k).mean(axis=1) for w in waves]
+    print(f"root: averaged every {k} record slots -> 100 Msps, matching the zenodo reference")
 
     # The on-board Energy saturates at its 12-bit maximum when the charge gain is set too high;
     # such events carry no usable energy and would distort an energy-spread selection, so they are
@@ -217,7 +233,7 @@ def main() -> None:
             raise SystemExit(f"no .root files found under {args.root}")
         combined = load_root_events(paths, args.label, args.events)
         if args.out == OUT_PATH:
-            # The committed set is the testbench's verification reference and is labelled and
+            # The committed set is the testbench's verification reference and is labeled and
             # FCI-tagged; measured data is neither, so overwriting it would quietly disable the
             # figure of merit rather than fail.
             raise SystemExit(

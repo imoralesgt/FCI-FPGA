@@ -94,6 +94,7 @@ class Project:
             "device": {},
             "acquisition": {},
             "spectrum": {},
+            "live": {},
         }
         project = cls(path, doc)
         project._ensure_layout()
@@ -183,11 +184,19 @@ class Project:
 
     @property
     def acquisition(self) -> dict[str, Any]:
-        """File-naming state from the File Management tab: `file_prefix`, `autoincrement`. The
+        """File Management tab state: `file_prefix`, `autoincrement`, and `notes` (operator notes,
+        also written into each recording's header). The
         output DIRECTORY is deliberately not stored -- it is the project's own LIST/RAW, derived
         from wherever the project folder currently sits, so a project stays valid after being moved
         or copied to another machine."""
         return self._section("acquisition")
+
+    @property
+    def live(self) -> dict[str, Any]:
+        """Live FCI/PSD tab host state: `fci_divider`, `psd_divider` (the g/n class dividers, in
+        [0, 1]) and `fci_cut`, `psd_cut` (each LLD/ULD cut as {"enabled", "lld", "uld"}, bounds in
+        keVee). Not device registers -- see LiveView.project_settings()."""
+        return self._section("live")
 
     @property
     def spectrum(self) -> dict[str, Any]:

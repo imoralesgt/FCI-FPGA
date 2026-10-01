@@ -16,7 +16,7 @@
  * interrupt-driven DMA pipelines, automatic threshold calibration, and the end-to-end capture
  * tests -- reporting PASS/FAIL per step over UART. Leaves capture running.
  *
- * The platform must already be initialised (init_platform()) before calling this.
+ * The platform must already be initialized (init_platform()) before calling this.
  *
  * Its progress report is plain text, not CLI-framed. A host driving the command interface should
  * discard received lines until the first reply to its own request arrives.

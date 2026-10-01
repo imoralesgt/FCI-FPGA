@@ -82,9 +82,9 @@ class ScopeView(QWidget):
         # pulse range with headroom; setYRange also switches the axis out of autorange mode, and
         # nothing later in this view calls autoRange() to switch it back.
         self.plot_widget.setYRange(-300, 8000, padding=0)
-        self.curve = self.plot_widget.plot(pen=pg.mkPen("c", width=1))
+        self.curve = self.plot_widget.plot(pen=pg.mkPen((0, 200, 120), width=1))  # Spectrum tab green
 
-        TRIGGER_LINE_COLOR = (152, 251, 152)  # pale green
+        TRIGGER_LINE_COLOR = "#8ECBF9"
         self.trigger_line = pg.InfiniteLine(
             angle=0,
             movable=False,

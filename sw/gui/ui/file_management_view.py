@@ -13,6 +13,11 @@ there is no "no project" branch to design a directory picker for.
 
 AppController owns all the naming/overwrite logic and tells this widget where the project's
 directories are; this widget is just the controls and the read-only display of that answer.
+
+Operator notes: free text written into BOTH files' headers when a recording starts (csv_logger.py,
+one "# Notes:" line, multi-line notes joined by " | ") and kept in the project, for what no register records -- the detector HV, the source
+and its position, shielding, anything a later reader of the data needs. Locked while a recording is
+being written: a file's header states the notes as they were when it started.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -58,6 +64,17 @@ class FileManagementView(QWidget):
         self.lbl_filename_preview.setWordWrap(True)
         layout.addWidget(self.lbl_filename_preview)
 
+        layout.addWidget(QLabel("Operator notes (written into each recording's header):"))
+        self.txt_notes = QPlainTextEdit()
+        self.txt_notes.setPlaceholderText(
+            "e.g. PMT HV -1050 V; 22Na source 5 cm from the detector face; no shielding")
+        self.txt_notes.setToolTip(
+            "Free text for what the device settings do not record -- detector HV, source and "
+            "geometry, shielding. Copied into the header of the list and raw-trace files when a "
+            "recording starts, and saved with the project.")
+        self.txt_notes.setMaximumHeight(110)
+        layout.addWidget(self.txt_notes)
+
         self.lbl_output_note = QLabel("")
         self.lbl_output_note.setWordWrap(True)
         self.lbl_output_note.setStyleSheet("color: #555555;")
@@ -65,6 +82,20 @@ class FileManagementView(QWidget):
         self.set_project_dirs(None, None)
 
         layout.addStretch(1)
+
+    def notes(self) -> str:
+        return self.txt_notes.toPlainText().strip()
+
+    def set_notes(self, text: str) -> None:
+        self.txt_notes.setPlainText(text)
+
+    def set_recording_lock(self, locked: bool, tooltip: str) -> None:
+        """Read-only (not disabled, so it stays legible) while a recording is being written."""
+        if locked and self.txt_notes.property("unlocked_tooltip") is None:
+            self.txt_notes.setProperty("unlocked_tooltip", self.txt_notes.toolTip())
+        self.txt_notes.setReadOnly(locked)
+        self.txt_notes.setToolTip(
+            tooltip if locked else (self.txt_notes.property("unlocked_tooltip") or ""))
 
     def set_project_dirs(self, list_dir: Path | None, raw_dir: Path | None) -> None:
         """Updates the read-only display of where recordings will go. None/None only while no

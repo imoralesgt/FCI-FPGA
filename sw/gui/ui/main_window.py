@@ -13,6 +13,7 @@ subsystem panels a project needs to read and restore.
 
 import logging
 
+from PySide6.QtCore import QTimer
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -38,6 +39,22 @@ logger = logging.getLogger(__name__)
 
 
 class MainWindow(QMainWindow):
+    RECORDING_LOCK_TOOLTIP = "Cannot commit changes while recording data"
+    """Shown on every control set_recording_active() locks: all Apply buttons (Trigger,
+    Configuration, Live FCI/PSD), the LLD/ULD checkboxes and regions, the g/n dividers, and the
+    Spectrum calibration."""
+
+    RECORD_BLINK_MS = 500
+    """Half-period of the red dot's blink while a recording is being written (on 0.5 s, off 0.5 s)."""
+
+    RECORD_TEXT = "RECORD"
+    RECORDING_TEXT = "RECORDING..."
+
+    RECORD_STYLE = "QCheckBox { font-weight: bold; padding: 2px 4px; }"
+    """The Record checkbox's base style: bold, at the Connect button's font size (set in __init__),
+    so the two read as a pair of run-level controls; set_recording_active() adds the red while a
+    session is writing. Captions are always upper case (RECORD_TEXT / RECORDING_TEXT)."""
+
     def __init__(self):
         super().__init__()
         logger.info("Constructing main window.")
@@ -63,6 +80,35 @@ class MainWindow(QMainWindow):
         self.btn_connect = QPushButton("Connect")
         self.btn_connect.setStyleSheet("font-weight: bold;")
         conn_layout.addWidget(self.btn_connect)
+
+        # Record sits right next to Connect, behind a vertical divider: connect, then decide
+        # whether this run is recorded -- the two actions in the order they are taken, side by side.
+        rec_divider = QFrame()
+        rec_divider.setFrameShape(QFrame.Shape.VLine)
+        rec_divider.setFrameShadow(QFrame.Shadow.Sunken)
+        conn_layout.addWidget(rec_divider)
+        # The dot is its own QLabel, not text baked into the checkbox: an emoji/dingbat glyph like
+        # "⬤" often renders from a color-emoji font that ignores the checkbox's own text color, so
+        # styling it through the checkbox's stylesheet alone left it black instead of red.
+        self.lbl_record_icon = QLabel("●")
+        self.lbl_record_icon.setStyleSheet("color: #e63030;")
+        # Hidden, not removed, while not recording, and it keeps its space so the Record
+        # checkbox does not shift sideways every time the dot blinks.
+        policy = self.lbl_record_icon.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self.lbl_record_icon.setSizePolicy(policy)
+        self.lbl_record_icon.setVisible(False)
+        conn_layout.addWidget(self.lbl_record_icon)
+        self._record_blink = QTimer(self)
+        self._record_blink.setInterval(self.RECORD_BLINK_MS)
+        self._record_blink.timeout.connect(
+            lambda: self.lbl_record_icon.setVisible(not self.lbl_record_icon.isVisible()))
+        self.chk_record = QCheckBox(self.RECORD_TEXT)
+        self.chk_record.setStyleSheet(self.RECORD_STYLE)
+        self.chk_record.setFont(self.btn_connect.font())  # same size as Connect/Disconnect
+        self.chk_record.setChecked(False)  # off at startup: recording is opted into per session
+        conn_layout.addWidget(self.chk_record)
+
         conn_layout.addStretch(1)
         self.lbl_status = QLabel("\U0001F534 Disconnected")
         conn_layout.addWidget(self.lbl_status)
@@ -85,20 +131,6 @@ class MainWindow(QMainWindow):
         divider.setFrameShape(QFrame.Shape.HLine)
         divider.setFrameShadow(QFrame.Shadow.Sunken)
         main_layout.addWidget(divider)
-
-        record_layout = QHBoxLayout()
-        # The dot is its own QLabel, not text baked into the checkbox: an emoji/dingbat glyph like
-        # "⬤" often renders from a color-emoji font that ignores the checkbox's own text color, so
-        # styling it through the checkbox's stylesheet alone left it black instead of red.
-        self.lbl_record_icon = QLabel("●")
-        self.lbl_record_icon.setStyleSheet("color: #e63030; font-size: 13px;")
-        record_layout.addWidget(self.lbl_record_icon)
-        self.chk_record = QCheckBox("Record")
-        self.chk_record.setStyleSheet("QCheckBox { font-weight: bold; padding: 2px 8px; }")
-        self.chk_record.setChecked(True)  # armed by default -- see AppController's Start confirm
-        record_layout.addWidget(self.chk_record)
-        record_layout.addStretch(1)
-        main_layout.addLayout(record_layout)
 
         self.tabs = QTabWidget()
         self.live_view = LiveView()
@@ -257,14 +289,22 @@ class MainWindow(QMainWindow):
         self.chk_record.setEnabled(enabled)
 
     def set_recording_active(self, active: bool) -> None:
-        """Makes recording state hard to miss: a colored dot + label on the checkbox itself, and a
-        tinted background across the whole window -- not just a label change buried in a status
-        bar the user has to go looking for."""
+        """Makes recording state hard to miss without restyling the whole window: the red dot next to
+        the checkbox blinks, and the checkbox reads "Recording..." in red. A tinted window
+        background was used before and dropped as unnecessary once the dot blinked."""
+        tip = self.RECORDING_LOCK_TOOLTIP
+        for panel in self.subsystem_panels().values():
+            panel.set_commit_locked(active, tip)
+        self.live_view.set_recording_lock(active, tip)
+        self.histogram_view.set_recording_lock(active, tip)
+        self.file_view.set_recording_lock(active, tip)
         if active:
-            self.central_widget.setStyleSheet("background-color: #e4fbfb;")
-            self.chk_record.setStyleSheet(
-                "QCheckBox { font-weight: bold; padding: 2px 8px; color: #ff5555; }"
-            )
+            self.lbl_record_icon.setVisible(True)
+            self._record_blink.start()
+            self.chk_record.setText(self.RECORDING_TEXT)
+            self.chk_record.setStyleSheet(self.RECORD_STYLE + " QCheckBox { color: #ff5555; }")
         else:
-            self.central_widget.setStyleSheet("")
-            self.chk_record.setStyleSheet("QCheckBox { font-weight: bold; padding: 2px 8px; }")
+            self._record_blink.stop()
+            self.lbl_record_icon.setVisible(False)
+            self.chk_record.setText(self.RECORD_TEXT)
+            self.chk_record.setStyleSheet(self.RECORD_STYLE)

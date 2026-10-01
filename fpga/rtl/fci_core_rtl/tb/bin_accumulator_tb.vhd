@@ -84,7 +84,7 @@ begin
   stim : process
 
     -- Magnitude assigned to bin k by the stimulus. k+1 so no bin is zero and every bin is
-    -- distinguishable from its neighbours -- a window off by one bin changes the sum.
+    -- distinguishable from its neighbors -- a window off by one bin changes the sum.
     function mag_of_bin(k : integer) return integer is
     begin
       return k + 1;

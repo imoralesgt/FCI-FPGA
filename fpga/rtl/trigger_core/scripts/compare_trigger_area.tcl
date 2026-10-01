@@ -36,7 +36,7 @@ set cfd  "$src/cfd_trigger.vhd"
 set wrap "$script_dir/area_wrappers.vhd"
 
 # Configurations are pinned by WRAPPERS with explicit generic maps, not by -generic: Vivado
-# silently ignored -generic for this entity (DLY_MAX=8 still synthesised 16 SRLs, identical to
+# silently ignored -generic for this entity (DLY_MAX=8 still synthesized 16 SRLs, identical to
 # the default), which made every variant come out the same and the comparison worthless.
 area_of "cross_level"    [list $pkg "$src/trigger.vhd"] trigger        {} $part
 area_of "cfd_prog_frac"  [list $pkg $cfd $wrap]         cfd_area_dsp   {} $part
