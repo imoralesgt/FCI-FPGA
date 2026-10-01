@@ -6741,6 +6741,18 @@ CLYC (RMD) at the Canfranc underground laboratory: intrinsic ²³⁸U/²³²Th a
 χ² true-shape fit that worked in one crystal only. Used in §10.14 for the chain line list, the
 activity comparison and the limits of shape-based α/n separation.
 
+**[Pozzi et al. 2026]** S.A. Pozzi, E. Schneider, E. Neely, R. Lopez, P. Feng, S.D. Clarke,
+"Organic glass scintillators: Material properties, performance characterization, and applications,"
+*Radiation Measurements* 193 (2026) 107627 (review).
+[doi:10.1016/j.radmeas.2026.107627](https://doi.org/10.1016/j.radmeas.2026.107627). The reference
+for the OGS work (issue following #26): Fig. 8 gives averaged Cf-252 neutron and gamma pulses
+(12 mm OGS cube + PMT, 0.75–1 V), with neutrons carrying 2.5–3.5× more delayed light than gammas
+over 20–400 ns after the peak, which is the time range the 50 Msps PSD gates and FCI windows have to
+cover. Also the published tail-to-total FoM benchmarks to compare against: 2.0 at 400–500 keVee
+(Carlson & Feng), > 1.0 at 100–1000 keVee for a 2.54 cm cylinder (Adamowski et al.), FoM vs energy
+against stilbene and EJ-276 (its Fig. 9, Warburton et al.), and the PSD-at-low-energy and
+recrystallization caveats.
+
 **Hardware documentation and data, not independently citable:**
 
 - **Scionix V12.7B30/SIP-E3-CLYC-X data sheet** — manufacturer-supplied gamma decay time (**5 µs**,
