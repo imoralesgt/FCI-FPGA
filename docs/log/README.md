@@ -51,7 +51,7 @@ notes logged on 2026-08-18; the repository starts on 2026-08-13.
 | 2026-09-29 – 10-01 | §10.18 | AmBe mode: ADC ceiling, overnight stability, low-energy FCI windows (PSA_w), ¹⁵²Eu + ²²Na calibration, 22.75 h reference run, DC-bin study |
 | 2026-09-30 – 10-01 | §10.16 | **AmBe operating mode** (−1280 V, ×5.9, to 5.7 MeVee): settings table |
 | 2026-10-01 – 10-02 | §11 | **OGS 2"×2" + PMT (issue #28)**: one-sample spike and the CFD; VGA ×1 and the coarse-gain clamp; afterpulses and slow pulses mask cosmic neutrons; FCI windows on the n/γ spectrum vs Nakhostin; range vs discrimination; −820 V calibration (6 MeVee); AFE flat to 20 MHz |
-| 2026-10-02 | §11.8 | Hardware pile-up flag in `trigger_core` (detector-agnostic, emulated on OGS and CLYC); per-buffer event tag; raw traces carry the FPGA timestamp (`trace_tagger`) |
+| 2026-10-02 | §11.8 | Hardware pile-up flag in `trigger_core` (detector-agnostic, emulated on OGS and CLYC, working on the board); per-buffer event tag; raw traces carry the FPGA timestamp (`trace_tagger`); the FSL `tget` hang found and fixed; boot no longer calibrates, `$DG` diagnostics on demand; GUI pile-up controls, plot markers, statistics, project and header support |
 
 ---
 
@@ -6865,7 +6865,7 @@ c0 −24.0, c1 3.004; LLD/ULD 0/6,200 keVee. Dividers to be set from the gamma b
 point.
 
 Open: a neutron source run (AmBe or Cf-252) for real n labels, acceptance and FoM; the hardware
-pile-up flag (§11.8) synthesized and checked on the board; the origin of the slow pulses; the DT range (14–16 MeVee), which
+statistical check of the pile-up flag (§11.8) against the offline afterpulse veto; the origin of the slow pulses; the DT range (14–16 MeVee), which
 at this dynamic range classifies only above ~4–5 MeVee; the 4.44 MeV calibration check.
 
 ### 11.8 A hardware pile-up flag, and a timestamp on every raw trace (2026-10-02)
@@ -6940,9 +6940,66 @@ whose timestamp repeats.
 inside the window flagged; the same pile-up after a shortened window not flagged; a frame held
 while a second trigger is accepted keeps its own timestamp, which the old latch would have
 failed). All 10 cases pass in xsim. `trace_tagger_tb` passes under random input gaps and
-backpressure for frames of 1–257 samples. The firmware builds and links at 53.8 KB (-Os). **Not
-yet done:** IP packaging, synthesis/implementation and the utilization report, and the on-board
-check against the offline vetoes.
+backpressure for frames of 1–257 samples.
+
+**On the board (2026-10-02).** Both cores packaged and implemented: +73 LUTs (17,076 → 17,149,
+82.45%) and +210 FFs for the flag, the per-buffer tag and the tagger together, below the ~110 LUT
+estimate. Timing is unchanged in kind (WNS −1.796 ns, the known pulse-shaper path). The flag works
+as designed: the OGS trace below (−820 V, threshold 182, window 380, pile-up threshold 1.00 ×
+trigger) was flagged by the hardware, and the GUI's replay of the test places the second pulse at
+sample 108. Still open: the statistical check of the flag against the offline afterpulse veto,
+now possible on fingerprint-free traces since every trace carries its event's timestamp.
+
+![OGS trace flagged as pile-up on the board: the shaded band is the pile-up window, the vertical
+marker the second pulse, the dashed line labeled "pile-up rise" the rise a second pulse must
+exceed](images/ogs_pileup_flag_trigger_tab.png)
+
+#### 11.8.1 A long-standing firmware hang, found on the way
+
+Bringing the new firmware up, the board went silent at the first scope `$RT` after every boot:
+no reply to any command until power-cycled. The same symptom had appeared before, rarely and
+unexplained (2026-09-28, and 2026-10-02 11:10 on the old firmware). With the debugger, the
+MicroBlaze could not even be halted: "Stalled on FSL access" at the `tget` in
+`fsl1_get_timeout()`, the raw-trace readout's bounded read. Its comment said `tget` returns with
+the carry set when no data is waiting; it does not. In the FSL get mnemonics `n` is non-blocking
+and `t` is *test*, so `tget` blocks, and the bound never ran. Any readout that received fewer
+words than it asked for therefore froze the processor and the command loop with it. Fixed by using
+`nget`; a short read now times out, resets the trace DMA, and prints the DMA status registers.
+The new firmware had only made the short read routine; the hang itself was always there.
+
+#### 11.8.2 Boot no longer calibrates; diagnostics on demand (`$DG`)
+
+The boot sequence used to calibrate the trigger threshold, wait up to 10 s for a live event and
+print a 2048-sample trace, ~12 s in all, into the UART the GUI reads as its command protocol. It
+also calibrated against whatever the detector saw: with a strong ¹⁵²Eu source near the OGS the
+noise-band scan reported 0..5472 instead of the usual 0..~200, because the source's pulses (about
+five per 41 µs frame) crossed every threshold it tried. Now the board runs only the register
+self-tests at power-on, arms the pipelines, and parks the threshold at full scale until the host
+configures the trigger. The calibration, live-event and raw-trace checks run on request, `$DG`,
+silently and with the trigger configuration restored afterwards; the calibrated threshold is
+reported, not applied. In the GUI they are the Trigger tab's **Autodiagnostics...** button,
+which shows the results and offers the threshold. CLI documentation section 2.7.
+
+#### 11.8.3 GUI
+
+- **Trigger tab** split into three panes: Capture (delay, depth), Trigger (threshold, edge, CFD),
+  Pile-Up (window, threshold, Reject pile-up).
+- **Pile-up threshold relative to the trigger threshold** (default 1.00 ×); the board receives
+  the absolute rise in counts, recomputed whenever the trigger threshold changes.
+- **Trace plot:** the window as a shaded band from the trigger sample; on a flagged trace, a
+  marker where the rise first exceeded the threshold; and a dashed "pile-up rise" line at that
+  size from the baseline, on the pulse's side. It marks a size, not a level: a second pulse is
+  flagged when it rises that much, wherever it starts.
+- **Reject pile-up** drops flagged events from the Live FCI/PSD plots, counts and LIST file.
+  **Advanced statistics** in both panels show the pile-up count and rate, under that panel's
+  LLD/ULD cut, rejected or not.
+- **Files and projects:** LIST gains a `pileup` column; RAW rows end in `fpga_timestamp,pileup`
+  (after the samples, so existing readers are unaffected) and repeated reads of one capture are no
+  longer logged twice. Both headers carry a `pileup:` line (window, threshold in counts and as a
+  multiple, rejection). The project stores the window and threshold with the trigger registers,
+  the multiple in a new `trigger` section, and the rejection setting with the Live tab's.
+- Smaller: Refresh/Apply at their natural size in every panel; the Configuration tab's three
+  panels side by side.
 
 ## Appendix: ILA note (2026-08-18)
 
