@@ -46,6 +46,18 @@
 #define TRIGGER_CORE_CFD_FRAC_OFFSET 0x10  /* [7:0], fraction = value/256 */
 #define TRIGGER_CORE_CFD_DELAY_OFFSET 0x14 /* [4:0], CFD delay in samples, 0..31 */
 
+/* Pile-up flag (capture_engine.vhd): after the pulse has started to fall, a rise of the signal over
+ * the CFD delay (s[n] - s[n-(D+1)]) above PU_THRESHOLD within PU_WINDOW samples of the trigger
+ * sets bit 63 of the frame's TUSER tag. A threshold separate from the trigger threshold, because
+ * CLYC's grainy slow tail jumps by several trigger thresholds per sample within one pulse. Window 0
+ * (the reset value) turns the flag off; a window longer than the capture is cut to it. */
+#define TRIGGER_CORE_PU_WINDOW_OFFSET 0x18    /* samples after the trigger, 0 = off, <= MAX_DEPTH */
+#define TRIGGER_CORE_PU_THRESHOLD_OFFSET 0x1C /* ADC counts, 0..32767, a magnitude */
+
+/* TUSER tag layout, as carried by every consumer's result timestamp and by the raw-trace tag. */
+#define TRIGGER_TAG_PILEUP_BIT 63
+#define TRIGGER_TAG_TS_MASK 0x7FFFFFFFFFFFFFFFULL
+
 #define TRIGGER_CORE_POLARITY_RISING 0x1
 #define TRIGGER_CORE_POLARITY_FALLING 0x0
 
@@ -352,6 +364,19 @@
  * samples per 32-bit memory word -- transfer length is still depth*2 bytes, but MM2S readback
  * only needs depth/2 getfslx() calls, each unpacked into two samples (see main.c). */
 #define RAW_TRACE_BRAM_BASEADDR 0xC2000000
+/* Second raw-trace buffer: axi_bram_ctrl_0's 8KB block, the former PSA_l/PSA_w result BRAM. That
+ * path (axi_dma_0) is gone from the block design -- fci_core's results come through its own FIFO
+ * now -- so the block is free, and axi_dma_1 already reaches it. Needed because trace_tagger
+ * appends RAW_TRACE_TAG_SAMPLES to every frame: two 2048-sample buffers filled the 8KB at
+ * RAW_TRACE_BRAM_BASEADDR exactly, leaving no room for the tag. One buffer per block now. */
+#define RAW_TRACE_BRAM_B_BASEADDR 0xC0000000
+#ifdef XPAR_AXI_DMA_0_BASEADDR
+#error "axi_dma_0's result BRAM is the second raw-trace buffer now; see RAW_TRACE_BRAM_B_BASEADDR"
+#endif
+
+/* Half-words trace_tagger (fpga/rtl/trace_tagger) appends to each raw-trace frame: the frame's
+ * 64-bit TUSER tag, least-significant half-word first. */
+#define RAW_TRACE_TAG_SAMPLES 4
 
 /* ---------------------------------------------------------------------------------------------
  * axi_timer_0 -- added for future use (calibrated wall-clock timing, per-event timestamps for

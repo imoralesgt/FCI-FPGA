@@ -132,6 +132,11 @@ static s32 psd_parameter_scaled(s32 energy_short, s32 energy_long) {
 }
 
 /** @brief See acquisition.h. */
+/* Timestamp part of a result's TUSER tag. Bit 63 is trigger_core's pile-up flag, not time: all
+ * three consumers carry the same tag for the same frame, so equality would survive it, but the
+ * "older" comparisons below would see a flagged event as the newest one and discard the others. */
+#define TS(t) ((t) & TRIGGER_TAG_TS_MASK)
+
 int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   PsdResult p;
   FciResult f;
@@ -153,28 +158,28 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
    * recovery below to three sides -- each pass discards every side sitting at the OLD minimum (a
    * snapshot taken before any of this pass's discards), which strictly reduces how far apart the
    * three sides are, so the loop terminates in a bounded number of passes. Timestamps come from a
-   * single free-running counter, so "older" is a plain comparison -- no wrap handling, since 64
-   * bits at 50 MHz lasts ~11,700 years. */
-  while (!(p.timestamp == f.timestamp && f.timestamp == sh.timestamp)) {
-    min_ts = p.timestamp;
-    if (f.timestamp < min_ts)
-      min_ts = f.timestamp;
-    if (sh.timestamp < min_ts)
-      min_ts = sh.timestamp;
+   * single free-running counter, so "older" is a plain comparison -- no wrap handling, since 63
+   * bits at 50 MHz last ~5,800 years. */
+  while (!(TS(p.timestamp) == TS(f.timestamp) && TS(f.timestamp) == TS(sh.timestamp))) {
+    min_ts = TS(p.timestamp);
+    if (TS(f.timestamp) < min_ts)
+      min_ts = TS(f.timestamp);
+    if (TS(sh.timestamp) < min_ts)
+      min_ts = TS(sh.timestamp);
 
-    if (p.timestamp == min_ts) {
+    if (TS(p.timestamp) == min_ts) {
       Psd_Discard(PSD_CORE_BASEADDR);
       stats->dropped_psd++;
       if (!Psd_Peek(PSD_CORE_BASEADDR, &p))
         return 0;
     }
-    if (f.timestamp == min_ts) {
+    if (TS(f.timestamp) == min_ts) {
       FciSink_Discard(FCI_SINK_BASEADDR);
       stats->dropped_fci++;
       if (!FciSink_Peek(FCI_SINK_BASEADDR, &f))
         return 0;
     }
-    if (sh.timestamp == min_ts) {
+    if (TS(sh.timestamp) == min_ts) {
       PulseShaper_Discard(PULSE_SHAPER_CORE_BASEADDR);
       stats->dropped_shaper++;
       if (!PulseShaper_Peek(PULSE_SHAPER_CORE_BASEADDR, &sh))
@@ -188,8 +193,8 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
 #else
   /* Resynchronize: whichever side is holding the older event has one the other side already lost,
    * so discard it and look again. */
-  while (p.timestamp != f.timestamp) {
-    if (p.timestamp < f.timestamp) {
+  while (TS(p.timestamp) != TS(f.timestamp)) {
+    if (TS(p.timestamp) < TS(f.timestamp)) {
       Psd_Discard(PSD_CORE_BASEADDR);
       stats->dropped_psd++;
       if (!Psd_Peek(PSD_CORE_BASEADDR, &p))
@@ -206,7 +211,8 @@ int Acq_PopPaired(AcqEvent *out, AcqStats *stats) {
   FciSink_Discard(FCI_SINK_BASEADDR);
 #endif
 
-  out->timestamp = p.timestamp;
+  out->timestamp = TS(p.timestamp);
+  out->pileup = (u32)(p.timestamp >> TRIGGER_TAG_PILEUP_BIT) & 1u;
   out->psa_l = f.psa_l;
   out->psa_w = f.psa_w;
   out->fci_scaled = FciSink_RatioScaled(&f);

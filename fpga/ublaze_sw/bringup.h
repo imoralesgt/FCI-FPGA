@@ -41,9 +41,31 @@ void Bringup_Run(void);
  * @param out_buf     Set to point at the trace's storage on success.
  * @param max_samples Caller's buffer/interest limit on sample count.
  * @param out_count   Set to the number of samples available, on success.
- * @return 1 on success, 0 if no capture has completed yet (out_buf and out_count left untouched).
+ * @param out_tag     Set to the frame's TUSER tag (bit 63 pile-up flag, bits 62:0 timestamp) when
+ *                    *out_tagged is 1, else 0.
+ * @param out_tagged  Set to 1 if the bitstream's trace_tagger delivered a tag with this frame.
+ * @return 1 on success, 0 if no capture has completed yet (outputs left untouched).
  */
-int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count);
+/** @brief Results of Bringup_Diagnostics(), reported by $DG. */
+typedef struct {
+  u32 failures;  /**< failed checks (calibration, live event, raw trace) */
+  s32 sigma;     /**< baseline noise, ADC counts; -1 if the calibration failed */
+  s32 threshold; /**< calibrated threshold (mean + 8 sigma), ADC counts; -1 if it failed. NOT applied */
+  u32 band_lo;   /**< noise band found by the threshold scan, ADC counts */
+  u32 band_hi;
+} BringupDiagResult;
+
+/**
+ * @brief On-demand diagnostics for $DG: threshold calibration, a live event through fci_core and a
+ *        raw-trace capture, run silently. Restores the trigger configuration afterwards, including
+ *        the threshold; the calibrated value is only reported. Takes up to ~15 s (it waits for real
+ *        events). Leaves the diagnostics' own events in the result FIFOs for the caller to clear.
+ * @param out Filled with the results.
+ */
+void Bringup_Diagnostics(BringupDiagResult *out);
+
+int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count, u64 *out_tag,
+                         u32 *out_tagged);
 
 /**
  * @brief Re-arms the raw-trace capture pipeline after the trigger's depth register changes.

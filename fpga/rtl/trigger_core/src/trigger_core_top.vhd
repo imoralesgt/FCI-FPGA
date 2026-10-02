@@ -1,5 +1,6 @@
--- Top level: cross-level trigger with pre-trigger delay-line lookback and a triggered-capture
--- AXI4-Stream output, sized/formatted to wire directly into fci_core's s_axis_data port.
+-- Top level: CFD trigger with pile-up rejector -- a constant-fraction discriminator with
+-- pre-trigger delay-line lookback, a double-buffered triggered-capture AXI4-Stream output sized to
+-- wire directly into fci_core's s_axis_data port, and a per-frame pile-up flag on TUSER.
 -- See fpga/rtl/trigger_core (project plan) for the full architecture rationale.
 library ieee;
 use ieee.std_logic_1164.all;
@@ -42,7 +43,8 @@ entity trigger_core_top is
     s_axis_tvalid : in  std_logic;
     s_axis_tready : out std_logic;
 
-    -- AXI4-Lite slave: threshold (0x00), polarity (0x04), delay (0x08), depth (0x0C).
+    -- AXI4-Lite slave: threshold (0x00), polarity (0x04), delay (0x08), depth (0x0C),
+    -- cfd_frac (0x10), cfd_delay (0x14), pu_window (0x18), pu_threshold (0x1C).
     s_axi_awaddr  : in  std_logic_vector(4 downto 0);
     s_axi_awvalid : in  std_logic;
     s_axi_awready : out std_logic;
@@ -65,8 +67,9 @@ entity trigger_core_top is
     m_axis_tdata  : out std_logic_vector(15 downto 0);
     m_axis_tkeep  : out std_logic_vector(1 downto 0);
     m_axis_tstrb  : out std_logic_vector(1 downto 0);
-    -- 64-bit event timestamp, held constant across every beat of a frame. See the timestamp
-    -- comment in the architecture body for why it travels in-band rather than in a register.
+    -- Event tag, held constant across every beat of a frame: bit 63 = pile-up flag, bits 62:0 =
+    -- timestamp. See the timestamp comment in the architecture body for why it travels in-band
+    -- rather than in a register.
     m_axis_tuser  : out std_logic_vector(63 downto 0);
     m_axis_tlast  : out std_logic;
     m_axis_tid    : out std_logic_vector(0 downto 0);
@@ -86,6 +89,9 @@ architecture rtl of trigger_core_top is
   signal depth     : std_logic_vector(clog2(MAX_DEPTH) - 1 downto 0);
   signal cfd_frac  : std_logic_vector(CFD_FRAC_BITS - 1 downto 0);
   signal cfd_delay : std_logic_vector(clog2(CFD_DLY_MAX - 1) - 1 downto 0);
+  signal pu_window : std_logic_vector(clog2(MAX_DEPTH) - 1 downto 0);
+  signal pu_thresh : std_logic_vector(ADC_WIDTH - 1 downto 0);
+  signal rise      : std_logic_vector(ADC_WIDTH downto 0);
 
   -- Raw ADC bus, registered with NO combinational logic in front of this flop -- confirmed against
   -- the sibling gamma-spectroscopy project (same board/ADC, same clk_adc/clk_dpp-equivalent
@@ -138,7 +144,6 @@ architecture rtl of trigger_core_top is
   signal adc_data_ob : std_logic_vector(ADC_WIDTH - 1 downto 0);
 
   signal ts_counter : unsigned(63 downto 0); -- free-running cycle count, the time reference
-  signal ts_latched : unsigned(63 downto 0); -- value at the trigger, held for the whole frame
 
   signal delayed_data : std_logic_vector(ADC_WIDTH - 1 downto 0);
   signal trigger_pulse : std_logic;
@@ -174,10 +179,11 @@ begin
   -- ~11,700 years, so wrap handling is not a case the firmware has to carry.
   --
   -- Latching at the trigger (not at the start of streaming) is what makes the value mean "when the
-  -- pulse crossed threshold" rather than "when the core got round to draining it". Holding it
-  -- until the next trigger is safe because this core is single-buffered: armed_o is only high in
-  -- IDLE, so exactly one frame is ever in flight.
-  m_axis_tuser <= std_logic_vector(ts_latched);
+  -- pulse crossed threshold" rather than "when the core got round to draining it". The latch is
+  -- per capture buffer, inside capture_engine: this core is double-buffered, so one global
+  -- register re-latched on every trigger let a later trigger overwrite the time of a frame still
+  -- waiting to stream. Bit 63 carries the pile-up flag instead of the counter's MSB; 63 bits at
+  -- 50 MHz still wrap only after ~5,800 years.
   m_axis_tid   <= (others => '0');
   m_axis_tdest <= (others => '0');
 
@@ -208,12 +214,8 @@ begin
     if rising_edge(clk_i) then
       if rstn_i = '0' then
         ts_counter <= (others => '0');
-        ts_latched <= (others => '0');
       else
         ts_counter <= ts_counter + 1;
-        if trigger_pulse = '1' then
-          ts_latched <= ts_counter;
-        end if;
       end if;
     end if;
   end process timestamp_counter;
@@ -226,7 +228,8 @@ begin
       CFD_DELAY_BITS => clog2(CFD_DLY_MAX - 1),
       -- Must track MAX_DEPTH: capture_engine's depth_i is clog2(MAX_DEPTH) wide, and this used to
       -- be hardcoded to 13 inside the register file, which pinned the whole core to MAX_DEPTH=4096.
-      DEPTH_BITS   => clog2(MAX_DEPTH)
+      DEPTH_BITS   => clog2(MAX_DEPTH),
+      PU_WINDOW_BITS => clog2(MAX_DEPTH)
     )
     port map (
       clk_i         => clk_i,
@@ -253,7 +256,9 @@ begin
       delay_o       => delay_sel,
       depth_o       => depth,
       cfd_frac_o    => cfd_frac,
-      cfd_delay_o   => cfd_delay
+      cfd_delay_o   => cfd_delay,
+      pu_window_o    => pu_window,
+      pu_threshold_o => pu_thresh
     );
 
   u_delay_line : entity work.delay_line
@@ -295,7 +300,8 @@ begin
       delay_i         => cfd_delay,
       frac_i          => cfd_frac,
       polarity_i      => polarity,
-      trigger_o       => trigger_pulse
+      trigger_o       => trigger_pulse,
+      rise_o          => rise
     );
 
   u_capture_engine : entity work.capture_engine
@@ -310,6 +316,10 @@ begin
       trigger_i       => trigger_pulse,
       armed_o         => armed,
       delayed_data_i  => delayed_data,
+      ts_i            => std_logic_vector(ts_counter),
+      rise_i          => rise,
+      pu_window_i     => pu_window,
+      pu_threshold_i  => pu_thresh,
       buf_wr_en_o     => buf_wr_en,
       buf_wr_addr_o   => buf_wr_addr,
       buf_wr_data_o   => buf_wr_data,
@@ -319,6 +329,7 @@ begin
       m_axis_tdata_o  => m_axis_tdata,
       m_axis_tvalid_o => m_axis_tvalid,
       m_axis_tlast_o  => m_axis_tlast,
+      m_axis_tuser_o  => m_axis_tuser,
       m_axis_tready_i => m_axis_tready
     );
 

@@ -91,7 +91,7 @@ Returns one event matched across the FCI and PSD result FIFOs by its hardware ti
 | field | description |
 |---|---|
 | `valid` | 1 if an event follows; 0 if none was pending; −1 if the result path is not present in the loaded bitstream. No further values follow 0 or −1. |
-| `ts_lo`, `ts_hi` | 64-bit event timestamp, low word first, **unsigned decimal** |
+| `ts_lo`, `ts_hi` | 64-bit event tag, low word first, **unsigned decimal**: bits 62:0 are the trigger timestamp (50 MHz cycles), **bit 31 of `ts_hi` (bit 63) is the pile-up flag** (section 3.1). Mask it off before using the time. |
 | `psa_l`, `psa_w` | FCI window accumulators |
 | `fci` | FCI ratio × 10 000 |
 | `energy_short`, `energy_long` | PSD gate integrals, signed |
@@ -195,7 +195,7 @@ Each 28-byte record is seven little-endian 32-bit words, matching the MicroBlaze
 | offset | field | type |
 |---|---|---|
 | 0 | `ts_lo` | u32 |
-| 4 | `ts_hi` | u32 |
+| 4 | `ts_hi` | u32; bit 31 = pile-up flag (section 2.1) |
 | 8 | `psa_l` | u32 |
 | 12 | `psa_w` | u32 |
 | 16 | `energy_short` | s32 |
@@ -258,7 +258,7 @@ checksum -- see 2.5b for the full rationale), just a smaller per-record payload:
 | offset | field | type |
 |---|---|---|
 | 0 | `ts_lo` | u32 |
-| 4 | `ts_hi` | u32 |
+| 4 | `ts_hi` | u32; bit 31 = pile-up flag (section 2.1) |
 | 8 | `peak` | s32 |
 
 At 4 Mbaud, a 13-byte-on-the-wire record (12 payload + 1 tag) puts the ceiling around
@@ -268,11 +268,49 @@ throughput for its own sake.
 
 ### 2.6 Read Trace (`$RT`)
 
-`$RT [n]` — captures one raw trace.
+`$RT [n]` — returns the most recently captured raw trace.
 
-`!RT <count> <s0> <s1> ...`
+`!RT <count> <s0> <s1> ... [ts_lo ts_hi]`
 
 `count` is 0 if no trace could be captured. `n` defaults to 2048. Samples are signed.
+
+`ts_lo ts_hi` follow the samples when the bitstream tags raw traces (`trace_tagger`): the frame's
+event tag, in the same encoding as `$RV`'s (timestamp in bits 62:0, pile-up flag in bit 31 of
+`ts_hi`). It is the same value the frame's list-mode event carries, so a trace can be matched to its
+event, and a second `$RT` that returns the same capture is recognizable as a re-read. Detect it by
+the token count (`count + 3` tokens); a host that reads `count` samples and stops is unaffected.
+The FCI, PSD and shaper result records (`$RV`, `$RB`, `$RQ`, `$RA`) carry the same tag in their
+`ts_lo`/`ts_hi` fields.
+
+### 2.7 Diagnostics (`$DG`)
+
+`$DG` — runs the on-demand diagnostics: a threshold calibration (noise-band scan, then the baseline
+mean and σ from a captured trace), a live event through the FCI core, and a raw-trace capture.
+
+`!DG <failures> <sigma> <threshold> <band_lo> <band_hi>`
+
+| field | description |
+|---|---|
+| `failures` | number of failed checks; 0 = all passed |
+| `sigma` | baseline noise in ADC counts; −1 if the calibration failed |
+| `threshold` | calibrated trigger threshold, mean + 8σ, in ADC counts; −1 if it failed. **Reported, not applied** |
+| `band_lo`, `band_hi` | the noise band the threshold scan found, in ADC counts |
+
+These checks used to run at every power-on. They now run only on request, because they take
+~12 s, printed a 2048-sample trace into the UART the host reads as this protocol, and calibrated
+against whatever the detector saw at that moment: with a strong source near the detector the
+noise-band scan measures the source's pulses instead (2026-10-02: band 0..5472 against the usual
+0..~200).
+
+`$DG` disables acquisition first (as `$AD`) and clears the result FIFOs afterwards (as `$AR`), so
+the diagnostics' own events never reach the host as data. It restores the trigger configuration it
+found, threshold included. It **blocks for up to ~15 s** (it waits for real events), so the host
+must use a longer reply timeout for this one command. Without a detector signal the live-event and
+raw-trace checks time out and count as failures.
+
+At power-on the board now runs only the register self-tests, arms the pipelines, and **parks the
+trigger threshold at full scale (32767)**: nothing triggers until the host sets the trigger, for
+example by applying a project, or applies the threshold `$DG` reports.
 
 ---
 
@@ -300,10 +338,23 @@ A get with no index returns every parameter of that subsystem in index order.
 | 3 | depth | 1 … 2048 | capture length in samples |
 | 4 | cfd_fraction | 1 … 255 | CFD fraction, as value/256; boots at **64** (= 1/4) |
 | 5 | cfd_delay | **4** … 31 | CFD delay in samples; boots at **24** |
+| 6 | pileup_window | 0 … 2048 | samples after the trigger in which a second pulse sets the pile-up flag; **0 = off** (boot value) |
+| 7 | pileup_threshold | 0 … 32767 | rise, in ADC counts (as `threshold`, but a magnitude whatever the polarity), that counts as a second pulse; boots at 0 (the flag is off anyway) |
 
-`$GT` returns **six** values on firmware built with the CFD trigger. Firmware predating the CFD
-returns four; a host that must work with both should treat indices 4 and 5 as optional rather than
-assuming the length.
+`$GT` returns **eight** values on firmware with the pile-up flag, six on firmware with the CFD
+trigger only, and four on firmware predating the CFD; a host that must work with all of them should
+treat indices 4 to 7 as optional rather than assuming the length.
+
+**Pile-up flag.** After the trigger, once the pulse has started to fall, the core watches the
+signal's rise over the CFD delay, `s[n] - s[n-(cfd_delay+1)]` (sign-flipped for negative pulses).
+A rise above `pileup_threshold` within `pileup_window` samples of the trigger sets bit 63 of the
+frame's tag, which every result record and the raw-trace tag carry (sections 2.1 and 2.6). The
+window is cut to the capture: it ends at most a few samples past the end of the frame.
+`pileup_threshold` is separate from `threshold` on purpose: a scintillator with a grainy slow tail
+(CLYC) rises by several trigger thresholds from one sample to the next within a single pulse.
+About twice the trigger threshold flagged 0.02% (OGS) and 0.25% (CLYC) of clean events in offline
+emulation, while catching more than 90% of second pulses above that size (project log, section
+11).
 
 The trigger is a **constant-fraction discriminator**, not a cross-level comparator. A level trigger
 fires at a time that depends on pulse amplitude, and since the capture window is anchored to the
@@ -432,3 +483,5 @@ $ST 2 1                 !XX 1
 | Version | Description | Author | Date |
 |---|---|---|---|
 | 1.0 | Initial release. | I. Morales | 2026/08/26 |
+| 1.1 | Pile-up flag: `$ST`/`$GT` indices 6–7, bit 63 of every event tag; `$RT` appends the frame's tag. | I. Morales | 2026/10/02 |
+| 1.2 | `$DG` on-demand diagnostics; boot no longer calibrates, and parks the threshold. | I. Morales | 2026/10/02 |

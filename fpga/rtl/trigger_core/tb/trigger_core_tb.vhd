@@ -385,6 +385,53 @@ begin
     variable guard_d : integer;
     variable ok_d    : boolean;
 
+    -- Event tag scenario (pile-up flag + per-buffer timestamp).
+    constant DEPTH_T : integer := 64;
+    type int_arr_t is array (0 to 2) of integer;
+    variable onset_t  : int_arr_t;          -- tb cycle count at each pulse's leading step
+    variable flag_t   : std_logic_vector(0 to 2);
+    variable ts_t     : int_arr_t;
+    variable cyc_t    : integer := 0;
+    variable frame_t  : integer;
+    variable guard_t  : integer;
+    variable ok_t     : boolean;
+
+    -- One synthetic pulse: zero baseline, a step to 1000 held 8 samples, then a linear decay of
+    -- 20 per sample. pile_at >= 0 adds a second pulse of 500 starting pile_at samples into the
+    -- decay, decaying at the same rate. With the CFD delay at 4 the rise test measures
+    -- s[n] - s[n-5]: -100 on the plain decay, +400 at the second pulse's edge.
+    procedure drive_pulse(pile_at : integer; variable onset : out integer) is
+      variable v1, v2 : integer;
+    begin
+      adc_data_i <= ob_to_2c(0);
+      for i in 0 to 29 loop
+        wait until rising_edge(clk_i);
+        cyc_t := cyc_t + 1;
+      end loop;
+      onset := cyc_t;
+      for i in 0 to 79 loop
+        if i < 8 then
+          v1 := 1000;
+        else
+          v1 := 1000 - 20 * (i - 7);
+          if v1 < 0 then
+            v1 := 0;
+          end if;
+        end if;
+        v2 := 0;
+        if pile_at >= 0 and i >= 8 + pile_at then
+          v2 := 500 - 20 * (i - 8 - pile_at);
+          if v2 < 0 then
+            v2 := 0;
+          end if;
+        end if;
+        adc_data_i <= ob_to_2c(v1 + v2);
+        wait until rising_edge(clk_i);
+        cyc_t := cyc_t + 1;
+      end loop;
+      adc_data_i <= ob_to_2c(0);
+    end procedure;
+
   begin
     rstn_i <= '0';
     for i in 0 to 4 loop
@@ -492,6 +539,100 @@ begin
       report "  Test 'double buffering' FAILED" severity error;
     end if;
     wait until rising_edge(clk_i);
+
+    ---------------------------------------------------------------------------
+    -- Event tag: TUSER = {pile-up flag, timestamp}, latched per capture buffer.
+    --   frame 0: clean pulse                       -> flag 0
+    --   frame 1: second pulse 10 samples into the decay, window 64 -> flag 1
+    --   frame 2: same pile-up, window 8 (ends before it)           -> flag 0
+    -- Frames 0 and 1 are both captured before either drains (tready held low), so frame 1's
+    -- trigger is accepted while frame 0 waits to stream: frame 0 must still leave with its own
+    -- time. With the old single global latch it left with frame 1's. Timestamp differences must
+    -- equal the stimulus onset differences exactly, since every pulse has the same shape and so
+    -- the same trigger latency.
+    report "=== Test: event tag (pile-up flag, per-buffer timestamp) ===";
+    test_count <= test_count + 1;
+    ok_t := true;
+
+    m_axis_tready <= '0';
+    axi_write(0, 100);
+    axi_write(4, 1);
+    axi_write(8, 4);
+    axi_write(12, DEPTH_T);
+    axi_write(16, 128);
+    axi_write(20, 4);
+    axi_write(24, 64);   -- pile-up window
+    axi_write(28, 300);  -- pile-up threshold
+    -- Drain anything the reconfiguration itself fired (see run_test), then hold the output.
+    m_axis_tready <= '1';
+    for i in 0 to 2 * DEPTH_T loop
+      wait until rising_edge(clk_i);
+    end loop;
+    m_axis_tready <= '0';
+
+    cyc_t := 0;
+    drive_pulse(-1, onset_t(0));
+    drive_pulse(10, onset_t(1));
+
+    -- Both frames are now held (tready low). Drain them, recording each one's tag.
+    m_axis_tready <= '1';
+    guard_t := 0;
+    frame_t := 0;
+    while frame_t < 2 and guard_t < 8 * DEPTH_T loop
+      wait until rising_edge(clk_i);
+      guard_t := guard_t + 1;
+      if m_axis_tvalid = '1' and m_axis_tlast = '1' then
+        flag_t(frame_t) := m_axis_tuser(63);
+        ts_t(frame_t)   := to_integer(unsigned(m_axis_tuser(30 downto 0)));
+        frame_t := frame_t + 1;
+      end if;
+    end loop;
+
+    -- Frame 2: same pile-up, window shortened to end before it.
+    axi_write(24, 8);
+    m_axis_tready <= '0';
+    cyc_t := 0;
+    drive_pulse(10, onset_t(2));
+    m_axis_tready <= '1';
+    guard_t := 0;
+    flag_t(2) := 'X';
+    while guard_t < 8 * DEPTH_T loop
+      wait until rising_edge(clk_i);
+      guard_t := guard_t + 1;
+      if m_axis_tvalid = '1' and m_axis_tlast = '1' then
+        flag_t(2) := m_axis_tuser(63);
+        exit;
+      end if;
+    end loop;
+
+    if frame_t /= 2 then
+      ok_t := false; report "  FAIL: expected 2 held frames, drained " & integer'image(frame_t);
+    end if;
+    if flag_t(0) /= '0' then
+      ok_t := false; report "  FAIL: clean pulse flagged as pile-up";
+    end if;
+    if flag_t(1) /= '1' then
+      ok_t := false; report "  FAIL: pile-up inside the window not flagged";
+    end if;
+    if flag_t(2) /= '0' then
+      ok_t := false; report "  FAIL: pile-up after the window flagged";
+    end if;
+    if ts_t(1) - ts_t(0) /= onset_t(1) - onset_t(0) then
+      ok_t := false;
+      report "  FAIL: timestamp difference " & integer'image(ts_t(1) - ts_t(0))
+             & " /= onset difference " & integer'image(onset_t(1) - onset_t(0))
+             & " (a later trigger overwrote a pending frame's timestamp?)";
+    end if;
+    if ok_t then
+      report "  PASS (flags " & std_logic'image(flag_t(0)) & std_logic'image(flag_t(1))
+             & std_logic'image(flag_t(2)) & ", timestamp step " & integer'image(ts_t(1) - ts_t(0))
+             & " cycles)";
+    else
+      fail_count <= fail_count + 1;
+      report "  Test 'event tag' FAILED" severity error;
+    end if;
+    axi_write(24, 0);
+    m_axis_tready <= '1';
 
     ---------------------------------------------------------------------------
     report "=== Test: reconfiguration hazard (no spurious capture) ===";

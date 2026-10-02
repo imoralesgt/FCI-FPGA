@@ -24,7 +24,8 @@ class AcqEvent:
     """One paired result, from `$RV` or one element of a `$RB` batch (CLI doc section 2.1/2.5)."""
 
     timestamp: int
-    """64-bit free-running cycle counter value, combined from the wire's ts_lo/ts_hi halves."""
+    """Free-running cycle counter value at the trigger (63 bits), combined from the wire's
+    ts_lo/ts_hi halves with ts_hi's bit 31 -- the pile-up flag -- masked off."""
     psa_l: int
     psa_w: int
     fci: float
@@ -42,6 +43,10 @@ class AcqEvent:
     units, independent of the PSD gates -- the spectroscopy energy channel. Sent raw, not scaled
     like fci/psd. Field name/position/type are unchanged from the raw single-sample peak this
     replaced; only the hardware source did."""
+    pileup: bool = False
+    """trigger_core saw a second pulse within its pile-up window (TriggerConfig.pileup_window)
+    after this one. Carried in bit 31 of the wire's ts_hi; always False on a bitstream without
+    the pile-up flag or with the window set to 0."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +62,7 @@ class AmpEvent:
 
     timestamp: int
     peak: int
+    pileup: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +108,30 @@ class TraceResult:
     """`$RT` -- one captured raw trace (CLI doc section 2.6). Samples are signed."""
 
     samples: list[int]
+    timestamp: int | None = None
+    """The frame's trigger timestamp, the same value its list-mode event carries -- so a trace can
+    be matched to its event, and a re-read of the same capture recognized. None if the bitstream
+    does not tag raw traces."""
+    pileup: bool | None = None
+    """The frame's pile-up flag (see AcqEvent.pileup). None if the bitstream does not tag traces."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiagResult:
+    """`$DG` -- the on-demand diagnostics (CLI doc section 2.7): threshold calibration, a live event
+    through fci_core, and a raw-trace capture. The device restores its trigger configuration
+    afterwards; `threshold` is a suggestion, not applied."""
+
+    failures: int
+    """Failed checks; 0 = all passed."""
+    sigma: int | None
+    """Baseline noise, ADC counts. None if the calibration failed."""
+    threshold: int | None
+    """Calibrated threshold, mean + 8 sigma, ADC counts. None if the calibration failed."""
+    band_lo: int
+    band_hi: int
+    """Noise band the threshold scan found, ADC counts. A band far wider than a few sigma means
+    real pulses were arriving fast enough to look like noise (a source near the detector)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +154,15 @@ class TriggerConfig:
     fixed n = delay/(1 - fraction) while the arming threshold is crossed later for smaller pulses,
     so pulses below roughly `threshold * rise * (1 - fraction) / cfd_delay` never arm in time and
     produce no trigger at all. A larger delay lowers that floor. None on pre-CFD firmware."""
+    pileup_window: int | None = None
+    """Samples after the trigger (0..2048, the capture's maximum depth) in which a second pulse sets the event's pile-up flag;
+    0 turns the flag off, and a window longer than the capture is cut to it. None on firmware
+    without the pile-up flag."""
+    pileup_threshold: int | None = None
+    """Rise, in ADC counts like `threshold` (0..32767, a magnitude whatever the polarity), that counts as a second pulse: the signal's rise over the
+    CFD delay, s[n] - s[n-(cfd_delay+1)], after the first pulse has started to fall. Separate from
+    the trigger threshold because a scintillator with a grainy slow tail (CLYC) rises by several
+    trigger thresholds from sample to sample within one pulse. None on firmware without it."""
 
 
 @dataclass(frozen=True, slots=True)

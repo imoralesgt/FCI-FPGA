@@ -16,8 +16,8 @@ import re
 import time
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QTimer, Slot
-from PySide6.QtWidgets import QFileDialog, QMessageBox
+from PySide6.QtCore import QObject, QThread, QTimer, Slot
+from PySide6.QtWidgets import QFileDialog, QMessageBox, QProgressDialog
 
 import config
 from acquisition_worker import AcquisitionWorker, RemoteFciClient
@@ -83,6 +83,7 @@ class AppController(QObject):
         self.view.scope_view.stop_clicked.connect(self.scope_stop)
         self.view.scope_view.single_clicked.connect(self.scope_single)
         self.view.scope_view.calibrate_clicked.connect(self.open_calibration_wizard)
+        self.view.scope_view.diagnostics_clicked.connect(self.run_autodiagnostics)
         self.view.live_view.fom_wizard_clicked.connect(self.open_fom_wizard)
         self.view.live_view.cuts_changed.connect(self._on_cuts_changed)
         self.view.live_view.dividers_changed.connect(self._on_dividers_changed)
@@ -280,6 +281,9 @@ class AppController(QObject):
             panel.set_values(values)
         self.view.histogram_view.apply_project_settings(project.spectrum)
         self.view.live_view.apply_project_settings(project.live)
+        # After the device values: the ratio re-derives the pile-up counts from the trigger
+        # threshold just loaded.
+        self.view.scope_view.apply_project_settings(project.trigger)
         prefix = project.acquisition.get("file_prefix")
         if prefix:
             self.view.txt_file_prefix.setText(str(prefix))
@@ -300,6 +304,7 @@ class AppController(QObject):
                 device[key] = values
         project.spectrum.update(self.view.histogram_view.project_settings())
         project.live.update(self.view.live_view.project_settings())
+        project.trigger.update(self.view.scope_view.project_settings())
         project.acquisition.update({
             "file_prefix": self.view.txt_file_prefix.text(),
             "autoincrement": self.view.chk_autoincrement.isChecked(),
@@ -320,7 +325,8 @@ class AppController(QObject):
         if device is None:
             return [], []
         diffs, missing = [], []
-        for name in ("threshold", "rising", "delay", "depth", "cfd_fraction", "cfd_delay"):
+        for name in ("threshold", "rising", "delay", "depth", "cfd_fraction", "cfd_delay",
+                     "pileup_window", "pileup_threshold"):
             dev = getattr(device, name, None)
             if dev is None:
                 continue  # not in this bitstream
@@ -791,6 +797,7 @@ class AppController(QObject):
         # (LiveView.filter_for_recording()). Changes during recording are appended as notes --
         # see _on_cuts_changed().
         lines.append(self.view.live_view.cut_settings_line())
+        lines.append(self.view.scope_view.pileup_settings_line())
         # g/n dividers, host state as well: they decide the class_fci/class_psd columns.
         lines.append(self.view.live_view.divider_settings_line())
         return lines
@@ -888,6 +895,70 @@ class AppController(QObject):
             logger.warning(f"calibration apply failed: {e}")
             QMessageBox.warning(self.view, "Apply Failed", f"Could not write trigger config: {e}")
             return
+        self.view.scope_view.trigger_config.refresh()
+
+    def run_autodiagnostics(self) -> None:
+        """Trigger tab's Autodiagnostics button: $DG on a worker thread behind a busy dialog (it
+        blocks up to ~15 s on the device), then the results, with the calibrated threshold offered
+        for the Trigger panel. Refused while acquiring or recording: $DG stops acquisition and its
+        own events would otherwise interleave with real data."""
+        if self.config_client is None or not self.is_connected:
+            return
+        if self._live_acq_running or self.csv_logger is not None:
+            QMessageBox.information(self.view, "Autodiagnostics",
+                                    "Stop Live FCI/PSD acquisition and recording first.")
+            return
+
+        client = self.config_client
+        box: dict = {}
+
+        class _Run(QThread):
+            def run(self_inner) -> None:
+                try:
+                    box["result"] = client.run_diagnostics()
+                except FciError as e:
+                    box["error"] = e
+
+        progress = QProgressDialog("Running device diagnostics (up to ~15 s)...", None, 0, 0,
+                                   self.view)
+        progress.setWindowTitle("Autodiagnostics")
+        progress.setMinimumDuration(0)
+        progress.setCancelButton(None)
+        thread = _Run()
+        thread.finished.connect(progress.close)
+        if self.worker is not None:
+            self.worker.suspend_batch_polling()
+        try:
+            thread.start()
+            progress.exec()
+            thread.wait()
+        finally:
+            if self.worker is not None:
+                self.worker.resume_batch_polling()
+
+        if "error" in box:
+            logger.warning(f"autodiagnostics failed: {box['error']}")
+            QMessageBox.warning(self.view, "Autodiagnostics", f"Diagnostics failed: {box['error']}")
+            return
+        r = box["result"]
+        logger.info(f"autodiagnostics: {r}")
+        lines = [f"Checks failed: {r.failures}" + ("" if r.failures else " (all passed)"),
+                 f"Noise band: {r.band_lo}..{r.band_hi} ADC counts"]
+        if r.sigma is None:
+            lines.append("Threshold calibration failed.")
+            QMessageBox.warning(self.view, "Autodiagnostics", "\n".join(lines))
+            return
+        lines += [f"Baseline noise: sigma = {r.sigma} ADC counts",
+                  f"Calibrated threshold (8 sigma): {r.threshold} ADC counts",
+                  "", "The trigger settings were restored. Apply the calibrated threshold?"]
+        reply = QMessageBox.question(self.view, "Autodiagnostics", "\n".join(lines),
+                                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                     QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                client.set_trigger(threshold=r.threshold)
+            except FciError as e:
+                QMessageBox.warning(self.view, "Apply Failed", f"Could not write the threshold: {e}")
         self.view.scope_view.trigger_config.refresh()
 
     def open_fom_wizard(self) -> None:

@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QGridLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QPushButton,
     QScrollArea,
@@ -100,6 +101,15 @@ class Field:
     dataclass value stays a plain integer cycle count either way -- this only changes what the
     control DISPLAYS, matching the module's config values keep the wire unit convention (see
     fci_api/types.py's own module docstring)."""
+    hidden: bool = False
+    """Kept as a full field -- refreshed, applied, project-saved -- but not shown: another control
+    (outside this panel's field list) edits it in different units. The pile-up threshold is the case:
+    the device takes counts, the Trigger tab shows a multiple of the trigger threshold."""
+    group: str | None = None
+    """Title of the pane this field is shown in. A panel whose fields name groups lays each group
+    out as its own titled box, side by side in order of first appearance, sharing one
+    Refresh/Apply -- the trigger's Capture / Trigger / Pile-Up split. Layout only: the panel is
+    still one subsystem, read and written as a whole."""
 
 
 class SubsystemPanel(QGroupBox):
@@ -115,10 +125,11 @@ class SubsystemPanel(QGroupBox):
     ScopeView's trigger dashed line) stay in sync without polling this panel itself."""
 
     def __init__(self, title: str, fields: list[Field], get_name: str, set_name: str,
-                 extra_rows: tuple[tuple[str, QWidget, str], ...] = ()):
+                 extra_rows: tuple[tuple, ...] = ()):
         """`extra_rows`: (label, widget, tooltip) rows placed after the device fields and before
         Refresh/Apply -- for HOST-side controls that belong beside this subsystem's settings but
-        are not registers (LiveView's g/n dividers). They are not in _controls, so refresh(),
+        are not registers (LiveView's g/n dividers). An optional fourth element names the
+        Field.group pane the row goes in. They are not in _controls, so refresh(),
         apply(), get_values()/set_values() and set_controls_enabled() never touch them: nothing is
         sent to the device, they stay usable while disconnected, and a project stores them
         separately (LiveView.project_settings())."""
@@ -156,16 +167,45 @@ class SubsystemPanel(QGroupBox):
         grid.setColumnStretch(0, 0)
         grid.setColumnStretch(1, 1)
         row = -1
+
+        # Grouped layout (Field.group): one titled pane per group, side by side on the first row;
+        # ungrouped fields, if any, follow underneath as before.
+        panes: dict[str, list] = {}  # group -> [pane grid, last row used]
+        group_order = [g for g in dict.fromkeys(
+            [f.group for f in fields] + [r[3] if len(r) > 3 else None for r in extra_rows])
+            if g is not None]
+        if group_order:
+            row += 1
+            pane_row = QHBoxLayout()
+            for g in group_order:
+                box = QGroupBox(g)
+                pg_grid = QGridLayout(box)
+                pg_grid.setColumnStretch(0, 0)
+                pg_grid.setColumnStretch(1, 1)
+                pane_row.addWidget(box, 1)
+                panes[g] = [pg_grid, -1]
+            grid.addLayout(pane_row, row, 0, 1, 2)
+
+        def place(group: str | None, lbl: QWidget, w: QWidget) -> None:
+            nonlocal row
+            if group is None:
+                row += 1
+                grid.addWidget(lbl, row, 0)
+                grid.addWidget(w, row, 1)
+            else:
+                pane = panes[group]
+                pane[1] += 1
+                pane[0].addWidget(lbl, pane[1], 0)
+                pane[0].addWidget(w, pane[1], 1)
+
         for f in fields:
             if f.mirrors is not None:
                 # No control of its own: _widget_for() routes it to the field it mirrors, which is
                 # the whole point -- one widget, so the pair cannot be given two values here.
                 continue
-            row += 1
             lbl = QLabel(f.label + ":")
             if f.tooltip:
                 lbl.setToolTip(f.tooltip)
-            grid.addWidget(lbl, row, 0)
             if f.is_bool:
                 w = QCheckBox()
             elif f.cycle_period_ns is not None:
@@ -179,25 +219,34 @@ class SubsystemPanel(QGroupBox):
             if f.tooltip:
                 w.setToolTip(f.tooltip)
             w.setEnabled(not f.read_only)
-            grid.addWidget(w, row, 1)
+            if f.hidden:
+                lbl.setVisible(False)
+                w.setVisible(False)
+                self._controls[f.name] = w
+                continue
+            place(f.group, lbl, w)
             self._controls[f.name] = w
 
-        for label, widget, tooltip in extra_rows:
-            row += 1
+        for extra in extra_rows:
+            label, widget, tooltip = extra[:3]
             lbl = QLabel(label + ":")
             if tooltip:
                 lbl.setToolTip(tooltip)
                 widget.setToolTip(tooltip)
-            grid.addWidget(lbl, row, 0)
-            grid.addWidget(widget, row, 1)
+            place(extra[3] if len(extra) > 3 else None, lbl, widget)
 
         btn_row = row + 1  # rows actually added, which is fewer than len(fields) when any mirror
         self.btn_refresh = QPushButton("Refresh")
         self.btn_apply = QPushButton("Apply")
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_apply.clicked.connect(self.apply)
-        grid.addWidget(self.btn_refresh, btn_row, 0)
-        grid.addWidget(self.btn_apply, btn_row, 1)
+        # Natural size, left-aligned, like the Spectrum tab's Run/Stop/Clear. In the grid's own
+        # columns Apply took the stretching value column's width and dwarfed Refresh.
+        btn_layout = QHBoxLayout()
+        btn_layout.addWidget(self.btn_refresh)
+        btn_layout.addWidget(self.btn_apply)
+        btn_layout.addStretch(1)
+        grid.addLayout(btn_layout, btn_row, 0, 1, 2)
 
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #c0392b;")
@@ -441,23 +490,33 @@ class SubsystemPanel(QGroupBox):
         self.refresh()
 
 
+TRACE_MAX_SAMPLES = 2048
+"""trigger_core's MAX_DEPTH in the block design: the Trigger's Depth maximum, and the real ceiling
+of every field counted along the captured trace -- the PSD gates and the pile-up window can never
+usefully extend past the trace itself, whatever their registers' raw width allows."""
+
 TRIGGER_FIELDS = [
-    Field("threshold", "Threshold", -32768, 32767,
-          tooltip="Signed ADC code that ARMS the discriminator. It decides whether an event is "
-                  "real; the CFD zero crossing decides when it happened."),
-    Field("rising", "Rising edge", is_bool=True,
-          tooltip="Trigger on the signal crossing threshold upward (checked) or downward."),
+    # Shown as three panes (Field.group): Capture | Trigger | Pile-Up, in that order.
     Field("delay", "Delay (samples)", 4, 256,
           tooltip="Pre-trigger delay. Minimum 4: the CFD pipeline is ~3 samples deep, so below "
                   "that the trigger point falls outside the captured window. Kept in sync with "
-                  "PSD's Pre-trigger automatically."),
-    Field("depth", "Depth (samples)", 1, 2048,
+                  "PSD's Pre-trigger automatically.",
+          group="Capture"),
+    Field("depth", "Depth (samples)", 1, TRACE_MAX_SAMPLES,
           tooltip="Capture length, also the window FCI and PSD see. Safe to change while running: "
                   "sample_framer owns the FFT's frame boundary and zero-pads a short capture up "
                   "to 2048, so FCI stays a well-defined transform of the samples that arrived "
                   "(and gets QUIETER, since padding zeros carry no noise). Keep PSD's pre-gate + "
                   "long gate inside this length, or those integrals run off the end of the "
-                  "trace."),
+                  "trace.",
+          group="Capture"),
+    Field("threshold", "Threshold (ADC counts)", -32768, 32767,
+          tooltip="Signed ADC code that ARMS the discriminator. It decides whether an event is "
+                  "real; the CFD zero crossing decides when it happened.",
+          group="Trigger"),
+    Field("rising", "Rising edge", is_bool=True,
+          tooltip="Trigger on the signal crossing threshold upward (checked) or downward.",
+          group="Trigger"),
     # optional/settable_when_none=False: pre-CFD firmware answers $GT with four fields, so
     # get_trigger() reports these two as None (deliberately tolerated rather than raising, so a
     # host can still drive an older bitstream). Without the flags, refresh() reached int(None) and
@@ -471,7 +530,8 @@ TRIGGER_FIELDS = [
           tooltip="Constant-fraction discriminator attenuation, as fraction/256. Default 64 = 1/4, "
                   "matching the register reset. With the delay below it, sets the zero crossing "
                   "at n = delay / (1 - fraction/256). Disabled if this bitstream predates the CFD "
-                  "trigger."),
+                  "trigger.",
+          group="Trigger"),
     Field("cfd_delay", "CFD delay (samples)", 4, 31, optional=True, settable_when_none=False,
           default=24,
           tooltip="CFD delay. Sets SENSITIVITY as well as timing: pulses smaller than about "
@@ -480,7 +540,38 @@ TRIGGER_FIELDS = [
                   "puts it near 1.25x threshold; 8 would put it at 3.75x. Minimum 4, for the same "
                   "reason as the pre-trigger Delay: below that the crossing at n = delay/(1-f) "
                   "falls inside the CFD's own ~3-sample pipeline. Disabled if this bitstream "
-                  "predates the CFD trigger."),
+                  "predates the CFD trigger.",
+          group="Trigger"),
+    # Optional for the same reason as the CFD pair: a bitstream without the pile-up flag answers
+    # $GT with six fields. Both values are detector-dependent, like the trigger threshold, so they
+    # are stored per project and checked against the device on connect (controllers.py).
+    # Max = the core's MAX_DEPTH (2048 in the block design): the window is counted on the capture
+    # write address, which never passes the depth, so a larger value would do nothing.
+    Field("pileup_window", "Pile-up window (samples)", 0, TRACE_MAX_SAMPLES, optional=True,
+          settable_when_none=False, default=0,
+          tooltip="Samples after the trigger in which a second pulse flags the event as pile-up "
+                  "(the `pileup` column; Live FCI/PSD can exclude flagged events). 0 turns the "
+                  "flag off. Cut to the capture: a window longer than Depth - Delay reaches at most "
+                  "a few samples past the end of the frame. Set it to cover the analysis windows "
+                  "that matter, e.g. the PSD long gate or the FCI frame.",
+          group="Pile-Up"),
+    # ADC counts like the trigger threshold, but a RISE, not a level: the jump of the signal over
+    # the CFD delay. So its range does not depend on the trigger threshold -- a second pulse can
+    # start below it or above it.
+    # Hidden: the Trigger tab shows it as a multiple of the trigger threshold (ScopeView's
+    # spin_pileup_ratio) and converts; this field carries the counts the device takes.
+    Field("pileup_threshold", "Pile-up threshold (ADC counts)", 0, 32767, optional=True,
+          settable_when_none=False, default=1000, hidden=True,
+          tooltip="Rise, in ADC counts like the trigger threshold, that counts as a second pulse: "
+                  "s[n] - s[n-(CFD delay+1)], tested once the first pulse has started to fall. A "
+                  "jump, not a level, so no horizontal line marks it: the trace plot shades the "
+                  "window instead, and marks where a flagged frame's rise crossed it. Separate "
+                  "from the trigger "
+                  "threshold, because a slow scintillator's tail is grainy: on CLYC it jumps by "
+                  "several trigger thresholds per sample within one pulse. About twice the trigger "
+                  "threshold flagged 0.02% (OGS) and 0.25% (CLYC) of clean events while catching "
+                  "90%+ of pile-ups above that size (project log, section 11).",
+          group="Pile-Up"),
 ]
 
 BLR_FIELDS = [
@@ -500,11 +591,6 @@ BLR_FIELDS = [
     Field("gate_open", "Gate open (RO)", is_bool=True, read_only=True,
           tooltip="Live gate-open flag (read-only)."),
 ]
-
-TRACE_MAX_SAMPLES = 2048
-"""Matches the Trigger's own Depth field's hardware max (trigger_core's MAX_DEPTH). A gate can
-never usefully extend past the captured trace itself, so this -- not the register's raw 16-bit
-width -- is the field's real ceiling."""
 
 PSD_FIELDS = [
     Field("pre_trigger", "Pre-trigger", 0, TRACE_MAX_SAMPLES,
@@ -590,17 +676,19 @@ class ConfigPanel(QWidget):
         scroll.setWidgetResizable(True)
         inner = QWidget()
         inner_layout = QVBoxLayout(inner)
+        # Side by side, like the Trigger tab's Capture / Trigger / Pile-Up panes.
+        panel_row = QHBoxLayout()
+        inner_layout.addLayout(panel_row)
 
         specs = [
             ("Baseline Restorer", BLR_FIELDS, "get_blr", "set_blr"),
             ("VGA", VGA_FIELDS, "get_vga", "set_vga"),
-            ("Pulse Shaper (may be absent from this bitstream)", SHAPER_FIELDS,
-             "get_shaper", "set_shaper"),
+            ("Pulse Shaper", SHAPER_FIELDS, "get_shaper", "set_shaper"),
         ]
         for title, fields, get_name, set_name in specs:
             panel = SubsystemPanel(title, fields, get_name, set_name)
             self.panels.append(panel)
-            inner_layout.addWidget(panel)
+            panel_row.addWidget(panel, 1)
         inner_layout.addStretch(1)
 
         self.shaper_config = next(p for p in self.panels if p.key == "shaper")

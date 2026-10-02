@@ -36,6 +36,18 @@
 
 static int g_fail_count = 0;
 
+/* Set while Bringup_Diagnostics() runs on behalf of $DG: the self-tests narrate to the console, but
+ * under the CLI the host reads that same UART as a strict one-reply-per-command protocol, so any
+ * text that is not the $DG reply would be taken for it. Every xil_printf() in this file goes
+ * through the gate below; the real function is still called (a function-like macro does not expand
+ * recursively). */
+static int g_quiet = 0;
+#define xil_printf(...)                                                                            \
+  do {                                                                                             \
+    if (!g_quiet)                                                                                  \
+      xil_printf(__VA_ARGS__);                                                                     \
+  } while (0)
+
 /* Trigger capture depth, in samples. HARD INTERFACE CONSTRAINT, not a tuning knob: fci_core's FFT
  * transforms exactly this many samples per event (FFT_LENGTH in fci_core_rtl_top.vhd), and
  * psd_core's gates are placed within the same frame. trigger_core streams exactly `depth` beats
@@ -238,14 +250,20 @@ static void print_psa(const char *label, u32 raw) {
  * possible -- see start_raw_trace_pipeline() for why this can't wait until "someone actually
  * wants a trace." ---------------------------------------------------------------------------- */
 
-/* axi_bram_ctrl_1 is a dedicated 8KB block (2048 words x 32-bit, confirmed in the exported .hwh)
- * just for these two double-buffers -- 2048 samples x 2 bytes x 2 buffers = 8192 bytes, exactly
- * filling it with no slack, which is fine since nothing else shares this BRAM. Also sets the size
- * of the local readout copy in test_raw_trace_capture() below (4KB, comfortably inside the now
- * 64KB microblaze_0_local_memory). */
+/* One 8KB BRAM block per buffer (axi_bram_ctrl_1 and axi_bram_ctrl_0, 2048 words x 32-bit each).
+ * Both buffers used to share axi_bram_ctrl_1 -- 2048 samples x 2 bytes x 2 = 8192 bytes, exactly
+ * full -- which left no room for the RAW_TRACE_TAG_SAMPLES trace_tagger now appends to every
+ * frame. Also sets the size of the local readout copy g_trace below. */
 #define RAW_TRACE_MAX_SAMPLES 2048
 #define RAW_TRACE_BUF_A (RAW_TRACE_BRAM_BASEADDR)
-#define RAW_TRACE_BUF_B (RAW_TRACE_BRAM_BASEADDR + RAW_TRACE_MAX_SAMPLES * 2)
+#define RAW_TRACE_BUF_B (RAW_TRACE_BRAM_B_BASEADDR)
+
+/* S2MM transfer length for a frame of `depth` samples. It MUST cover the tag too: a transfer armed
+ * shorter than the stream completes early, stops asserting tready, and wedges the lockstep
+ * broadcaster (see Bringup_ReconfigureRawTraceDepth()). Armed longer than the stream, as against a
+ * bitstream without trace_tagger, it simply completes on TLAST -- which service_dma1_event() uses
+ * to tell the two apart. */
+#define RAW_TRACE_ARM_BYTES(depth) (((depth) + RAW_TRACE_TAG_SAMPLES) * 2)
 
 static u32 g_raw_write_buf = RAW_TRACE_BUF_A; /* ISR-only */
 /* The depth axi_dma_1's S2MM channel is CURRENTLY armed for -- i.e. what the transfer that
@@ -258,6 +276,9 @@ static u32 g_raw_armed_depth = RAW_TRACE_MAX_SAMPLES; /* ISR-only */
 /* Published by the ISR once at least one capture has completed; 0 = none yet. */
 static volatile u32 g_raw_ready_buf = 0;
 static volatile u32 g_raw_ready_depth = 0;
+/* 1 if the published capture carries trace_tagger's tag after its samples. Decided per capture from
+ * the bytes S2MM actually received, so firmware runs unchanged on a bitstream without the tagger. */
+static volatile u32 g_raw_ready_tagged = 0;
 /* Total captures axi_dma_1 has ever completed -- lets callers detect "at least one *new* capture
  * happened since I last checked," which g_raw_ready_buf alone can't (it stays non-zero forever
  * once set). Used by set_trigger_threshold() below to wait out its own self-inflicted trigger. */
@@ -270,6 +291,9 @@ static void service_dma1_event(void) {
 
   u32 just_completed = g_raw_write_buf;
   u32 completed_depth = g_raw_armed_depth; /* what the transfer that JUST completed actually used */
+  /* Bytes actually received, read before the re-arm below overwrites the register: the full armed
+   * length when the tag arrived, depth*2 when the frame ended (TLAST) without one. */
+  u32 received = Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_LENGTH_OFFSET);
 
   u32 next_depth = Xil_In32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET);
   if (next_depth == 0 || next_depth > RAW_TRACE_MAX_SAMPLES)
@@ -279,10 +303,11 @@ static void service_dma1_event(void) {
    * double-buffer below. */
   g_raw_write_buf = (g_raw_write_buf == RAW_TRACE_BUF_A) ? RAW_TRACE_BUF_B : RAW_TRACE_BUF_A;
   g_raw_armed_depth = next_depth;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, next_depth * 2);
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES(next_depth));
 
   g_raw_ready_buf = just_completed;
   g_raw_ready_depth = completed_depth;
+  g_raw_ready_tagged = (received == RAW_TRACE_ARM_BYTES(completed_depth));
   g_raw_event_count++;
 }
 
@@ -404,7 +429,7 @@ static void start_raw_trace_pipeline(void) {
 
   g_raw_write_buf = RAW_TRACE_BUF_A;
   g_raw_armed_depth = depth;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES(depth));
 
   Intc_Init(INTC_DMA_1_S2MM_BIT, intc_isr, NULL);
 }
@@ -423,7 +448,7 @@ static void start_raw_trace_pipeline(void) {
 /* SIGNED. blr_core restores the baseline to zero and emits signed samples, so a quiet trace sits
  * around 0 and undershoot is genuinely negative. Reading these as unsigned would render every
  * below-baseline sample as ~65000 and turn the noise statistics into nonsense. */
-static s16 g_trace[RAW_TRACE_MAX_SAMPLES];
+static s16 g_trace[RAW_TRACE_MAX_SAMPLES + RAW_TRACE_TAG_SAMPLES];
 
 /**
  * @brief Recovers a stalled raw-trace FSL/MM2S transfer: resets axi_dma_1 and re-arms S2MM.
@@ -458,7 +483,7 @@ static void recover_raw_trace_pipeline(void) {
 
   g_raw_write_buf = RAW_TRACE_BUF_A;
   g_raw_armed_depth = depth;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, depth * 2);
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES(depth));
 
   microblaze_enable_interrupts();
 }
@@ -502,7 +527,7 @@ void Bringup_ReconfigureRawTraceDepth(u32 new_depth) {
 
   g_raw_write_buf = RAW_TRACE_BUF_A;
   g_raw_armed_depth = new_depth;
-  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, new_depth * 2);
+  DmaS2mm_ArmTransfer(AXI_DMA_1_BASEADDR, g_raw_write_buf, RAW_TRACE_ARM_BYTES(new_depth));
 
   microblaze_enable_interrupts();
 }
@@ -517,10 +542,18 @@ void Bringup_ReconfigureRawTraceDepth(u32 new_depth) {
  * @brief Non-blocking, bounded-retry read of one word from FSL stream 1 (the raw-trace MM2S
  *        stream).
  *
- * Uses the MicroBlaze tget instruction, which sets the carry flag rather than blocking when no
- * data is available, with a bounded retry count instead of a plain blocking getfslx.
+ * Uses nget -- the NON-BLOCKING get, which sets the carry flag rather than stalling when no data is
+ * available -- with a bounded retry count instead of a plain blocking getfslx.
  *
- * The tget and the carry-flag read are ONE inline asm block, not fsl.h's separate tgetfslx() +
+ * This used `tget`, on the belief that it was the non-blocking form. It is not: in the FSL get
+ * mnemonics `n` means non-blocking and `t` means test (fsl.h: FSL_NONBLOCKING is `n`), so `tget`
+ * BLOCKS until a word arrives and the retry bound never ran. Caught with the debugger on
+ * 2026-10-02: the CLI went silent on a $RT and xsct reported "Stalled on FSL access" at the tget
+ * in this function. Every earlier "the device stopped answering after a $RT/Single" hang (e.g.
+ * 2026-09-28, 2026-10-02 11:10) fits the same mechanism: a readout that received fewer words
+ * than it asked for waited forever, taking the whole command loop with it.
+ *
+ * The nget and the carry-flag read are ONE inline asm block, not fsl.h's separate ngetfsl() +
  * fsl_isinvalid() macros called back to back: those are two independent asm volatile statements
  * with no stated dependency between them, so the compiler is free to insert other code between
  * them (e.g. a register spill) that clobbers the carry flag before it's read -- especially at any
@@ -529,7 +562,7 @@ void Bringup_ReconfigureRawTraceDepth(u32 new_depth) {
 static int fsl1_get_timeout(u32 *out_word) {
   u32 word, invalid, spins = 0;
   do {
-    asm volatile ("tget\t%0,rfsl1\n\taddic\t%1,r0,0" : "=d" (word), "=d" (invalid));
+    asm volatile ("nget\t%0,rfsl1\n\taddic\t%1,r0,0" : "=d" (word), "=d" (invalid));
   } while (invalid && ++spins < RAW_TRACE_FSL_TIMEOUT_ITERS);
   if (invalid)
     return 0;
@@ -563,8 +596,13 @@ static int read_raw_trace(u32 buf_addr, u32 depth) {
   while (copied < depth) {
     u32 word;
     if (!fsl1_get_timeout(&word)) {
-      xil_printf("  [FAIL] read_raw_trace: FSL stream 1 stalled after %d/%d samples\r\n",
-                 (int)copied, (int)depth);
+      /* DMA status in the message: whether the MM2S read errored (bits 4..6) or simply never
+       * delivered says where the missing words went. */
+      xil_printf("  [FAIL] read_raw_trace: FSL stream 1 stalled after %d/%d samples "
+                 "(buf 0x%08x, MM2S_DMASR 0x%08x, S2MM_DMASR 0x%08x)\r\n",
+                 (int)copied, (int)depth, buf_addr,
+                 Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_MM2S_DMASR_OFFSET),
+                 Xil_In32(AXI_DMA_1_BASEADDR + AXI_DMA_S2MM_DMASR_OFFSET));
       recover_raw_trace_pipeline();
       return 0;
     }
@@ -595,7 +633,8 @@ static void print_raw_trace(u32 buf_addr, u32 depth) {
  * rather than arming a capture
  * and waiting for one: a $RT that blocked until the next trigger would stall the command interface
  * for however long the source takes to produce an event, which at background rates is seconds. */
-int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
+int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count, u64 *out_tag,
+                         u32 *out_tagged) {
   /* g_raw_ready_buf/g_raw_ready_depth are two separate volatile variables, updated together (but
    * not atomically from this reader's point of view) by service_dma1_event() -- the ISR. A brief
    * microblaze_disable_interrupts() window here was tried to make the pair consistent (the
@@ -615,20 +654,28 @@ int Bringup_CaptureTrace(const s16 **out_buf, u32 max_samples, u32 *out_count) {
    * assumed from either. */
   u32 addr = g_raw_ready_buf;
   u32 depth = g_raw_ready_depth;
+  u32 tagged = g_raw_ready_tagged;
+  u32 i;
+  u64 tag = 0;
 
-  if (addr == 0 || depth == 0 || out_buf == 0 || out_count == 0)
+  if (addr == 0 || depth == 0 || out_buf == 0 || out_count == 0 || out_tag == 0 || out_tagged == 0)
     return 0;
-  if (depth > max_samples)
-    depth = max_samples;
   if (depth > RAW_TRACE_MAX_SAMPLES)
     depth = RAW_TRACE_MAX_SAMPLES;
 
   /* Reads straight into g_trace, this file's own static storage -- see cli.h's CliTraceFn comment
-   * for why the caller gets a pointer into it rather than a copy. */
-  if (!read_raw_trace(addr, depth))
+   * for why the caller gets a pointer into it rather than a copy. The whole frame is read even
+   * when the caller wants fewer samples, because the tag follows the frame's last sample. */
+  if (!read_raw_trace(addr, tagged ? depth + RAW_TRACE_TAG_SAMPLES : depth))
     return 0;  /* stalled -- $RT reports this the same as "no capture pending" */
+  if (tagged) {
+    for (i = 0; i < RAW_TRACE_TAG_SAMPLES; i++)
+      tag |= (u64)(u16)g_trace[depth + i] << (16 * i);
+  }
   *out_buf = g_trace;
-  *out_count = depth;
+  *out_count = depth < max_samples ? depth : max_samples;
+  *out_tag = tag;
+  *out_tagged = tagged;
   return 1;
 }
 
@@ -703,6 +750,8 @@ static void report_raw_path_state(void) {
 #define PSD_PRE_GATE_SAMPLES 32
 #define BASELINE_SAMPLES 64 /* comfortably inside the TRIGGER_DELAY pre-trigger region */
 #define THRESHOLD_SIGMA_MULT 8
+/* Most positive 16-bit signed level, unreachable by any restored sample: the trigger is off. */
+#define TRIGGER_THRESHOLD_PARKED 32767
 
 /* SIGNED: a level on the zero-centred restored stream, so a small positive number in normal
  * operation rather than a large offset-binary code. */
@@ -714,6 +763,7 @@ static s32 g_calibrated_threshold; /* 0 until calibrate_threshold() succeeds */
  * threshold already uses. 0 means calibration has not run, and Acq_Configure() falls back to the
  * hardware reset default rather than deriving a threshold from a number it does not have. */
 static u32 g_last_sigma;
+static u32 g_band_lo, g_band_hi; /* last noise band found by calibrate_threshold(), for $DG */
 
 /** @brief Integer square root (binary digit-by-digit method), for baseline sigma from variance. */
 static u32 isqrt_u32(u32 v) {
@@ -839,7 +889,11 @@ static int calibrate_threshold(void) {
   xil_printf("-- threshold calibration (auto, %d sigma over baseline) --\r\n",
              THRESHOLD_SIGMA_MULT);
 
+  /* Depth through Bringup_ReconfigureRawTraceDepth(), not a bare register write: this now runs on
+   * demand ($DG) with the raw-trace DMA armed for whatever depth the user had, and a depth change
+   * the DMA does not know about is the documented way to wedge that pipeline. */
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DEPTH_OFFSET, CAPTURE_DEPTH);
+  Bringup_ReconfigureRawTraceDepth(CAPTURE_DEPTH);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_DELAY_OFFSET, TRIGGER_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_FRAC_OFFSET, CFD_FRACTION);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_DELAY_OFFSET, CFD_DELAY);
@@ -855,6 +909,8 @@ static int calibrate_threshold(void) {
   /* Band center is the baseline, to within the scan step -- a useful cross-check against the mean
    * computed from the trace below, since the two are measured completely differently. */
   u32 band_mid = (band_lo + band_hi) / 2;
+  g_band_lo = band_lo;
+  g_band_hi = band_hi;
   xil_printf("  [INFO] noise band spans thresholds %d..%d (center %d)\r\n", band_lo, band_hi,
              band_mid);
 
@@ -1380,7 +1436,11 @@ static void start_continuous_capture(void) {
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_FRAC_OFFSET, CFD_FRACTION);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_CFD_DELAY_OFFSET, CFD_DELAY);
   Xil_Out32(TRIGGER_CORE_BASEADDR + TRIGGER_CORE_POLARITY_OFFSET, TRIGGER_CORE_POLARITY_RISING);
-  set_trigger_threshold(g_calibrated_threshold); /* see calibrate_threshold() */
+  /* With no calibration at boot there is no measured threshold yet, and 0 would fire on every
+   * sample. Park at full scale instead: nothing triggers until the host configures the trigger
+   * (the GUI applies the project's settings on connect) or $DG calibrates it. */
+  set_trigger_threshold(g_calibrated_threshold != 0 ? g_calibrated_threshold
+                                                    : TRIGGER_THRESHOLD_PARKED);
 
   xil_printf("  [INFO] armed -- events now serviced by interrupt in the background\r\n");
 }
@@ -1412,14 +1472,14 @@ void Bringup_Init(void) {
    * fci_core the way an unarmed axi_dma_0 could. That failure mode is designed out rather than
    * scheduled around. */
 #endif
-  calibrate_threshold();      /* measures the live baseline and derives the threshold from it;
-                                * everything below depends on it, so it runs first */
-  test_live_event();          /* "prove it end-to-end" on the running interrupt pipeline */
-  test_raw_trace_capture();   /* reads back whatever the background pipeline above has captured
-                                * by now, rather than arming/waiting itself */
+  /* Threshold calibration, the live-event wait and the raw-trace dump no longer run here: they are
+   * the on-demand diagnostics ($DG, Bringup_Diagnostics()). At boot they cost ~12 s, printed a
+   * 2048-line trace into a UART the host may already be reading as the command protocol, and
+   * calibrated against whatever the detector saw at that moment -- a strong source near it turned
+   * the noise-band scan into a scan of source pulses (2026-10-02, band 0..5472). */
 
-  xil_printf("=== %s (%d failure%s) ===\r\n", g_fail_count == 0 ? "TEST PASSED" : "TEST FAILED",
-             g_fail_count, g_fail_count == 1 ? "" : "s");
+  xil_printf("=== register test %s (%d failure%s); run $DG for the full diagnostics ===\r\n",
+             g_fail_count == 0 ? "PASSED" : "FAILED", g_fail_count, g_fail_count == 1 ? "" : "s");
 
 #if VGA_BISECT_ENABLE
   test_vga_fine_bisect(); /* restores the correct gain and recalibrates before returning */
@@ -1611,4 +1671,47 @@ void Bringup_Run(void) {
   }
 #endif
   /* Unreachable: continuous capture runs until reset, no cleanup_platform()/return path. */
+}
+
+/**
+ * @brief See bringup.h. The on-demand diagnostics behind $DG: threshold calibration, a live event
+ *        through fci_core, and a raw-trace capture -- the checks that used to run at every boot.
+ *
+ * Runs silently (g_quiet), because the host is reading this UART as the command protocol. Leaves
+ * the trigger exactly as it found it, threshold included: the calibrated threshold is reported, not
+ * applied -- the host decides. The raw-trace DMA is re-armed for the restored depth, and the result
+ * FIFOs, which collected the diagnostics' own events, are the caller's to clear.
+ */
+void Bringup_Diagnostics(BringupDiagResult *out) {
+  const u32 b = TRIGGER_CORE_BASEADDR;
+  u32 thr = Xil_In32(b + TRIGGER_CORE_THRESHOLD_OFFSET);
+  u32 pol = Xil_In32(b + TRIGGER_CORE_POLARITY_OFFSET);
+  u32 dly = Xil_In32(b + TRIGGER_CORE_DELAY_OFFSET);
+  u32 dep = Xil_In32(b + TRIGGER_CORE_DEPTH_OFFSET);
+  u32 frac = Xil_In32(b + TRIGGER_CORE_CFD_FRAC_OFFSET);
+  u32 cfdd = Xil_In32(b + TRIGGER_CORE_CFD_DELAY_OFFSET);
+
+  g_quiet = 1;
+  g_fail_count = 0;
+  g_band_lo = g_band_hi = 0;
+  int calibrated = calibrate_threshold();
+  test_live_event();
+  test_raw_trace_capture();
+  g_quiet = 0;
+
+  out->failures = (u32)g_fail_count;
+  out->sigma = calibrated ? (s32)g_last_sigma : -1;
+  out->threshold = calibrated ? g_calibrated_threshold : -1;
+  out->band_lo = g_band_lo;
+  out->band_hi = g_band_hi;
+
+  /* Restore. Threshold last and through set_trigger_threshold(), which parks it first, so the
+   * restored shape cannot fire a capture against a half-restored configuration. */
+  Xil_Out32(b + TRIGGER_CORE_POLARITY_OFFSET, pol);
+  Xil_Out32(b + TRIGGER_CORE_DELAY_OFFSET, dly);
+  Xil_Out32(b + TRIGGER_CORE_CFD_FRAC_OFFSET, frac);
+  Xil_Out32(b + TRIGGER_CORE_CFD_DELAY_OFFSET, cfdd);
+  Xil_Out32(b + TRIGGER_CORE_DEPTH_OFFSET, dep);
+  Bringup_ReconfigureRawTraceDepth(dep);
+  set_trigger_threshold((s32)(s16)(thr & 0xFFFFu));
 }

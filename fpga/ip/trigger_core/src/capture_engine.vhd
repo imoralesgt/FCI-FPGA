@@ -30,6 +30,25 @@
 -- between two captures that are in flight at the same time. Latching it per buffer rather than
 -- once globally is what keeps a depth change from corrupting a trace already being streamed.
 --
+-- Each buffer also carries its own event tag (timestamp and pile-up flag), for the same reason and
+-- one more: the tag used to be a single register in the top level, re-latched on EVERY trigger
+-- pulse. A trigger arriving while a frame was still being captured or waiting to stream (accepted
+-- or not) overwrote the timestamp of the frame that had not yet gone out, so a frame could leave
+-- carrying a later event's time. Latching at acceptance, into the half being written, ties the
+-- tag to the frame it describes.
+--
+-- Pile-up flag
+-- ------------
+-- Set if a second pulse arrives within pu_window_i samples of the trigger. The detector is the
+-- rise of the signal over the CFD delay (rise_i, from cfd_trigger): after the first pulse has
+-- started to fall (rise < 0), a rise above pu_threshold_i means new light. The window is counted
+-- on the capture write pointer, which already counts samples since the trigger, so the flag needs
+-- no counter of its own; it is final when the capture completes, i.e. before the frame streams.
+-- Because the pointer stops at the end of the capture, a window longer than the capture is cut to
+-- it. The rise test is detector-agnostic where the CFD's own second zero crossing is not: on CLYC
+-- the grainy slow tail re-arms and re-crosses on about half of all clean events (project log,
+-- section 11).
+--
 -- BRAM cost: the address space doubles. At MAX_DEPTH=4096 and a 16-bit sample that is 4 RAMB36
 -- rather than 2. Setting MAX_DEPTH to 2048 -- still twice the 1024 actually used -- makes
 -- double-buffering BRAM-neutral, which matters on a device already at 81% BRAM.
@@ -67,6 +86,13 @@ entity capture_engine is
 
     delayed_data_i : in std_logic_vector(DATA_WIDTH - 1 downto 0);
 
+    -- Event tag inputs: the free-running timestamp, and the pile-up detector's rise signal and
+    -- parameters (see the header).
+    ts_i           : in std_logic_vector(63 downto 0);
+    rise_i         : in std_logic_vector(DATA_WIDTH downto 0);
+    pu_window_i    : in std_logic_vector(clog2(MAX_DEPTH) - 1 downto 0); -- 0 = flag off
+    pu_threshold_i : in std_logic_vector(DATA_WIDTH - 1 downto 0);
+
     -- One extra address bit versus the single-buffered version: the MSB selects the buffer half.
     buf_wr_en_o   : out std_logic;
     buf_wr_addr_o : out std_logic_vector(clog2(MAX_DEPTH - 1) downto 0);
@@ -78,6 +104,8 @@ entity capture_engine is
     m_axis_tdata_o  : out std_logic_vector(15 downto 0);
     m_axis_tvalid_o : out std_logic;
     m_axis_tlast_o  : out std_logic;
+    -- {pile-up flag, timestamp(62:0)} of the frame being streamed, constant across the frame.
+    m_axis_tuser_o  : out std_logic_vector(63 downto 0);
     m_axis_tready_i : in  std_logic
   );
 end entity capture_engine;
@@ -103,6 +131,12 @@ architecture rtl of capture_engine is
   -- and a write to it must not retroactively change the length of a trace already captured.
   type depth_arr_t is array (0 to 1) of unsigned(ADDR_WIDTH - 1 downto 0);
   signal depth_latch : depth_arr_t;
+
+  -- Per-buffer event tag; see the header.
+  type ts_arr_t is array (0 to 1) of std_logic_vector(62 downto 0);
+  signal ts_latch : ts_arr_t;
+  signal pu_flag  : std_logic_vector(1 downto 0);
+  signal fallen   : std_logic; -- the pulse being captured has started to fall
 
   -- STREAM read pipeline
   signal issue_addr  : unsigned(ADDR_WIDTH - 1 downto 0);
@@ -167,6 +201,7 @@ begin
     m_axis_tdata_o(15 downto DATA_WIDTH) <= (others => '0');
   end generate gen_pad;
   m_axis_tvalid_o <= m_valid;
+  m_axis_tuser_o  <= pu_flag(idx(rd_sel)) & ts_latch(idx(rd_sel));
   m_axis_tlast_o  <= '1' when (m_valid = '1' and fifo_last(rd_ptr) = '1') else '0';
 
   -- Issue gating. `occ` is what the FIFO will hold at the END of this cycle; a read issued now
@@ -197,6 +232,9 @@ begin
         cap_state <= C_IDLE;
         addr      <= (others => '0');
         wr_sel    <= '0';
+        ts_latch  <= (others => (others => '0'));
+        pu_flag   <= (others => '0');
+        fallen    <= '0';
       else
         case cap_state is
 
@@ -206,11 +244,25 @@ begin
             if trigger_i = '1' and full(idx(wr_sel)) = '0' then
               depth_latch(idx(wr_sel))
                 <= to_unsigned(clamp_depth_minus_1(to_integer(unsigned(depth_i))), ADDR_WIDTH);
+              ts_latch(idx(wr_sel)) <= ts_i(62 downto 0);
+              pu_flag(idx(wr_sel))  <= '0';
+              fallen    <= '0';
               addr      <= (others => '0');
               cap_state <= C_CAPTURE;
             end if;
 
           when C_CAPTURE =>
+            -- Pile-up flag. This half is not streamed until full() is set, so writing its flag
+            -- during the capture cannot disturb a frame on the way out.
+            if resize(addr, pu_window_i'length) < unsigned(pu_window_i) then
+              if signed(rise_i) < 0 then
+                fallen <= '1';
+              end if;
+              if fallen = '1' and signed(rise_i) > signed('0' & pu_threshold_i) then
+                pu_flag(idx(wr_sel)) <= '1';
+              end if;
+            end if;
+
             if addr = depth_latch(idx(wr_sel)) then
               -- Final sample written this cycle by the combinational write logic above. Hand the
               -- buffer over and move to the other half.

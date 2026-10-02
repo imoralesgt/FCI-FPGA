@@ -22,7 +22,9 @@
 
 /** @brief One pulse's paired FCI + PSD result -- this project's list-mode event record. */
 typedef struct {
-  u64 timestamp;    /**< trigger_core's 64-bit cycle count at the moment this pulse fired. */
+  u64 timestamp;    /**< trigger_core's cycle count at the moment this pulse fired (63 bits; the
+                      *   TUSER tag's bit 63 is split out into pileup). */
+  u32 pileup;       /**< 1 = trigger_core flagged a second pulse within its pile-up window. */
   /* FCI side */
   u32 psa_l;        /**< FCI numerator window accumulator. */
   u32 psa_w;        /**< FCI denominator window accumulator. */

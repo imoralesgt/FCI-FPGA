@@ -45,9 +45,12 @@
  * @param out_buf     Set to point at the trace's storage on success.
  * @param max_samples Caller's buffer/interest limit on sample count.
  * @param out_count   Set to the number of samples available, on success.
- * @return 1 on success, 0 if no trace could be captured (out_buf/out_count then untouched).
+ * @param out_tag     Set to the frame's TUSER tag (bit 63 pile-up flag, bits 62:0 timestamp).
+ * @param out_tagged  Set to 1 if *out_tag is valid (the bitstream appends the tag to raw traces).
+ * @return 1 on success, 0 if no trace could be captured (outputs then untouched).
  */
-typedef int (*CliTraceFn)(const s16 **out_buf, u32 max_samples, u32 *out_count);
+typedef int (*CliTraceFn)(const s16 **out_buf, u32 max_samples, u32 *out_count, u64 *out_tag,
+                          u32 *out_tagged);
 
 /**
  * @brief Registers the raw-trace provider $RT calls into.

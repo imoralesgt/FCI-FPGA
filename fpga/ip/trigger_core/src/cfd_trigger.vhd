@@ -62,7 +62,13 @@ entity cfd_trigger is
     polarity_i      : in  std_logic; -- 1 = positive-going pulses
     armed_i         : in  std_logic; -- capture engine ready, same meaning as trigger.vhd
 
-    trigger_o : out std_logic
+    trigger_o : out std_logic;
+
+    -- Rise of the pulse over the CFD delay, s[n] - s[n-(D+1)], sign-flipped for negative pulses
+    -- so a rising edge is always positive. Registered. Exported for capture_engine's pile-up flag:
+    -- a second pulse arriving on the first one's tail shows up as a rise, and the delayed sample
+    -- it needs is already here, so the flag costs one subtractor rather than a second delay line.
+    rise_o    : out std_logic_vector(DATA_WIDTH downto 0)
   );
 end entity cfd_trigger;
 
@@ -114,6 +120,17 @@ begin
   end generate gen_shift;
 
   cfd <= resize(delayed, DATA_WIDTH + 1) - resize(atten, DATA_WIDTH + 1);
+
+  rise_reg : process (clk_i)
+  begin
+    if rising_edge(clk_i) then
+      if polarity_i = '1' then
+        rise_o <= std_logic_vector(resize(sample, DATA_WIDTH + 1) - resize(delayed, DATA_WIDTH + 1));
+      else
+        rise_o <= std_logic_vector(resize(delayed, DATA_WIDTH + 1) - resize(sample, DATA_WIDTH + 1));
+      end if;
+    end if;
+  end process rise_reg;
 
   process (clk_i)
     variable crossed : boolean;

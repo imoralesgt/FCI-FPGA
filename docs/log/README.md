@@ -51,6 +51,7 @@ notes logged on 2026-08-18; the repository starts on 2026-08-13.
 | 2026-09-29 – 10-01 | §10.18 | AmBe mode: ADC ceiling, overnight stability, low-energy FCI windows (PSA_w), ¹⁵²Eu + ²²Na calibration, 22.75 h reference run, DC-bin study |
 | 2026-09-30 – 10-01 | §10.16 | **AmBe operating mode** (−1280 V, ×5.9, to 5.7 MeVee): settings table |
 | 2026-10-01 – 10-02 | §11 | **OGS 2"×2" + PMT (issue #28)**: one-sample spike and the CFD; VGA ×1 and the coarse-gain clamp; afterpulses and slow pulses mask cosmic neutrons; FCI windows on the n/γ spectrum vs Nakhostin; range vs discrimination; −820 V calibration (6 MeVee); AFE flat to 20 MHz |
+| 2026-10-02 | §11.8 | Hardware pile-up flag in `trigger_core` (detector-agnostic, emulated on OGS and CLYC); per-buffer event tag; raw traces carry the FPGA timestamp (`trace_tagger`) |
 
 ---
 
@@ -6864,8 +6865,84 @@ c0 −24.0, c1 3.004; LLD/ULD 0/6,200 keVee. Dividers to be set from the gamma b
 point.
 
 Open: a neutron source run (AmBe or Cf-252) for real n labels, acceptance and FoM; the hardware
-double-pulse and rise-time flags; the origin of the slow pulses; the DT range (14–16 MeVee), which
+pile-up flag (§11.8) synthesized and checked on the board; the origin of the slow pulses; the DT range (14–16 MeVee), which
 at this dynamic range classifies only above ~4–5 MeVee; the 4.44 MeV calibration check.
+
+### 11.8 A hardware pile-up flag, and a timestamp on every raw trace (2026-10-02)
+
+The offline vetoes of §11.3 have to move into the FPGA, in a form that serves organics *and* CLYC:
+one datapath for both families is the point of the project (§0). A slow-pulse (rise-time) flag was
+considered and dropped for that reason -- it would be tuned to the OGS -- so only a pile-up flag was
+built. LUTs are scarce, so the design reuses what the CFD trigger already computes.
+
+**Candidates, emulated bit-exactly on recorded traces.** Two trace sets with their own trigger
+settings: OGS at −820 V (threshold 163, CFD 224/4) and the AmBe-mode CLYC reference run of §10.18
+(threshold 280, CFD 128/4). Pile-ups were made by adding a second real event to a real trace at a
+random delay, so detection is measured against known truth and false flags on the untouched traces.
+
+| detector | reuses | clean events flagged |
+|---|---|---|
+| a second CFD zero crossing in the frame | the CFD's crossing and arming logic | OGS 0.4%; **CLYC ≈ 45%** |
+| one-sample rise > trigger threshold | the CFD's previous-sample register | OGS 0.3%; **CLYC 9–16%** |
+| rise over the CFD delay > its own threshold P | the CFD's delayed sample | see below |
+
+The first two fail on CLYC. Its slow component is grainy: photon statistics make the tail jump by
+200–300 counts from one sample to the next, which re-arms the CFD and re-crosses zero long after
+the pulse, and trips any rise test pinned to the trigger threshold. A test with its own threshold
+works on both, measured as `s[n] − s[n−(D+1)]` (the CFD's delayed copy, so no second delay line),
+armed once the pulse has started to fall (the same difference going negative), within a window W of
+the trigger. With P at twice the trigger threshold:
+
+| | clean events flagged | second pulse 2–5× trigger threshold caught | > 5× caught |
+|---|---|---|---|
+| OGS, P = 326, W = 180 | 0.02% | 90% | 99% |
+| CLYC, P = 560, W = 400 | 0.25% | 93% | 99.8% |
+
+Second pulses between one and two trigger thresholds are mostly missed (~7%), the price of the
+higher threshold. CLYC's few false flags are almost all on the largest primaries (8–14k counts),
+where the tail's graininess grows with amplitude; a threshold that scales with the peak would fix
+that for ~20 more LUTs and was left out.
+
+**Implementation.**
+- `cfd_trigger` exports the polarity-corrected, registered rise.
+- `capture_engine` evaluates it while capturing: its write pointer already counts samples since
+  the trigger, so the window needs no counter. The flag is final when the capture completes, before
+  the frame streams.
+- Two registers in the free slots of the trigger map: `pu_window` (0x18, 0 = off, the reset value)
+  and `pu_threshold` (0x1C). Firmware `$ST`/`$GT` indices 6–7; GUI Trigger panel; API
+  `TriggerConfig.pileup_window/pileup_threshold`.
+- The flag travels as **bit 63 of TUSER**, so every consumer's FIFO already carries it and no
+  RTL outside `trigger_core` changed. The timestamp keeps 63 bits (~5,800 years at 50 MHz).
+  Firmware masks the bit when pairing results (it would otherwise make a flagged event look like the
+  newest) and puts it on the wire as bit 31 of `ts_hi`, so `$RV/$RB/$RQ/$RA` keep their layouts. The
+  list-mode CSV gains a `pileup` column, and Live FCI/PSD a "Reject pile-up" option.
+
+**A timestamp bug fixed on the way.** TUSER came from one register in `trigger_core_top`, re-latched
+on *every* CFD trigger pulse. The capture engine is double-buffered (§8c), so a trigger accepted (or
+ignored) while one frame was still being captured or waiting to stream overwrote that frame's
+timestamp, and it left with a later event's time. The tag (timestamp and flag) is now latched per
+buffer half at acceptance, like the depth. Pairing was unaffected, since all consumers saw the same
+wrong value, but event times and rates derived from them were not.
+
+**Raw traces now carry the timestamp.** `axi_dma_1` runs in Simple mode and drops TUSER, so raw
+traces reached the host with only a host wall-clock time. Matching a trace to its list-mode event
+needed sample fingerprints (§11.3), and the scope's re-reads of one capture were logged as separate
+rows (the duplicates every archive Readme warns about). A small new IP, `trace_tagger`, between the
+broadcaster and the DMA appends the 64-bit tag to each frame as four 16-bit beats. Its cost is 64
+flops, a 2-bit counter and a mux. The two 4 KB trace buffers had filled one 8 KB BRAM exactly, so
+buffer B moved to the BRAM the retired `axi_dma_0` path left free. Firmware arms the DMA for the
+extra beats and detects the tag from the bytes actually received, so it still works on a bitstream
+without the tagger. `$RT` appends `ts_lo ts_hi` after the samples. The trace CSV appends
+`fpga_timestamp,pileup` after the samples, where positional readers do not look, and skips a capture
+whose timestamp repeats.
+
+**Verified so far:** `trigger_core_tb` gains an event-tag case (clean pulse not flagged; a pile-up
+inside the window flagged; the same pile-up after a shortened window not flagged; a frame held
+while a second trigger is accepted keeps its own timestamp, which the old latch would have
+failed). All 10 cases pass in xsim. `trace_tagger_tb` passes under random input gaps and
+backpressure for frames of 1–257 samples. The firmware builds and links at 53.8 KB (-Os). **Not
+yet done:** IP packaging, synthesis/implementation and the utilization report, and the on-board
+check against the offline vetoes.
 
 ## Appendix: ILA note (2026-08-18)
 

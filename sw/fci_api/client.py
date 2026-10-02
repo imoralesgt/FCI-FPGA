@@ -23,6 +23,7 @@ from .types import (
     AmpEvent,
     BlrConfig,
     Counts,
+    DiagResult,
     FciConfig,
     Pending,
     PsdConfig,
@@ -36,6 +37,12 @@ from .types import (
 
 def _bool(token: str) -> bool:
     return int(token) != 0
+
+
+def _split_ts(ts_lo: int, ts_hi: int) -> tuple[int, bool]:
+    """Splits the wire's ts_lo/ts_hi into (timestamp, pileup): ts_hi's bit 31 is trigger_core's
+    pile-up flag (bit 63 of the TUSER tag), not time."""
+    return ((ts_hi & 0x7FFFFFFF) << 32) | ts_lo, bool(ts_hi >> 31)
 
 
 def _opt_int(token: str) -> int | None:
@@ -89,8 +96,9 @@ class FciClient:
         ts_lo, ts_hi, psa_l, psa_w, fci_scaled, es, el, psd_scaled, peak = (
             int(x) for x in fields
         )
+        timestamp, pileup = _split_ts(ts_lo, ts_hi)
         return AcqEvent(
-            timestamp=(ts_hi << 32) | ts_lo,
+            timestamp=timestamp,
             psa_l=psa_l,
             psa_w=psa_w,
             fci=fci_scaled / 10000.0,
@@ -98,6 +106,7 @@ class FciClient:
             energy_long=el,
             psd=psd_scaled / 10000.0,
             peak=peak,
+            pileup=pileup,
         )
 
     def read_value(self) -> AcqEvent | None:
@@ -182,9 +191,10 @@ class FciClient:
         for rec in records:
             ts_lo, ts_hi, psa_l, psa_w = struct.unpack_from("<4I", rec, 0)
             es, el, peak = struct.unpack_from("<3i", rec, 16)
+            timestamp, pileup = _split_ts(ts_lo, ts_hi)
             out.append(
                 AcqEvent(
-                    timestamp=(ts_hi << 32) | ts_lo,
+                    timestamp=timestamp,
                     psa_l=psa_l,
                     psa_w=psa_w,
                     fci=(psa_l / psa_w) if psa_w else 0.0,
@@ -194,6 +204,7 @@ class FciClient:
                     # ratio undefined, and 0.0 is the documented sentinel for that.
                     psd=((el - es) / el) if el > 0 else 0.0,
                     peak=peak,
+                    pileup=pileup,
                 )
             )
         return out
@@ -220,7 +231,8 @@ class FciClient:
         for rec in records:
             ts_lo, ts_hi = struct.unpack_from("<2I", rec, 0)
             (peak,) = struct.unpack_from("<i", rec, 8)
-            out.append(AmpEvent(timestamp=(ts_hi << 32) | ts_lo, peak=peak))
+            timestamp, pileup = _split_ts(ts_lo, ts_hi)
+            out.append(AmpEvent(timestamp=timestamp, peak=peak, pileup=pileup))
         return out
 
     def read_pending(self) -> Pending:
@@ -253,12 +265,32 @@ class FciClient:
 
     def read_trace(self, n: int = 2048) -> TraceResult | None:
         """`$RT [n]`. None if no trace has been captured yet (device-side range for n is 1..2048).
-        Samples are signed."""
+        Samples are signed. A bitstream that tags raw traces appends `ts_lo ts_hi` after the
+        samples; timestamp/pileup are None without them."""
         tokens = self._t.transact("RT", n)
         count = int(tokens[0])
         if count == 0:
             return None
-        return TraceResult(samples=[int(x) for x in tokens[1 : 1 + count]])
+        samples = [int(x) for x in tokens[1 : 1 + count]]
+        if len(tokens) >= count + 3:
+            timestamp, pileup = _split_ts(int(tokens[1 + count]), int(tokens[2 + count]))
+            return TraceResult(samples=samples, timestamp=timestamp, pileup=pileup)
+        return TraceResult(samples=samples)
+
+    DIAG_TIMEOUT_S = 30.0
+    """$DG waits on the device for real events (up to ~10 s for a live event, ~2 s for a raw trace)
+    after the threshold scan, so it gets its own, much longer reply timeout."""
+
+    def run_diagnostics(self) -> DiagResult:
+        """`$DG` (CLI doc section 2.7). Disables acquisition, runs the on-demand diagnostics --
+        threshold calibration, a live event through fci_core, a raw-trace capture -- restores the
+        trigger configuration, and clears the result FIFOs. Blocks for up to ~15 s. The calibrated
+        threshold is returned, not applied."""
+        failures, sigma, threshold, band_lo, band_hi = (
+            int(x) for x in self._t.transact("DG", timeout=self.DIAG_TIMEOUT_S))
+        return DiagResult(failures=failures, sigma=None if sigma < 0 else sigma,
+                          threshold=None if threshold < 0 else threshold,
+                          band_lo=band_lo, band_hi=band_hi)
 
     # ------------------------------------------------------------------------ configuration
     #
@@ -276,12 +308,15 @@ class FciClient:
         tok = self._t.transact("GT")
         if len(tok) < 4:
             raise FciProtocolError(f"$GT: expected at least 4 fields, got {len(tok)}: {tok!r}")
-        # Six fields since the CFD replaced the cross-level trigger; four on older firmware, which
-        # is tolerated rather than raising so a host can still talk to an older bitstream.
+        # Eight fields with the pile-up flag, six since the CFD replaced the cross-level trigger,
+        # four on older firmware -- tolerated rather than raising so a host can still talk to an
+        # older bitstream.
         return TriggerConfig(
             threshold=int(tok[0]), rising=_bool(tok[1]), delay=int(tok[2]), depth=int(tok[3]),
             cfd_fraction=int(tok[4]) if len(tok) > 4 else None,
             cfd_delay=int(tok[5]) if len(tok) > 5 else None,
+            pileup_window=int(tok[6]) if len(tok) > 6 else None,
+            pileup_threshold=int(tok[7]) if len(tok) > 7 else None,
         )
 
     def set_trigger(
@@ -292,6 +327,8 @@ class FciClient:
         depth: int | None = None,
         cfd_fraction: int | None = None,
         cfd_delay: int | None = None,
+        pileup_window: int | None = None,
+        pileup_threshold: int | None = None,
     ) -> None:
         """`$ST` (CLI doc section 3.1). Only arguments given are written.
 
@@ -309,6 +346,10 @@ class FciClient:
             self._t.transact("ST", 4, cfd_fraction)
         if cfd_delay is not None:
             self._t.transact("ST", 5, cfd_delay)
+        if pileup_window is not None:
+            self._t.transact("ST", 6, pileup_window)
+        if pileup_threshold is not None:
+            self._t.transact("ST", 7, pileup_threshold)
 
     def get_blr(self) -> BlrConfig:
         """`$GB` (CLI doc section 3.2)."""

@@ -207,10 +207,11 @@ class FciTransport:
             f"{self.MAX_BLANK_LINES} attempts"
         )
 
-    def transact(self, code: str, *args: int) -> list[str]:
+    def transact(self, code: str, *args: int, timeout: float | None = None) -> list[str]:
         """Sends `$<code> arg0 arg1 ...\\n`, blocks for the matching `!<code> ...\\n` reply, and
         returns the tokens after the echoed code. Raises FciUnknownCommandError/FciParamError for
-        `!XX 0`/`!XX 1`, FciTimeoutError if no complete line arrives within `self.timeout`, and
+        `!XX 0`/`!XX 1`, FciTimeoutError if no complete line arrives within `self.timeout` (or
+        `timeout`, for a command known to take longer, like $DG), and
         FciProtocolError if a reply line arrives but doesn't echo the code we sent -- a framing
         problem (wrong baud, a stray byte, a version mismatch), not an ordinary device error.
         """
@@ -251,7 +252,15 @@ class FciTransport:
             self._ser.write((request + "\n").encode("ascii"))
             self._ser.flush()
 
-            raw = self._read_reply_line(request)
+            if timeout is None:
+                raw = self._read_reply_line(request)
+            else:
+                saved = self._ser.timeout
+                self._ser.timeout = timeout
+                try:
+                    raw = self._read_reply_line(request)
+                finally:
+                    self._ser.timeout = saved
 
             # A freshly-opened connection has occasionally been observed to prepend one or two
             # stray NUL bytes to the very first reply, still within this same line -- a

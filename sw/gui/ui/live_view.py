@@ -291,12 +291,14 @@ class _StatsPanel(QGroupBox):
         adv_grid = QGridLayout(self.advanced)
         adv_grid.setContentsMargins(12, 0, 0, 0)
         self.lbl_excluded = QLabel("0")
+        self.lbl_pileup = QLabel("0")
         self.lbl_paired = QLabel("0")
         self.lbl_dropped = QLabel("0")
         self.lbl_overflow = QLabel("0")
         for row, (name, widget) in enumerate(
             [
                 ("Excluded (energy_long ≤ 0):", self.lbl_excluded),
+                ("Pile-up (counts) | Rate (Hz):", self.lbl_pileup),
                 ("Paired:", self.lbl_paired),
                 (f"{dropped_label}:", self.lbl_dropped),
                 (f"{overflow_label}:", self.lbl_overflow),
@@ -342,13 +344,15 @@ class _StatsPanel(QGroupBox):
 
     def update_counts(self, events: int, gammas: int, neutrons: int, live_time_s: float,
                       rate_hz: float, gamma_hz: float, neutron_hz: float, excluded: int,
-                      paired: int, dropped: int, overflow: int) -> None:
+                      paired: int, dropped: int, overflow: int, pileup: int = 0,
+                      pileup_hz: float = 0.0) -> None:
         t = int(live_time_s)
         self.lbl_live_time.setText(f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}")
         self.lbl_events.setText(f"{events} | {rate_hz:.2f}")
         self.lbl_gamma.setText(f"{gammas} | {gamma_hz:.2f}")
         self.lbl_neutron.setText(f"{neutrons} | {neutron_hz:.2f}")
         self.lbl_excluded.setText(str(excluded))
+        self.lbl_pileup.setText(f"{pileup} | {pileup_hz:.2f}")
         self.lbl_paired.setText(str(paired))
         self.lbl_dropped.setText(str(dropped))
         self.lbl_overflow.setText(str(overflow))
@@ -444,6 +448,14 @@ class LiveView(QWidget):
         set_peak_fold(). Must match what the calibration above was defined against."""
         self._total_events = 0
         self._excluded_events = 0
+        self._fci_pileup = 0
+        self._psd_pileup = 0
+        """Events trigger_core flagged as pile-up since the last Reset, rejected or not, under each
+        discriminator's own LLD/ULD cut at arrival -- the same rule as the captured counts."""
+        self._pileup_samples: deque[tuple[float, np.ndarray]] = deque()
+        """(arrival_time, energies of that batch's FLAGGED events), one entry per batch, flagged or
+        not -- the pile-up rate's own history. Separate from _rate_samples because rejected events
+        never reach that one, and the pile-up rate must count them."""
         self._fci_captured = 0
         self._psd_captured = 0
         """Cumulative events captured under each discriminator's cut -- a true running total, not
@@ -497,6 +509,11 @@ class LiveView(QWidget):
 
         top_row = QHBoxLayout()
         top_row.addStretch(1)
+        # The "Reject pile-up" box is shown on the Trigger tab, beside the pile-up window and
+        # threshold it depends on (MainWindow passes it in via bind_reject_pileup()). It is only
+        # READ here, where the filtering happens. Until bound, an unshown stand-in keeps this view
+        # usable on its own.
+        self.chk_reject_pileup = QCheckBox()
         self.chk_heatmap = QCheckBox("Heatmap view")
         self.chk_heatmap.setToolTip(
             "Shows accumulation density (2D histogram) instead of individual points -- easier to "
@@ -659,6 +676,16 @@ class LiveView(QWidget):
                                  (self.psd_controls, self.psd_energy_region)):
             controls.set_cut_locked(locked, tooltip)
             region.setMovable(not locked)
+        self.chk_reject_pileup.setEnabled(not locked)
+
+    def bind_reject_pileup(self, checkbox: QCheckBox) -> None:
+        """Uses `checkbox` (the Trigger tab's "Reject pile-up") as this view's pile-up rejection
+        setting: events it flags are dropped from the plots, counts and recording while it is
+        ticked, it is stored in the project with the cuts, locked while recording, and a change is
+        noted in the list-mode file like a cut change."""
+        checkbox.setChecked(self.chk_reject_pileup.isChecked())
+        self.chk_reject_pileup = checkbox
+        checkbox.toggled.connect(lambda _: self.cuts_changed.emit())
 
     def dividers(self) -> tuple[float, float]:
         """(fci_divider, psd_divider), as shown (3 decimals)."""
@@ -687,6 +714,7 @@ class LiveView(QWidget):
             lo, hi = region.getRegion()
             out[key] = {"enabled": controls.chk_cut_enabled.isChecked(),
                         "lld": round(float(lo), 3), "uld": round(float(hi), 3)}
+        out["reject_pileup"] = self.chk_reject_pileup.isChecked()
         return out
 
     def apply_project_settings(self, settings: dict) -> None:
@@ -706,6 +734,8 @@ class LiveView(QWidget):
             controls.chk_cut_enabled.setChecked(bool(cut.get("enabled", False)))
             if bounds_ok:
                 region.setRegion((float(lo), float(hi)))
+        if isinstance(settings.get("reject_pileup"), bool):
+            self.chk_reject_pileup.setChecked(settings["reject_pileup"])
 
     HEATMAP_XBINS = 512
     HEATMAP_YBINS = 512
@@ -788,6 +818,7 @@ class LiveView(QWidget):
                 parts.append(f"{name}_lld={lo:.1f}, {name}_uld={hi:.1f}")
             else:
                 parts.append(f"{name}=off")
+        parts.append("pileup=" + ("rejected" if self.chk_reject_pileup.isChecked() else "kept"))
         return ("cuts: " + ", ".join(parts)
                 + "  [keVee; a row is recorded only if it passes every enabled cut]")
 
@@ -820,7 +851,10 @@ class LiveView(QWidget):
         from e.peak and the CURRENT calibration, matching what the region's own bounds mean now
         that the plot's axis is keVee rather than energy_long -- see the module docstring."""
         out = []
+        reject_pileup = self.chk_reject_pileup.isChecked()
         for e in events:
+            if reject_pileup and e.pileup:
+                continue
             energy = _energy_from_peak(e.peak, self._cal, self._peak_fold)
             if self.fci_controls.chk_cut_enabled.isChecked():
                 lo, hi = self.fci_energy_region.getRegion()
@@ -952,6 +986,9 @@ class LiveView(QWidget):
         self._n = 0
         self._total_events = 0
         self._excluded_events = 0
+        self._fci_pileup = 0
+        self._psd_pileup = 0
+        self._pileup_samples.clear()
         self._fci_captured = 0
         self._psd_captured = 0
         self._fci_class1 = 0
@@ -1039,6 +1076,16 @@ class LiveView(QWidget):
         el_arr = np.fromiter((e.energy_long for e in events), dtype=np.float64, count=len(events))
         keep = el_arr > 0
         self._excluded_events += int((~keep).sum())
+        pu_arr = np.fromiter((e.pileup for e in events), dtype=bool, count=len(events)) & keep
+        pu_peak = np.fromiter((e.peak for e, f in zip(events, pu_arr) if f), dtype=np.float64)
+        pu_energy = _energy_from_peak(pu_peak, self._cal, self._peak_fold)
+        self._pileup_samples.append((now, pu_energy))
+        self._fci_pileup += int(self._cut_mask(self.fci_controls, self.fci_energy_region,
+                                               pu_energy).sum())
+        self._psd_pileup += int(self._cut_mask(self.psd_controls, self.psd_energy_region,
+                                               pu_energy).sum())
+        if self.chk_reject_pileup.isChecked():
+            keep &= ~pu_arr
         k = int(keep.sum())
         if k == 0:
             return
@@ -1119,6 +1166,21 @@ class LiveView(QWidget):
             above += int(np.count_nonzero(v > divider))
         return total / dt, (total - above) / dt, above / dt
 
+    def _pileup_rate_hz_for(self, controls: "_ControlsPanel", region: pg.LinearRegionItem) -> float:
+        """Rate of flagged events under this discriminator's CURRENT cut, over the same sliding
+        window and with the same short-history guard as _rate_hz_for()."""
+        now = time.monotonic()
+        cutoff = now - RATE_WINDOW_S
+        while len(self._pileup_samples) > 1 and self._pileup_samples[0][0] < cutoff:
+            self._pileup_samples.popleft()
+        if not self._pileup_samples or now - self._pileup_samples[0][0] > RATE_WINDOW_S:
+            return 0.0
+        dt = now - self._pileup_samples[0][0]
+        if dt < RATE_MIN_DT_S:
+            return 0.0
+        n = sum(int(self._cut_mask(controls, region, e).sum()) for _, e in self._pileup_samples)
+        return n / dt
+
     def update_stats(self, stats: Stats) -> None:
         self._last_stats = stats
         self._refresh_side_panels()
@@ -1141,7 +1203,9 @@ class LiveView(QWidget):
         p_tot, p_g, p_n = self._rate_hz_for(self.psd_controls, self.psd_energy_region, 3, psd_div)
         self.fci_stats.update_counts(
             self._fci_captured, self._fci_captured - self._fci_class1, self._fci_class1, live,
-            f_tot, f_g, f_n, self._excluded_events, paired, dropped_fci, overflow_fci)
+            f_tot, f_g, f_n, self._excluded_events, paired, dropped_fci, overflow_fci,
+            self._fci_pileup, self._pileup_rate_hz_for(self.fci_controls, self.fci_energy_region))
         self.psd_stats.update_counts(
             self._psd_captured, self._psd_captured - self._psd_class1, self._psd_class1, live,
-            p_tot, p_g, p_n, self._excluded_events, paired, dropped_psd, overflow_psd)
+            p_tot, p_g, p_n, self._excluded_events, paired, dropped_psd, overflow_psd,
+            self._psd_pileup, self._pileup_rate_hz_for(self.psd_controls, self.psd_energy_region))

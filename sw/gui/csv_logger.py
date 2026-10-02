@@ -35,7 +35,7 @@ from pathlib import Path
 from fci_api import AcqEvent, TraceResult
 
 CSV_HEADER = ("timestamp,psa_l,psa_w,fci,energy_short,energy_long,psd,energy,energy_cal,"
-              "class_fci,class_psd")
+              "class_fci,class_psd,pileup")
 """`energy` is the pulse shaper's own raw output (AcqEvent.peak -- the shaped-pulse plateau, in
 shaper counts); `energy_cal` is that same event in keVee, through the Spectrum tab's calibration.
 
@@ -56,7 +56,11 @@ above the divider, 0 at or below. They are 0/1 rather than gamma/neutron because
 only for g/n discrimination. The dividers in force are the header's `dividers:` line, and every
 change during recording is noted where it happened (CsvLogger.set_dividers()), exactly like the
 `cuts:` line -- so each row's class can be re-derived from its own fci/psd value and the last
-divider line above it."""
+divider line above it.
+
+`pileup` (column 11, appended for the same reason) is trigger_core's pile-up flag: 1 if a second
+pulse arrived within the Trigger tab's pile-up window after this one. Always 0 with the window at 0
+or on a bitstream without the flag; the header's `trigger:` line records the window and threshold."""
 
 
 def _write_header_prelude(f, title: str, settings_lines: list[str] | None,
@@ -130,7 +134,7 @@ class CsvLogger:
         return (f"{event.timestamp},{event.psa_l},{event.psa_w},{event.fci:.6f},"
                 f"{event.energy_short},{event.energy_long},{event.psd:.6f},"
                 f"{event.peak},{energy_cal:.4f},"
-                f"{int(event.fci > d_fci)},{int(event.psd > d_psd)}\n")
+                f"{int(event.fci > d_fci)},{int(event.psd > d_psd)},{int(event.pileup)}\n")
 
     @property
     def event_count(self) -> int:
@@ -162,9 +166,17 @@ class CsvLogger:
 
 class TraceCsvLogger:
     """Appends one row per raw trace captured in the Trigger view: a host wall-clock
-    timestamp (the device's $RT reply carries no timestamp of its own -- see TraceResult), then
-    every sample in that capture. Row width varies with the "Samples" control's current setting,
-    which is fine for a plain CSV -- each row is self-describing via its own sample count.
+    timestamp, the sample count, every sample in that capture, then the frame's FPGA timestamp and
+    pile-up flag. Row width varies with the "Samples" control's current setting, which is fine for a
+    plain CSV -- each row is self-describing via its own sample count.
+
+    The FPGA timestamp is the same value the frame's list-mode event carries (`timestamp` in the
+    _fci_live.csv), so a trace can be matched to its event directly. It goes after the samples, not
+    before them, so readers that take `n_samples` values from column 2 on are unaffected; it is empty
+    on a bitstream that does not tag raw traces. It also identifies re-reads: the scope polls $RT
+    faster than background events arrive and gets the same capture back several times, which
+    earlier recordings logged as duplicate rows. A trace whose FPGA timestamp equals the previous
+    row's is now skipped.
 
     A separate file from CsvLogger's live-event log, not another column set tacked onto it: traces
     are occasional, wide, single-shot captures for eyeballing setup, not part of the same per-event
@@ -178,16 +190,23 @@ class TraceCsvLogger:
 
         with open(self.path, "w", encoding="utf-8") as f:
             _write_header_prelude(f, "FCI-FPGA trigger trace log", settings_lines, notes)
-            f.write("# Columns: host_timestamp,n_samples,sample_0,sample_1,...\n")
+            f.write("# Columns: host_timestamp,n_samples,sample_0,...,sample_<n_samples-1>,"
+                    "fpga_timestamp,pileup\n")
 
         self._count = 0
+        self._last_fpga_ts: int | None = None
 
     @property
     def trace_count(self) -> int:
         return self._count
 
     def append(self, trace: TraceResult) -> None:
+        if trace.timestamp is not None:
+            if trace.timestamp == self._last_fpga_ts:
+                return  # the same capture read again
+            self._last_fpga_ts = trace.timestamp
         samples = ",".join(str(s) for s in trace.samples)
+        tag = (f"{trace.timestamp},{int(trace.pileup)}" if trace.timestamp is not None else ",")
         with open(self.path, "a", encoding="utf-8") as f:
-            f.write(f"{time.time():.6f},{len(trace.samples)},{samples}\n")
+            f.write(f"{time.time():.6f},{len(trace.samples)},{samples},{tag}\n")
         self._count += 1

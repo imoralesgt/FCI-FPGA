@@ -164,6 +164,9 @@ class MainWindow(QMainWindow):
         # controls' pending values mirrored live as either is edited, so committing either panel's
         # Apply independently can never leave them mismatched. This only syncs what's displayed in
         # the not-yet-applied controls; it does not write to the device by itself.
+        # The Live view filters by the Trigger tab's "Reject pile-up" box (see bind_reject_pileup()).
+        self.live_view.bind_reject_pileup(self.scope_view.chk_reject_pileup)
+
         psd_pre_trigger = self.live_view.psd_config._controls["pre_trigger"]
         trig_delay = self.scope_view.trigger_config._controls["delay"]
         psd_pre_trigger.valueChanged.connect(trig_delay.setValue)

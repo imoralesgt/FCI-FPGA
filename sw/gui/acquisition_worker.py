@@ -39,6 +39,7 @@ from fci_api.exceptions import (
     FciTimeoutError,
     FciUnknownCommandError,
 )
+from fci_api.client import FciClient
 from fci_api.reader_process import run_reader_process
 
 logger = logging.getLogger(__name__)
@@ -117,6 +118,11 @@ class RemoteFciClient:
     of this. This bound exists to fail loudly if the child has died or deadlocked, not to be a
     tuned budget."""
 
+    _RPC_TIMEOUT_OVERRIDES_S = {"run_diagnostics": FciClient.DIAG_TIMEOUT_S + 5.0}
+    """Methods that legitimately take longer than _RPC_TIMEOUT_S on the device: $DG waits for real
+    events. The child's own transport timeout for them is the binding one; this only has to outlast
+    it."""
+
     def __init__(self, issue_rpc):
         self._issue_rpc = issue_rpc
 
@@ -186,10 +192,12 @@ class AcquisitionWorker(QThread):
         self._cmd_q.put({"type": "rpc", "id": call_id, "method": method,
                           "args": args, "kwargs": kwargs})
         try:
-            if not done.wait(RemoteFciClient._RPC_TIMEOUT_S):
+            wait_s = RemoteFciClient._RPC_TIMEOUT_OVERRIDES_S.get(
+                method, RemoteFciClient._RPC_TIMEOUT_S)
+            if not done.wait(wait_s):
                 raise FciTimeoutError(
                     f"{method}: no reply from reader process within "
-                    f"{RemoteFciClient._RPC_TIMEOUT_S}s (process alive: "
+                    f"{wait_s}s (process alive: "
                     f"{self._proc.is_alive() if self._proc else False})"
                 )
         finally:

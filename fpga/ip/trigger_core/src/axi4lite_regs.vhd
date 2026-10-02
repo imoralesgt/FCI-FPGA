@@ -1,5 +1,5 @@
--- 4-register AXI4-Lite slave: threshold (0x00, SIGNED), polarity (0x04), delay (0x08),
--- depth (0x0C).
+-- 8-register AXI4-Lite slave: threshold (0x00, SIGNED), polarity (0x04), delay (0x08),
+-- depth (0x0C), cfd_frac (0x10), cfd_delay (0x14), pu_window (0x18), pu_threshold (0x1C).
 -- Standard single-outstanding-transaction AXI4-Lite slave pattern. Registers are stored full
 -- width (32 bits) with byte-granular write-strobe handling; only the low bits relevant to each
 -- field are driven out on the *_o ports; the rest is simply unused, never read back specially.
@@ -22,7 +22,10 @@ entity axi4lite_regs is
     -- failed with a width mismatch rather than anything explaining why.
     DEPTH_BITS   : integer := 13;
     CFD_FRAC_BITS  : integer := 8;
-    CFD_DELAY_BITS : integer := 5
+    CFD_DELAY_BITS : integer := 5;
+    -- Width of pu_window_o: the window is counted on capture_engine's write address, so it is
+    -- as wide as a depth.
+    PU_WINDOW_BITS : integer := 13
   );
   port (
     clk_i          : in  std_logic;
@@ -56,7 +59,14 @@ entity axi4lite_regs is
     -- delay it compares against, and both are detector-dependent -- the useful delay scales with
     -- the pulse rise time -- so both are runtime-programmable rather than generics.
     cfd_frac_o     : out std_logic_vector(CFD_FRAC_BITS - 1 downto 0);
-    cfd_delay_o    : out std_logic_vector(CFD_DELAY_BITS - 1 downto 0)
+    cfd_delay_o    : out std_logic_vector(CFD_DELAY_BITS - 1 downto 0);
+
+    -- Pile-up flag parameters (0x18, 0x1C), see capture_engine. A separate threshold, not the
+    -- trigger threshold: a scintillator with a grainy slow tail (CLYC) jumps by several trigger
+    -- thresholds from one sample to the next within a single pulse, so the level that decides
+    -- whether a pulse is real is too low to decide whether a second one has arrived on its tail.
+    pu_window_o    : out std_logic_vector(PU_WINDOW_BITS - 1 downto 0); -- samples; 0 = off
+    pu_threshold_o : out std_logic_vector(DATA_WIDTH - 1 downto 0)      -- counts, unsigned
   );
 end entity axi4lite_regs;
 
@@ -77,6 +87,8 @@ architecture rtl of axi4lite_regs is
   signal depth_reg     : std_logic_vector(31 downto 0);
   signal cfd_frac_reg  : std_logic_vector(31 downto 0);
   signal cfd_delay_reg : std_logic_vector(31 downto 0);
+  signal pu_window_reg : std_logic_vector(31 downto 0);
+  signal pu_thresh_reg : std_logic_vector(31 downto 0);
 
   signal wren     : std_logic;
   signal rdata_q  : std_logic_vector(31 downto 0);
@@ -114,6 +126,14 @@ begin
   depth_o <= (others => '1')
              when unsigned(depth_reg) > to_unsigned(2 ** DEPTH_BITS - 1, 32)
              else std_logic_vector(resize(unsigned(depth_reg), DEPTH_BITS));
+
+  -- Saturating like the rest: a wrapped window or threshold would quietly turn into a small one.
+  pu_window_o <= (others => '1')
+                 when unsigned(pu_window_reg) > to_unsigned(2 ** PU_WINDOW_BITS - 1, 32)
+                 else std_logic_vector(resize(unsigned(pu_window_reg), PU_WINDOW_BITS));
+  pu_threshold_o <= (others => '1')
+                    when unsigned(pu_thresh_reg) > to_unsigned(2 ** DATA_WIDTH - 1, 32)
+                    else std_logic_vector(resize(unsigned(pu_thresh_reg), DATA_WIDTH));
 
   -- Write address/data acceptance: accept one AW+W pair at a time.
   process (clk_i)
@@ -159,6 +179,9 @@ begin
         -- sensitivity -- which is the intent.
         cfd_frac_reg  <= std_logic_vector(to_unsigned(64, 32));   -- 64/256 = 0.25
         cfd_delay_reg <= std_logic_vector(to_unsigned(24, 32));
+        -- Pile-up flag off until firmware configures it: a zero window never opens.
+        pu_window_reg <= (others => '0');
+        pu_thresh_reg <= (others => '0');
       elsif wren = '1' then
         case s_axi_awaddr(C_ADDR_WIDTH - 1 downto 2) is
           when "000" =>
@@ -195,6 +218,18 @@ begin
             for b in 0 to 3 loop
               if s_axi_wstrb(b) = '1' then
                 cfd_delay_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
+              end if;
+            end loop;
+          when "110" =>
+            for b in 0 to 3 loop
+              if s_axi_wstrb(b) = '1' then
+                pu_window_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
+              end if;
+            end loop;
+          when "111" =>
+            for b in 0 to 3 loop
+              if s_axi_wstrb(b) = '1' then
+                pu_thresh_reg(b * 8 + 7 downto b * 8) <= s_axi_wdata(b * 8 + 7 downto b * 8);
               end if;
             end loop;
           when others =>
@@ -250,6 +285,8 @@ begin
           when "011" => rdata_q <= depth_reg;
           when "100" => rdata_q <= cfd_frac_reg;
           when "101" => rdata_q <= cfd_delay_reg;
+          when "110" => rdata_q <= pu_window_reg;
+          when "111" => rdata_q <= pu_thresh_reg;
           when others => rdata_q <= (others => '0');
         end case;
       elsif s_axi_rready = '1' and axi_rvalid = '1' then

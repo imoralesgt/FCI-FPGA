@@ -149,10 +149,13 @@ static int in_range(s32 v, s32 lo, s32 hi) { return v >= lo && v <= hi; }
 #define TRG_DEPTH 3
 #define TRG_CFD_FRAC 4
 #define TRG_CFD_DELAY 5
+#define TRG_PU_WINDOW 6
+#define TRG_PU_THRESHOLD 7
 
 /**
  * @brief Reads one trigger_core field by TRG_* index, for $GT.
- * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY.
+ * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY/
+ *            TRG_PU_WINDOW/TRG_PU_THRESHOLD.
  * @param out Set to the field's current value on success.
  * @return 1 on success, 0 if idx is out of range.
  */
@@ -178,6 +181,12 @@ static int trg_get(s32 idx, s32 *out) {
   case TRG_CFD_DELAY:
     *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_CFD_DELAY_OFFSET) & 0x1Fu);
     return 1;
+  case TRG_PU_WINDOW:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_PU_WINDOW_OFFSET) & 0xFFFu);
+    return 1;
+  case TRG_PU_THRESHOLD:
+    *out = (s32)(reg_get(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_PU_THRESHOLD_OFFSET) & 0xFFFFu);
+    return 1;
   default:
     return 0;
   }
@@ -185,7 +194,8 @@ static int trg_get(s32 idx, s32 *out) {
 
 /**
  * @brief Validates and writes one trigger_core field by TRG_* index, for $ST.
- * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY.
+ * @param idx TRG_THRESHOLD/TRG_POLARITY/TRG_DELAY/TRG_DEPTH/TRG_CFD_FRAC/TRG_CFD_DELAY/
+ *            TRG_PU_WINDOW/TRG_PU_THRESHOLD.
  * @param v   New value.
  * @return 1 on success, 0 if idx is out of range or v fails that field's range check.
  */
@@ -242,6 +252,22 @@ static int trg_set(s32 idx, s32 v) {
      * also re-arming axi_dma_1's S2MM channel to match, can permanently wedge the raw-trace
      * pipeline the next time a real trigger fires. */
     Bringup_ReconfigureRawTraceDepth((u32)v);
+    return 1;
+  case TRG_PU_WINDOW:
+    /* 0 turns the pile-up flag off. Unlike depth, no DMA re-arm is needed: the window changes
+     * only what the flag means, never how many beats a frame has. Capped at the capture depth's
+     * own maximum: the window is counted on capture_engine's write address, which never passes
+     * the depth, so anything larger would be accepted and do nothing. */
+    if (!in_range(v, 0, CLI_TRACE_MAX))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_PU_WINDOW_OFFSET, (u32)v);
+    return 1;
+  case TRG_PU_THRESHOLD:
+    /* Same units and bound as TRG_THRESHOLD; a magnitude, whatever the polarity. The GUI narrows
+     * it further, to the headroom between the trigger threshold and full scale. */
+    if (!in_range(v, 0, 32767))
+      return 0;
+    reg_set(TRIGGER_CORE_BASEADDR, TRIGGER_CORE_PU_THRESHOLD_OFFSET, (u32)v);
     return 1;
   default:
     return 0;
@@ -616,7 +642,7 @@ static int generic_set(const char *code, const s32 *a, int n, int (*set)(s32, s3
  * for the actual behavior; these ten lines only supply the CliHandler signature and the field count
  * each core exposes.
  */
-static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 6, trg_get); }
+static int h_gt(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 8, trg_get); }
 static int h_st(const char *c, const s32 *a, int n) { return generic_set(c, a, n, trg_set); }
 static int h_gb(const char *c, const s32 *a, int n) { return generic_get(c, a, n, 7, blr_get); }
 static int h_sb(const char *c, const s32 *a, int n) { return generic_set(c, a, n, blr_set); }
@@ -754,6 +780,18 @@ static int h_ar(const char *c, const s32 *a, int n) {
 }
 
 /**
+ * @brief High word of an event's timestamp as it goes on the wire: bits 62:32 of the time, with
+ *        trigger_core's pile-up flag in bit 31 -- i.e. exactly the TUSER tag, bit 63 included.
+ *
+ * Carried in the spare top bit rather than as a new field so that $RV/$RB/$RQ (and $RA, whose
+ * timestamp is the shaper's raw tag) keep their layouts; hosts mask bit 31 of ts_hi before using
+ * the time. 63 bits at 50 MHz still last ~5,800 years.
+ */
+static u32 ev_ts_hi(const AcqEvent *ev) {
+  return (u32)(ev->timestamp >> 32) | (ev->pileup << 31);
+}
+
+/**
  * @brief $RV handler: pops and replies with one event matched across both result FIFOs, in ASCII.
  *
  * The leading field is a validity flag: 0 means nothing was pending, and no further values
@@ -775,7 +813,7 @@ static int h_rv(const char *c, const s32 *a, int n) {
   reply_open(c);
   reply_val(1);
   reply_val_u((u32)(ev.timestamp & 0xFFFFFFFFu));
-  reply_val_u((u32)(ev.timestamp >> 32));
+  reply_val_u(ev_ts_hi(&ev));
   reply_val((s32)ev.psa_l);
   reply_val((s32)ev.psa_w);
   reply_val((s32)ev.fci_scaled);
@@ -872,7 +910,7 @@ static int h_rb(const char *c, const s32 *a, int n) {
     AcqEvent ev;
     while (got < want && Acq_PopPaired(&ev, &g_stats)) {
       reply_val_u((u32)(ev.timestamp & 0xFFFFFFFFu));
-      reply_val_u((u32)(ev.timestamp >> 32));
+      reply_val_u(ev_ts_hi(&ev));
       reply_val((s32)ev.psa_l);
       reply_val((s32)ev.psa_w);
       reply_val((s32)ev.fci_scaled);
@@ -991,7 +1029,7 @@ static int h_rq(const char *c, const s32 *a, int n) {
     while (got < want && Acq_PopPaired(&ev, &g_stats)) {
       outbyte((char)(u8)RQ_TAG_EVENT);
       rq_put_u32((u32)(ev.timestamp & 0xFFFFFFFFu));
-      rq_put_u32((u32)(ev.timestamp >> 32));
+      rq_put_u32(ev_ts_hi(&ev));
       rq_put_u32((u32)ev.psa_l);
       rq_put_u32((u32)ev.psa_w);
       rq_put_u32((u32)ev.energy_short);
@@ -1160,7 +1198,13 @@ static int h_rs(const char *c, const s32 *a, int n) {
 
 /**
  * @brief $RT handler: captures one raw trace via the registered CliTraceFn and replies with
- *        `count` followed by that many signed samples.
+ *        `count` followed by that many signed samples, then `ts_lo ts_hi` when the bitstream tags
+ *        raw traces.
+ *
+ * The tag is the frame's TUSER, exactly as $RQ/$RB/$RV carry it: ts_hi bit 31 is the pile-up flag,
+ * the rest is the trigger timestamp, so a trace can be matched to its list-mode event and a
+ * re-read of the same capture recognized. Appended rather than placed before the samples so a host
+ * that reads `count` samples and stops is unaffected; a host detects it by the token count.
  *
  * Long, but a trace is inherently long, and splitting it across replies would need a sequencing
  * scheme the framing does not have.
@@ -1171,7 +1215,8 @@ static int h_rs(const char *c, const s32 *a, int n) {
  * @return 0 always (reply already sent); ERR_PARAM if n or a[0] is out of range.
  */
 static int h_rt(const char *c, const s32 *a, int n) {
-  u32 count = 0, i, want = CLI_TRACE_MAX;
+  u32 count = 0, i, want = CLI_TRACE_MAX, tagged = 0;
+  u64 tag = 0;
   const s16 *trace = 0;
   if (n > 1)
     return ERR_PARAM;
@@ -1180,7 +1225,7 @@ static int h_rt(const char *c, const s32 *a, int n) {
       return ERR_PARAM;
     want = (u32)a[0];
   }
-  if (g_trace_fn == 0 || !g_trace_fn(&trace, want, &count)) {
+  if (g_trace_fn == 0 || !g_trace_fn(&trace, want, &count, &tag, &tagged)) {
     reply_one(c, 0);
     return 0;
   }
@@ -1188,6 +1233,45 @@ static int h_rt(const char *c, const s32 *a, int n) {
   reply_val((s32)count);
   for (i = 0; i < count; i++)
     reply_val((s32)trace[i]);
+  if (tagged) {
+    reply_val_u((u32)(tag & 0xFFFFFFFFu));
+    reply_val_u((u32)(tag >> 32));
+  }
+  reply_close();
+  return 0;
+}
+
+/**
+ * @brief $DG handler: runs the on-demand diagnostics (Bringup_Diagnostics()) and replies
+ *        `!DG <failures> <sigma> <threshold> <band_lo> <band_hi>`.
+ *
+ * These are the threshold calibration, live-event and raw-trace checks that used to run at every
+ * boot. Acquisition is disabled first ($AD semantics) and the result FIFOs are cleared afterwards
+ * ($AR semantics): the diagnostics' own events must not reach a host as data. The trigger
+ * configuration is restored by Bringup_Diagnostics(); the calibrated threshold is only reported.
+ * Blocks for up to ~15 s, so the host needs a long timeout for this one command.
+ */
+static int h_dg(const char *c, const s32 *a, int n) {
+  BringupDiagResult r;
+  (void)a;
+  if (n != 0)
+    return ERR_PARAM;
+  g_running = 0;
+  Bringup_Diagnostics(&r);
+  Psd_Clear(PSD_CORE_BASEADDR);
+#if PULSE_SHAPER_CORE_PRESENT
+  PulseShaper_Clear(PULSE_SHAPER_CORE_BASEADDR);
+#endif
+#if CLI_HAVE_RESULTS
+  FciSink_Clear(FCI_SINK_BASEADDR);
+  Acq_ResetStats(&g_stats);
+#endif
+  reply_open(c);
+  reply_val((s32)r.failures);
+  reply_val(r.sigma);
+  reply_val(r.threshold);
+  reply_val((s32)r.band_lo);
+  reply_val((s32)r.band_hi);
   reply_close();
   return 0;
 }
@@ -1199,7 +1283,7 @@ static const struct {
     {{'~', '~'}, h_ping}, {{'I', 'D'}, h_id},  {{'A', 'E'}, h_ae},  {{'A', 'D'}, h_ad},
     {{'E', 'S'}, h_es},   {{'A', 'R'}, h_ar},  {{'R', 'V'}, h_rv},  {{'R', 'N'}, h_rn},
     {{'R', 'S'}, h_rs},   {{'R', 'C'}, h_rc},  {{'R', 'B'}, h_rb},  {{'R', 'Q'}, h_rq},  {{'R', 'T'}, h_rt},
-    {{'R', 'A'}, h_ra},
+    {{'R', 'A'}, h_ra},   {{'D', 'G'}, h_dg},
     {{'G', 'T'}, h_gt},   {{'S', 'T'}, h_st},  {{'G', 'B'}, h_gb},  {{'S', 'B'}, h_sb},
     {{'G', 'P'}, h_gp},   {{'S', 'P'}, h_sp},  {{'G', 'F'}, h_gf},  {{'S', 'F'}, h_sf},
     {{'G', 'V'}, h_gv},   {{'S', 'V'}, h_sv},  {{'G', 'H'}, h_gh},  {{'S', 'H'}, h_sh},

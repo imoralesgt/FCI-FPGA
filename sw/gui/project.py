@@ -95,6 +95,7 @@ class Project:
             "acquisition": {},
             "spectrum": {},
             "live": {},
+            "trigger": {},
         }
         project = cls(path, doc)
         project._ensure_layout()
@@ -197,6 +198,15 @@ class Project:
         [0, 1]) and `fci_cut`, `psd_cut` (each LLD/ULD cut as {"enabled", "lld", "uld"}, bounds in
         keVee). Not device registers -- see LiveView.project_settings()."""
         return self._section("live")
+
+    @property
+    def trigger(self) -> dict[str, Any]:
+        """Trigger tab host state: `pileup_ratio`, the pile-up threshold as a multiple of the
+        trigger threshold -- what the user sets. The device section holds the counts it becomes
+        (`pileup_threshold`); the ratio is kept too so a project reopens showing the multiple that
+        was chosen, not one recomputed from rounded counts. Not a device register -- see
+        ScopeView.project_settings()."""
+        return self._section("trigger")
 
     @property
     def spectrum(self) -> dict[str, Any]:
