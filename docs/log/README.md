@@ -50,6 +50,7 @@ notes logged on 2026-08-18; the repository starts on 2026-08-13.
 | 2026-09-29 | §10.17 | Live g/n classification in the GUI with a ²²Na source |
 | 2026-09-29 – 10-01 | §10.18 | AmBe mode: ADC ceiling, overnight stability, low-energy FCI windows (PSA_w), ¹⁵²Eu + ²²Na calibration, 22.75 h reference run, DC-bin study |
 | 2026-09-30 – 10-01 | §10.16 | **AmBe operating mode** (−1280 V, ×5.9, to 5.7 MeVee): settings table |
+| 2026-10-01 – 10-02 | §11 | **OGS 2"×2" + PMT (issue #28)**: one-sample spike and the CFD; VGA ×1 and the coarse-gain clamp; afterpulses and slow pulses mask cosmic neutrons; FCI windows on the n/γ spectrum vs Nakhostin; range vs discrimination; −820 V calibration (6 MeVee); AFE flat to 20 MHz |
 
 ---
 
@@ -306,6 +307,7 @@ Three things are reasoned, not measured, and should be read as the open question
    record (§8g) comes from the CLYC+SiPM pulse's 740 ns rise — it describes the *signal*, not a
    measured AFE limit. Whether the AD8330 path and whatever anti-alias filtering the carrier has
    actually pass 8–18 MHz is unverified, and it is a hard prerequisite for the organic claim.
+   **Measured 2026-10-02 (§11.6): flat within 0.5 dB to 20 MHz, −3 dB ≈ 57–82 MHz.**
 3. **The two indices are relatives, not the same formula.** Nakhostin's is low-band power over total
    power from |X|²; the FCI is `(PSA_w − PSA_l)/PSA_w` over the city-block ASDM with DC dropped.
    Same idea — a low-frequency partial area against a total — differing in normalization, in whether
@@ -6686,6 +6688,184 @@ raw) → the 4.44 MeV line against the three-coefficient calibration (and with i
 ULD), PSD/FCI re-check with fast neutrons in the 475–5,700 keVee slices, dividers, leakage per slice,
 and — for the first time in this project — low-energy fast-neutron acceptance for both methods; then
 replace the provisional ULD in the §10.16 table.
+
+## 11. Organic glass scintillator (OGS) on a PMT: first validation steps (issue #28) (2026-10-01 – 10-02)
+
+Detector: 2"×2" cylindrical OGS, negative-polarity PMT (`51B51/2M-E1-OGS-X-NEG`). Project
+`ogs-PMT-DT_mode`. Goal of #28: FCI g/n discrimination at 50 Msps with this detector, in an AmBe
+mode and a DT mode, with no RTL change. Reference for the expected n/γ pulse shapes:
+[Pozzi et al. 2026], Fig. 8. Everything below is without a neutron source (Eu-152, Na-22, cosmics +
+NORM, a waveform generator), so neutron statements rest on a model or on candidate events.
+
+### 11.1 The pulse is a one-sample spike, and the CFD cannot work as designed on it (2026-10-01)
+
+Measured on Eu-152 and Na-22 traces: normalized to the peak, the sample before it is at 0.10–0.13,
+then 1.00, 0.23–0.27, 0.05–0.06, 0.017, and a tail of 0.3–0.8% per sample. 86% of the charge is
+within one sample of the peak; the delayed light is ~32% of the charge but spread over µs (time
+constants ~0.3 µs and several µs). The CFD's minimum delay (4, i.e. 5 samples effective) is longer
+than the whole prompt pulse, so its zero crossing is set either by noise in the tail or by the
+delayed copy's arrival. A bit-exact emulation of `cfd_trigger.vhd` on 793 traces (validated: it
+puts the trigger at frame sample 62 for all 1,463 later traces, matching the hardware's peak
+positions) gives every setting 100% efficiency and a trigger 1–5 samples after the peak:
+
+| CFD fraction / delay | trigger − peak (samples) | large pulses (> 2,000 counts) |
+|---|---|---|
+| 128 / 4 (boot value) | +1…+5, mostly +2–+4 | mostly +4 |
+| **224 / 4** (set) | **+1…+5, nothing later** | **+4…+5 (86%)** |
+| 16 / 4 | +1…+5, outliers to +19 | spread |
+| any fraction, delay 5–31 | +1…+7 | walk up to 4 samples |
+
+FCI is insensitive to this (it uses the magnitude spectrum); PSD gates must absorb it, so the gate
+opens ~6–7 samples before the trigger (Pre-gate 8 at Pre-trigger 32 with Delay 32). The pulse
+shaper's Decay is a pole-zero constant, not an integration time: at Peaking 0.20 µs / Flat-top
+0.04 µs the output lasts ~0.25–0.3 µs for any Decay, and the maximum (6.00 µs) gives the narrowest
+output with no residue, because a PMT pulse has no exponential to cancel.
+
+### 11.2 Gain arrangement: VGA ×1 is optimal, and a setting of "6" was silently ×1 (2026-10-01)
+
+Noise: σ = √((6.58·VGA)² + 27²) counts holds here too (×1: 27.0–27.8 measured; ×6: 44.8). For a
+given energy range the best signal-to-noise is therefore the **lowest VGA and the highest HV**. A
+Coarse gain entered as 6 (meant ×6, read as 6 milli) ran as ×1 because firmware clamps the coarse
+gain to ×1–21 (`vga_dac.c`), while the files were named `x6p0`. The GUI now limits Fine gain to
+1000–2000 and Coarse gain to 1000–21000 milli (firmware's own clamps), and the unused raw Fine DAC
+code field is removed. The files named `…Na22_1000V_x6p0_0001` were recorded at ×1.
+
+### 11.3 Neutron search without a source: afterpulses and slow pulses, not gammas, mask the neutrons (2026-10-01 – 10-02)
+
+Run `OGS-PMT-Cosmics+NORM_1000V_x1p0_0001` (−1000 V, VGA ×1, threshold 3,000 counts ≈ 400 keVee,
+LLD/ULD 0/1,700 keVee, 15.7 h, 2.9 Hz, 65% of events with a raw trace). Range: the spike reaches the
+ADC rail at ≈ 1.6 MeVee, and above it FCI bends upward (clipping removes the spike's high
+frequencies) — the same streak as on the CLYC (§10.18).
+
+![OGS overnight, 0.5–1.7 MeVee: events classified by pulse shape](images/ogs_overnight_pulse_classes.png)
+
+- **Afterpulses.** 70% of the events above both provisional lines (FCI 0.32, PSD 0.10) carry a second
+  pulse 80–100 ns (+4…+5 samples) after the first, against 1.9% of all events; the probability rises
+  with energy (1.1% → 3.1% from 0.5 to 1.7 MeVee). A fixed short delay at ~2% probability is PMT
+  afterpulsing. It lands where the neutron's delayed light is.
+- **Slow pulses.** 5,334 events (≈ 5%, peaking at 0.8–1.2 MeVee) spread their light over ~100 ns:
+  samples −3/−2/−1 at 0.13/0.26/0.44 of the peak (gammas: 0.00/0.00/0.10), half the peak height per
+  keVee, and *less* delayed light than gammas. They form most of the diffuse cloud above FCI's gamma
+  band. Origin not identified. A neutron has the gamma's fast rise, so a cut on charge before the
+  peak cannot remove neutrons.
+- **Offline vetoes.** Afterpulse: a new pulse (a rise followed by a fall) > 4σ between +3 and +40
+  samples. Slow pulse: samples −2 and −3 together > 10% of the peak. Together they remove 7.3% of the
+  traces and pull the gamma bands' 99.9th percentiles down from FCI 0.402 / 0.293 / PSD 0.251 to
+  **0.310 / 0.226 / 0.116** (FCI 1/64/1/300, FCI 4/48/4/300, PSD 32/8/6/16). A stricter afterpulse
+  threshold does not shrink the cloud further (it is the slow pulses), and below ~3.5σ noise alone
+  triggers the veto.
+- **Neutron-like events.** After both vetoes, the charge fraction at 160–400 ns (clear of the
+  afterpulse delay) has a one-sided excess: 44 events above +4σ against 7 below −4σ, ≈ 3.8 /h for
+  all events — plausibly cosmic fast neutrons. Their FCI sits +8.4σ (1/64/1/300) and +8.8σ
+  (4/48/4/300) above gammas of the same energy, although they were selected without FCI; most still
+  fall below the provisional lines.
+
+![The neutron-like single-pulse candidates against the gamma mean and Fig. 8](images/ogs_neutron_candidates_traces.png)
+
+![FCI and PSD vs energy, afterpulse and slow-pulse events removed](images/ogs_fci_psd_vs_energy_matrix_clean.png)
+
+**Hardware consequence:** two per-event flags would replace the offline vetoes — a double-pulse
+flag (the larger share of the cloud is *not* afterpulses: 5,367 slow pulses against 2,915
+afterpulses) and a rise-time flag (samples 2–3 before the peak above 10% of it, one comparator).
+
+### 11.4 FCI windows follow the n/γ spectrum; separation is noise-limited (2026-10-02)
+
+Neutron class without a source: the Fig. 8 neutron-minus-gamma excess (20–450 ns, tail/total
+0.09 → 0.18) added to this run's afterpulse-free gamma traces. Grid searches (FCI 470 windows,
+PSD 680 gates), FoM per energy slice:
+
+| setting | 0.5–0.7 | 0.7–1.0 | 1.0–1.3 | 1.3–1.7 MeVee |
+|---|---|---|---|---|
+| FCI 1/64/1/300 (first online setting) | 0.55 | 0.55 | 0.62 | 1.00 |
+| **FCI 4/48/4/300** | **0.58** | **0.70** | **0.84** | **1.16** |
+| PSD 32/8/6/16 | 0.51 | 0.61 | 0.71 | 0.80 |
+
+The FCI optimum sits on the spectral limits (below): PSA_l to bin 48 (1.2 MHz, where the excess is
+largest), PSA_w to bin 240–300 (5.9–7.3 MHz, below the n/γ crossover). Narrower or wider windows
+lose; Low bin 2–6 makes no difference; Low bin 0 (DC) gains only for pulses of 3–6σ (below any CLYC
+or OGS neutron, §10.18). At FoM 0.6–1.2 no straight line separates the model neutrons from the
+gamma band's 99.9th percentile (≈ 0% kept), so these settings rank windows but do not yet
+classify; a source run is needed.
+
+**Comparison with [Nakhostin 2019] (BC501A liquid, 4 GHz, his Fig. 4).** The OGS gamma spectrum
+normalized at 3 MHz follows his gamma curve to 18 MHz (0.77 at 18 MHz for both). The n/γ difference
+lies lower in frequency than in the liquid: neutron/gamma amplitude 1.08–1.11 at 0.1–1 MHz
+(model; 1.36–1.44 for the candidates), crossing 1 at ≈ 7–10 MHz, against 1.12 at 3 MHz and a
+crossing at 18 MHz for BC501A (his plot starts near 3 MHz). The 2048-point frame resolves the
+0.1–2 MHz region where the OGS contrast is largest. Per bin, a 1 MeVee gamma is 27–32× the noise
+below 5 MHz, but the model neutron excess only 3–4× below 2 MHz and below the noise above ~4 MHz.
+The OGS information therefore ends below ~10 MHz; the 25 MHz Nyquist is ~2.5× above it, and faster
+sampling (65 MHz, which the LTC2248 supports) would gain ~10–15% at most.
+
+![OGS vs Nakhostin 2019: amplitude spectra, n/γ ratio, signal and noise per bin](images/ogs_vs_nakhostin_spectra.png)
+
+### 11.5 Range against discrimination, and the 6 MeVee operating point (2026-10-02)
+
+The ADC clips the spike at 14,560 counts and the noise after the VGA is ~28 counts: a fixed
+**~520:1 dynamic range** in peak terms. Emulating lower PMT gain on the clean traces (scaled, real
+noise added back): FCI 4/48/4/300 at 0.4–1.7 MeVee drops from 0.56–0.87 (range 1.6 MeVee) to
+0.17–0.41 (6 MeVee) and 0.06–0.17 (16 MeVee); at equal pulse height the same FoM moves up in
+energy (0.87 at 4.8–6 MeVee for a 6 MeVee range, 0.87 at 13–16 MeVee for 16 MeVee). DT neutrons
+(proton recoils up to ~7–8 MeVee) would mostly sit where FCI reaches ≤ 0.6 at a 16 MeVee range.
+
+**Classifying clipped spikes from the tail** (option tested because no analog shaping is possible):
+unclipped labeled events clipped artificially at 1/2–1/8 of the rail lose ~25–30% of FCI's FoM
+(0.77 → 0.55–0.60) and then stop degrading; PSD 32/8/6/16 loses more (0.70 → ~0.45); a PSD with
+both gates after the spike is immune but weak (0.38). The casualty is energy: charge stops tracking
+energy once the spike clips (r 0.997 → ~0.6), and a tail-only estimate gave ~25–30% resolution. The
+operator chose the unclipped 6 MeVee range.
+
+**Calibration at −820 V, VGA ×1** (Na-22 Compton edges, `SPECTRA/OGS_Na22_830V_x1p0.spe` and
+`…_820V_x1p0.spe`): each edge fitted as a resolution-blurred step, (a + b(x − x₀))·½·erfc((x − x₀)/(√2σ))
++ background, with one channel offset shared by both HVs (χ² 1.5 for 1 dof):
+
+| HV | 341 keV edge | 1,062 keV edge | c1 (keVee/ch) | c0 (keVee) | range (spike at the rail) |
+|---|---|---|---|---|---|
+| −830 V | ch 126.1 ± 3.6 | ch 394.3 ± 15.2 | 2.835 ± 0.122 | −22.6 | 6.0 MeVee |
+| **−820 V** | ch 123.1 ± 3.3 | ch 355.0 ± 11.4 | **3.004 ± 0.122** | **−24.0** | **≈ 6.4 MeVee** |
+
+PMT gain ∝ V^4.8–6.0 between −820 and −1000 V. The edge convention is a systematic: half-height or
+80%-height edges give energies up to 18% lower (c1 2.22–2.48 at −830 V); comparisons with published
+OGS FoM curves must use the same convention. The fitted edge blur (40–48% FWHM) is an upper bound on
+the resolution. Planned check: the AmBe 4.44 MeV line's Compton edge (4.20 MeV).
+
+### 11.6 The analog front end is flat to 20 MHz (2026-10-02)
+
+The #28 prerequisite (§0 noted the AFE had never been characterized above ~0.5 MHz). A waveform
+generator into the AFE input, sine waves of 800 mVpp at 5, 10, 15 and 20 MHz (−400 mV offset, High-Z
+output setting), HV off, VGA ×1; the sine amplitude fitted per 256-sample frame, median of up to
+400 frames, samples at the bottom rail excluded:
+
+| frequency | amplitude (counts) | response vs 5 MHz |
+|---|---|---|
+| 5 MHz | 1,887.9 ± 0.2 | 1.000 (0 dB) |
+| 10 MHz | 1,855.4 ± 0.2 | 0.983 (−0.15 dB) |
+| 15 MHz | 1,834.9 ± 0.1 | 0.972 (−0.25 dB) |
+| 20 MHz | 1,791.7 ± 0.2 | 0.949 (−0.45 dB) |
+
+![Front-end frequency response from the sine sweep](images/afe_bandwidth_sine_sweep.png)
+
+Flat within 0.5 dB to 20 MHz (generator flatness, typically ±0.1–0.2 dB, not corrected); a
+one-pole fit puts −3 dB at ≈ 57 MHz (two-pole: 82 MHz), −0.7 dB at the 25 MHz Nyquist. The fitted
+frequencies are 0.005–0.006% low, consistent between generator and ADC clock. Two consequences:
+the AFE passes the OGS n/γ band (< 10 MHz) and Nakhostin's 8–18 MHz with margin, so the front end
+is not what limits FCI here; and nothing filters out content above 25 MHz, so the OGS spike's
+components up to ~100 MHz alias into the band — the reason the sampled pulse is a one-sample spike
+whose height depends on its sampling phase. Also measured: only ~1,825 counts of headroom below the
+baseline (the baseline restorer sits near ADC code −6,367), so negative excursions clip early; PMT
+pulses are positive in the ADC data and unaffected.
+
+### 11.7 Settings in use and open items
+
+Operating point for the 6 MeVee range, as recommended (to be confirmed against the project once
+saved): HV −820 V; VGA 1000/1000 (×1); Trigger threshold 6σ (≈ 167 counts ≈ 75 keVee), Delay 32,
+Depth 256, CFD 224/4; PSD 32/8/6/16; FCI 4/48/4/300; Pulse Shaper 0.20/0.04/6.00 µs; calibration
+c0 −24.0, c1 3.004; LLD/ULD 0/6,200 keVee. Dividers to be set from the gamma band at this operating
+point.
+
+Open: a neutron source run (AmBe or Cf-252) for real n labels, acceptance and FoM; the hardware
+double-pulse and rise-time flags; the origin of the slow pulses; the DT range (14–16 MeVee), which
+at this dynamic range classifies only above ~4–5 MeVee; the 4.44 MeV calibration check.
 
 ## Appendix: ILA note (2026-08-18)
 

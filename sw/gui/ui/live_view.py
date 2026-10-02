@@ -320,8 +320,14 @@ class _StatsPanel(QGroupBox):
         plot.setMaximumHeight(70)
         plot.showAxis("bottom", False)
         plot.setLabel("left", "Hz")
-        plot.getPlotItem().setMenuEnabled(False)
         plot.getViewBox().setLimits(yMin=0)  # a rate is never negative; keeps an idle plot at 0
+        # Three ways back from an accidental zoom on a plot this small: the "A" button (raised
+        # above the left axis, which otherwise covers it in the bottom-left corner of a 70 px
+        # plot), the right-click menu's "View All", and a double-click.
+        plot.getPlotItem().autoBtn.setZValue(1000)
+        vb = plot.getViewBox()
+        plot.scene().sigMouseClicked.connect(
+            lambda ev, vb=vb: vb.enableAutoRange() if ev.double() else None)
         curve = plot.plot(pen=pg.mkPen(color, width=1.5))
         layout.addWidget(plot)
         return plot, curve

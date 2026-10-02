@@ -526,9 +526,13 @@ FCI_FIELDS = [
 ]
 
 VGA_FIELDS = [
-    Field("fine_gain_milli", "Fine gain", 1, 60000, tooltip="Milli-units; 1500 = x1.50."),
-    Field("coarse_gain_milli", "Coarse gain", 1, 60000, tooltip="Milli-units; 6000 = x6.00."),
-    Field("fine_dac_code", "Fine DAC code", 0, 4095, optional=True, tooltip="Raw DAC code."),
+    # Ranges are firmware's own clamps (vga_dac.c: GAIN_FINE 1.0-2.0, GAIN_COARSE 1.0-21.0), so a
+    # value the hardware would silently clamp cannot be entered: a coarse gain typed as "6" (meant
+    # x6, read as 6 milli) ran as x1 on 2026-10-01 while the files said x6. The raw fine-DAC-code
+    # override (VgaConfig.fine_dac_code) is deliberately not exposed: it is unused and drives the
+    # same DAC channel as the fine gain.
+    Field("fine_gain_milli", "Fine gain", 1000, 2000, tooltip="Milli-units; 1500 = x1.50. Range x1.0-x2.0."),
+    Field("coarse_gain_milli", "Coarse gain", 1000, 21000, tooltip="Milli-units; 6000 = x6.00. Range x1-x21."),
 ]
 
 SHAPER_CYCLE_NS = 20.0  # 1 clock period @ 50 Msps
