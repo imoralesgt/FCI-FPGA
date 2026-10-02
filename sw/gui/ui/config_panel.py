@@ -144,6 +144,10 @@ class SubsystemPanel(QGroupBox):
         self._controls: dict[str, QWidget] = {}
         self._last: Any = None
         self._shown_when_none: dict[str, Any] = {}
+        self._from_project: set[str] = set()
+        """Optional fields whose control currently holds a value loaded by set_values() from a
+        project, rather than a placeholder. get_values() keeps these even before any device read,
+        so saving a project while the device is unreachable cannot strip them from the file."""
         """For optional fields the device reported as None: the placeholder value refresh() put in
         the widget. apply() diffs against this so an untouched placeholder is never written back --
         see apply() for the hardware damage that caused."""
@@ -330,6 +334,14 @@ class SubsystemPanel(QGroupBox):
             current = w.isChecked() if f.is_bool else w.value()
             if f.optional:
                 if self._last is None:
+                    # No device read yet: there is nothing to tell a placeholder from a setting,
+                    # EXCEPT a value this panel loaded from the project itself -- keep that. Dropping
+                    # it too stripped the CFD fraction and delay from a project saved while the
+                    # board was silent (2026-10-02), and the next connect then left the firmware's
+                    # boot values (64/24) in place.
+                    if f.name not in self._from_project:
+                        continue
+                    values[f.name] = current
                     continue
                 if getattr(self._last, f.name) is None:
                     # Same rule as apply(): skip a field the device reports as absent, and a
@@ -358,6 +370,8 @@ class SubsystemPanel(QGroupBox):
         if values:
             self._populated = True
         for name, value in values.items():
+            if name in self._controls and any(f.name == name and f.optional for f in self._fields):
+                self._from_project.add(name)
             field = next((f for f in self._fields if f.name == name), None)
             if field is None:
                 logger.warning(f"{self.title()}: project sets unknown field '{name}'; ignored")
